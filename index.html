@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Frame Try-On Studio</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="root">
+    <div class="eyebrow">Optical · Frame Try-On Studio</div>
+    <h1>Frame try-on studio</h1>
+    <p class="sub">Photograph or upload real frames, tag them, and try them on — saved to your account, from any device.</p>
+
+    <!-- shown until firebase-config.js has real values in it -->
+    <div id="setupNotice" class="setup-note" style="display:none">
+      <strong>Firebase isn't configured yet.</strong> Open <code>firebase-config.js</code> and paste in your own
+      project's config (Firebase Console → Project settings → Your apps → Web app). See <code>README.md</code>
+      for the full walkthrough.
+    </div>
+
+    <!-- ================= AUTH GATE ================= -->
+    <div id="authGate" class="auth-wrap" style="display:none">
+      <div class="label">Sign in</div>
+      <p class="sub" style="margin-bottom:16px">One account holds your frame catalog and your photo, so neither has to be redone next time.</p>
+      <form id="authForm">
+        <input type="email" id="authEmail" placeholder="Email" autocomplete="email" required>
+        <input type="password" id="authPassword" placeholder="Password (6+ characters)" autocomplete="current-password" required>
+        <div class="auth-error" id="authError"></div>
+        <div class="row">
+          <button type="submit" class="btn primary" id="signInBtn">Sign in</button>
+          <button type="button" class="btn" id="signUpBtn">Create account</button>
+        </div>
+      </form>
+      <div class="auth-note">Your email and password are handled entirely by Firebase Authentication — this app never sees or stores your password.</div>
+    </div>
+
+    <!-- ================= APP SHELL ================= -->
+    <div id="appShell" style="display:none">
+      <div class="user-row">
+        <span class="who" id="userEmailLabel"></span>
+        <button class="btn ghost" id="signOutBtn" type="button">Sign out</button>
+      </div>
+
+      <div class="tab-bar">
+        <button class="tab-btn active" id="tabBrowseBtn" type="button">Browse</button>
+        <button class="tab-btn" id="tabTryOnBtn" type="button">Try On</button>
+        <button class="tab-btn" id="tabAddBtn" type="button">Add Frames</button>
+      </div>
+
+      <!-- ================= BROWSE ================= -->
+      <div id="pageBrowse">
+        <div class="label">Search &amp; filter</div>
+        <div class="filter-bar" id="filterBar"></div>
+        <div class="library-row" id="libraryRow"></div>
+        <div class="catalog-note" id="catalogNote">Loading your saved catalog&hellip;</div>
+        <div class="selected-banner" id="selectedBanner">
+          <span id="selectedThumbWrap"></span>
+          <span class="sel-text" id="selectedText"></span>
+          <button class="btn primary" id="goTryOnBtn" type="button">Try it on \u2192</button>
+        </div>
+      </div>
+
+      <!-- ================= TRY ON ================= -->
+      <div id="pageTryOn" style="display:none">
+        <div class="label">Your photo</div>
+        <div class="row">
+          <button class="btn primary" id="cameraBtn">Use camera</button>
+          <button class="btn" id="uploadBtn">Upload a photo</button>
+          <input type="file" id="fileInput" accept="image/*" style="display:none">
+        </div>
+        <div class="viewport" id="viewport">
+          <div class="placeholder" id="placeholder">No image yet.<br>Start your camera or upload a photo to begin.</div>
+          <video id="video" class="mirrored" autoplay playsinline muted style="display:none"></video>
+          <canvas id="canvas" style="display:none"></canvas>
+          <button class="btn primary capture-btn" id="captureBtn" style="display:none">Capture photo</button>
+        </div>
+        <div class="calib-banner" id="calibBanner">Click one pupil in the photo to size the frame.</div>
+        <div class="action-row">
+          <button class="btn ghost" id="recalBtn" style="display:none">Recalibrate</button>
+          <button class="btn ghost" id="retakeBtn" style="display:none">Retake photo</button>
+        </div>
+
+        <div class="fit-row" id="fitRow">
+          <div class="slider-label">Frame fit <span class="val" id="fitSizeVal">100%</span></div>
+          <input type="range" id="fitSize" min="70" max="130" value="100">
+          <div class="hint" style="margin:6px 0 0">If a frame looks too narrow or wide for your face, adjust here — this stays put when you switch frames.</div>
+        </div>
+
+        <div class="no-selection-note" id="noSelectionNote">
+          <span id="noSelectionText"></span>
+          <button class="btn ghost" id="noSelectionBtn" type="button"></button>
+        </div>
+
+        <div class="label" id="similarLabel" style="display:none">You might also like</div>
+        <div class="similar-row" id="similarRow"></div>
+      </div>
+
+      <!-- ================= ADD FRAMES ================= -->
+      <div id="pageAdd" style="display:none">
+        <div class="label">Frame photo</div>
+        <div id="frameSourceChooser">
+          <div class="row">
+            <button class="btn primary" id="frameCameraBtn">Use camera</button>
+            <button class="btn" id="frameUploadBtn">Upload a photo</button>
+            <input type="file" id="frameFileInputEl" accept="image/*" style="display:none">
+          </div>
+          <div class="viewport" id="frameSourceViewport">
+            <div class="placeholder" id="frameSourcePlaceholder">No frame photo yet.<br>Use your camera or upload a photo of a frame.</div>
+            <video id="frameVideo" autoplay playsinline muted style="display:none"></video>
+            <button class="btn primary capture-btn" id="frameCaptureBtn" style="display:none">Capture photo</button>
+          </div>
+          <div class="added-msg" id="addedMsg">Added to your catalog. Add another below, or head to Browse to try it on.</div>
+        </div>
+
+        <div id="frameCalibSection" style="display:none">
+          <label class="check-row"><input type="checkbox" id="alreadyTransparent"> Photo already has a transparent background</label>
+          <div class="hint">Cutout works best with a plain, contrasting background and the frame shot fairly front-on.</div>
+
+          <div class="tolerance-row" id="toleranceRow">
+            <div class="slider-label">Background removal strength <span class="val" id="bgToleranceVal">45</span></div>
+            <input type="range" id="bgTolerance" min="5" max="120" value="45">
+          </div>
+
+          <div class="trim-pair">
+            <div class="tolerance-row">
+              <div class="slider-label">Trim left arm <span class="val" id="trimLeftVal">0%</span></div>
+              <input type="range" id="trimLeft" min="0" max="40" value="0">
+            </div>
+            <div class="tolerance-row">
+              <div class="slider-label">Trim right arm <span class="val" id="trimRightVal">0%</span></div>
+              <input type="range" id="trimRight" min="0" max="40" value="0">
+            </div>
+          </div>
+
+          <div class="frame-calib-viewport">
+            <canvas id="frameCalibCanvas"></canvas>
+          </div>
+          <div class="calib-banner" id="frameCalibBanner" style="display:block">Click one lens center, then the other.</div>
+
+          <div class="label">Shape <span style="text-transform:none">(optional)</span></div>
+          <div class="chip-row" id="shapeChips">
+            <button type="button" class="tag-chip" data-facet="shape" data-val="round">Round</button>
+            <button type="button" class="tag-chip" data-facet="shape" data-val="square">Square</button>
+            <button type="button" class="tag-chip" data-facet="shape" data-val="catseye">Cat-Eye</button>
+            <button type="button" class="tag-chip" data-facet="shape" data-val="aviator">Aviator</button>
+            <button type="button" class="tag-chip" data-facet="shape" data-val="browline">Browline</button>
+            <button type="button" class="tag-chip" data-facet="shape" data-val="rectangle">Rectangle</button>
+            <button type="button" class="tag-chip" data-facet="shape" data-val="oval">Oval</button>
+          </div>
+
+          <div class="label">Color <span style="text-transform:none">(optional)</span></div>
+          <div class="chip-row" id="colorChips">
+            <button type="button" class="tag-chip" data-facet="color" data-val="black">Black</button>
+            <button type="button" class="tag-chip" data-facet="color" data-val="tortoise">Tortoise</button>
+            <button type="button" class="tag-chip" data-facet="color" data-val="gold">Gold</button>
+            <button type="button" class="tag-chip" data-facet="color" data-val="silver">Silver</button>
+            <button type="button" class="tag-chip" data-facet="color" data-val="clear">Clear</button>
+            <button type="button" class="tag-chip" data-facet="color" data-val="navy">Navy</button>
+            <button type="button" class="tag-chip" data-facet="color" data-val="red">Red</button>
+          </div>
+
+          <div class="label">Gender <span style="text-transform:none">(optional)</span></div>
+          <div class="chip-row" id="genderChips">
+            <button type="button" class="tag-chip" data-facet="gender" data-val="womens">Women's</button>
+            <button type="button" class="tag-chip" data-facet="gender" data-val="mens">Men's</button>
+            <button type="button" class="tag-chip" data-facet="gender" data-val="unisex">Unisex</button>
+            <button type="button" class="tag-chip" data-facet="gender" data-val="kids">Kids'</button>
+          </div>
+
+          <div class="label">Other tags <span style="text-transform:none">(optional)</span></div>
+          <div class="free-tag-row">
+            <input type="text" id="freeTagInput" placeholder="Type a tag, press Enter&hellip;" list="tagSuggestions">
+            <datalist id="tagSuggestions"></datalist>
+          </div>
+          <div class="tag-chip-list" id="freeTagList"></div>
+
+          <div class="row">
+            <button class="btn primary" id="addToLibraryBtn" disabled>Add to library</button>
+            <button class="btn ghost" id="cancelFrameBtn">Cancel</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer">Simplified 2D preview. Background removal and arm trimming are basic, adjustable cutout tools, not real segmentation. Tag search ignores apostrophes and punctuation. Your catalog, tags, and photo are stored in your Firestore database, tied to your account, and not shared with other users. Not an exact optical fitting.</div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
