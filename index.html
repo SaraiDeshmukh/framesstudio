@@ -13,7 +13,7 @@
   <div class="root">
     <div class="eyebrow">Optical · Frame Try-On Studio</div>
     <h1>Frame try-on studio</h1>
-    <p class="sub">Photograph or upload real frames, tag them, and try them on — saved to your account, from any device.</p>
+    <p class="sub">One shared login for the counter — your catalog is saved to it, each customer's photo is not.</p>
 
     <!-- shown until firebase-config.js has real values in it -->
     <div id="setupNotice" class="setup-note" style="display:none">
@@ -25,7 +25,7 @@
     <!-- ================= AUTH GATE ================= -->
     <div id="authGate" class="auth-wrap" style="display:none">
       <div class="label">Sign in</div>
-      <p class="sub" style="margin-bottom:16px">One account holds your frame catalog and your photo, so neither has to be redone next time.</p>
+      <p class="sub" style="margin-bottom:16px">One login for the front desk — your catalog is saved here so it's ready for whoever's working the counter.</p>
       <form id="authForm">
         <input type="email" id="authEmail" placeholder="Email" autocomplete="email" required>
         <input type="password" id="authPassword" placeholder="Password (6+ characters)" autocomplete="current-password" required>
@@ -55,6 +55,53 @@
       <div id="pageBrowse">
         <div class="label">Search &amp; filter</div>
         <div class="filter-bar" id="filterBar"></div>
+
+        <div class="row">
+          <button class="btn ghost" id="selectModeBtn" type="button">Select multiple</button>
+        </div>
+
+        <div class="edit-panel" id="bulkBar" style="display:none">
+          <div class="label" id="bulkCountLabel">0 selected</div>
+          <div class="label">Shape</div>
+          <div class="chip-row" id="bulkShapeChips"></div>
+          <div class="label">Color</div>
+          <div class="chip-row" id="bulkColorChips"></div>
+          <div class="label">Gender</div>
+          <div class="chip-row" id="bulkGenderChips"></div>
+          <div class="label">Rim type</div>
+          <div class="chip-row" id="bulkRimChips"></div>
+          <div class="hint">Only facets you tap here get applied — anything you leave untouched stays as it was on each frame.</div>
+          <div class="row">
+            <button class="btn primary" id="applyBulkBtn" disabled>Apply to selected</button>
+            <button class="btn ghost" id="exitSelectModeBtn" type="button">Done</button>
+          </div>
+        </div>
+
+        <div class="edit-panel" id="editTagsPanel" style="display:none">
+          <div class="label">Edit tags</div>
+          <div class="edit-panel-head">
+            <span id="editThumbWrap"></span>
+            <span class="hint" style="margin:0">Changes here apply to this frame only.</span>
+          </div>
+          <div class="label">Shape</div>
+          <div class="chip-row" id="editShapeChips"></div>
+          <div class="label">Color</div>
+          <div class="chip-row" id="editColorChips"></div>
+          <div class="label">Gender</div>
+          <div class="chip-row" id="editGenderChips"></div>
+          <div class="label">Rim type</div>
+          <div class="chip-row" id="editRimChips"></div>
+          <div class="label">Other tags</div>
+          <div class="free-tag-row">
+            <input type="text" id="editFreeTagInput" placeholder="Type a tag, press Enter&hellip;" list="tagSuggestions">
+          </div>
+          <div class="tag-chip-list" id="editFreeTagList"></div>
+          <div class="row">
+            <button class="btn primary" id="saveTagsBtn">Save changes</button>
+            <button class="btn ghost" id="cancelEditTagsBtn" type="button">Cancel</button>
+          </div>
+        </div>
+
         <div class="library-row" id="libraryRow"></div>
         <div class="catalog-note" id="catalogNote">Loading your saved catalog&hellip;</div>
         <div class="selected-banner" id="selectedBanner">
@@ -66,7 +113,8 @@
 
       <!-- ================= TRY ON ================= -->
       <div id="pageTryOn" style="display:none">
-        <div class="label">Your photo</div>
+        <div class="label">Customer's photo</div>
+        <p class="hint" style="margin-top:-4px">Capture fresh for whoever's at the counter now — this is never saved between customers.</p>
         <div class="row">
           <button class="btn primary" id="cameraBtn">Use camera</button>
           <button class="btn" id="uploadBtn">Upload a photo</button>
@@ -87,7 +135,7 @@
         <div class="fit-row" id="fitRow">
           <div class="slider-label">Frame fit <span class="val" id="fitSizeVal">100%</span></div>
           <input type="range" id="fitSize" min="70" max="130" value="100">
-          <div class="hint" style="margin:6px 0 0">If a frame looks too narrow or wide for your face, adjust here — this stays put when you switch frames.</div>
+          <div class="hint" style="margin:6px 0 0">If a frame looks too narrow or wide for this customer's face, adjust here — this stays put when you switch frames.</div>
         </div>
 
         <div class="no-selection-note" id="noSelectionNote">
@@ -135,6 +183,10 @@
               <input type="range" id="trimRight" min="0" max="40" value="0">
             </div>
           </div>
+          <div class="row" style="margin-top:-8px">
+            <button class="btn ghost" id="autoTrimBtn" type="button">Re-detect automatically</button>
+          </div>
+          <div class="hint" id="autoTrimHint">Arm width is estimated automatically from the cutout — nudge the sliders above if either side isn't quite right.</div>
 
           <div class="frame-calib-viewport">
             <canvas id="frameCalibCanvas"></canvas>
@@ -142,34 +194,16 @@
           <div class="calib-banner" id="frameCalibBanner" style="display:block">Click one lens center, then the other.</div>
 
           <div class="label">Shape <span style="text-transform:none">(optional)</span></div>
-          <div class="chip-row" id="shapeChips">
-            <button type="button" class="tag-chip" data-facet="shape" data-val="round">Round</button>
-            <button type="button" class="tag-chip" data-facet="shape" data-val="square">Square</button>
-            <button type="button" class="tag-chip" data-facet="shape" data-val="catseye">Cat-Eye</button>
-            <button type="button" class="tag-chip" data-facet="shape" data-val="aviator">Aviator</button>
-            <button type="button" class="tag-chip" data-facet="shape" data-val="browline">Browline</button>
-            <button type="button" class="tag-chip" data-facet="shape" data-val="rectangle">Rectangle</button>
-            <button type="button" class="tag-chip" data-facet="shape" data-val="oval">Oval</button>
-          </div>
+          <div class="chip-row" id="shapeChips"></div>
 
           <div class="label">Color <span style="text-transform:none">(optional)</span></div>
-          <div class="chip-row" id="colorChips">
-            <button type="button" class="tag-chip" data-facet="color" data-val="black">Black</button>
-            <button type="button" class="tag-chip" data-facet="color" data-val="tortoise">Tortoise</button>
-            <button type="button" class="tag-chip" data-facet="color" data-val="gold">Gold</button>
-            <button type="button" class="tag-chip" data-facet="color" data-val="silver">Silver</button>
-            <button type="button" class="tag-chip" data-facet="color" data-val="clear">Clear</button>
-            <button type="button" class="tag-chip" data-facet="color" data-val="navy">Navy</button>
-            <button type="button" class="tag-chip" data-facet="color" data-val="red">Red</button>
-          </div>
+          <div class="chip-row" id="colorChips"></div>
 
           <div class="label">Gender <span style="text-transform:none">(optional)</span></div>
-          <div class="chip-row" id="genderChips">
-            <button type="button" class="tag-chip" data-facet="gender" data-val="womens">Women's</button>
-            <button type="button" class="tag-chip" data-facet="gender" data-val="mens">Men's</button>
-            <button type="button" class="tag-chip" data-facet="gender" data-val="unisex">Unisex</button>
-            <button type="button" class="tag-chip" data-facet="gender" data-val="kids">Kids'</button>
-          </div>
+          <div class="chip-row" id="genderChips"></div>
+
+          <div class="label">Rim type <span style="text-transform:none">(optional)</span></div>
+          <div class="chip-row" id="rimChips"></div>
 
           <div class="label">Other tags <span style="text-transform:none">(optional)</span></div>
           <div class="free-tag-row">
@@ -186,7 +220,7 @@
       </div>
     </div>
 
-    <div class="footer">Simplified 2D preview. Background removal and arm trimming are basic, adjustable cutout tools, not real segmentation. Tag search ignores apostrophes and punctuation. Your catalog, tags, and photo are stored in your Firestore database, tied to your account, and not shared with other users. Not an exact optical fitting.</div>
+    <div class="footer">Simplified 2D preview. Background removal and arm trimming are basic, adjustable cutout tools, not real segmentation — arm width is auto-estimated and adjustable. Tag search ignores apostrophes and punctuation. Your catalog and tags are stored in your Firestore database and not shared beyond this account. Customer photos are never saved. Not an exact optical fitting.</div>
   </div>
 
   <script type="module" src="app.js"></script>
