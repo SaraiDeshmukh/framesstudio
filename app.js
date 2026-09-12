@@ -516,12 +516,12 @@ function track(eventName, params) {
   function updateCalibBanner() {
     if (!faceHasImage) { calibBanner.style.display = 'none'; return; }
     if (facePoints.length === 0) {
-      calibBanner.textContent = 'Click one pupil in the photo to size the frame.';
+      calibBanner.textContent = 'Tap one pupil in the photo to size the frame.';
       calibBanner.style.display = 'block';
       recalBtn.style.display = 'none';
       fitRow.style.display = 'none';
     } else if (facePoints.length === 1) {
-      calibBanner.textContent = 'Now click the other pupil.';
+      calibBanner.textContent = 'Now tap the other pupil.';
       calibBanner.style.display = 'block';
       recalBtn.style.display = 'none';
       fitRow.style.display = 'none';
@@ -1281,8 +1281,8 @@ function track(eventName, params) {
 
   function updateFrameCalibBanner() {
     addToLibraryBtn.disabled = frameCalibPoints.length < 2;
-    if (frameCalibPoints.length === 0) frameCalibBanner.textContent = 'Click one lens center, then the other.';
-    else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = 'Now click the other lens center.';
+    if (frameCalibPoints.length === 0) frameCalibBanner.textContent = 'Tap one lens center, then the other.';
+    else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = 'Now tap the other lens center.';
     else frameCalibBanner.textContent = 'Ready \u2014 add it to your library.';
   }
 
