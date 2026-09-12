@@ -112,6 +112,14 @@ h1 { font-size: clamp(24px, 5.5vw, 34px); font-weight: 700; line-height: 1.08; m
 
 .catalog-note { font-family: 'IBM Plex Mono', monospace; font-size: 11px; color: var(--muted); margin: 0 0 22px; }
 
+/* ---------- edit / bulk-edit panels ---------- */
+.edit-panel {
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius);
+  box-shadow: var(--shadow); padding: 16px; margin-bottom: 20px;
+}
+.edit-panel-head { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.edit-panel-head img { width: 48px; height: 48px; border-radius: 8px; object-fit: contain; background: var(--bg); flex-shrink: 0; }
+
 /* ---------- browse: card grid ---------- */
 .library-row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin-bottom: 10px; }
 @media (max-width: 480px) { .library-row { grid-template-columns: 1fr; } }
@@ -121,6 +129,12 @@ h1 { font-size: clamp(24px, 5.5vw, 34px); font-weight: 700; line-height: 1.08; m
   background: var(--bg); box-shadow: var(--shadow); padding: 14px; cursor: pointer;
   display: flex; flex-direction: column; gap: 10px;
 }
+.frame-card.selected { border-color: var(--fundus); box-shadow: 0 0 0 2px var(--fundus); }
+.frame-card-select-mark {
+  position: absolute; top: 10px; left: 10px; z-index: 2; width: 22px; height: 22px; border-radius: 50%;
+  border: 2px solid var(--line); background: var(--bg); display: none;
+}
+.frame-card.selected .frame-card-select-mark { display: block; background: var(--fundus); border-color: var(--fundus); }
 .frame-card-image {
   width: 100%; aspect-ratio: 4 / 3; background: var(--bg-2); border-radius: 10px;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
@@ -132,7 +146,9 @@ h1 { font-size: clamp(24px, 5.5vw, 34px); font-weight: 700; line-height: 1.08; m
   background: var(--bg); border: 1px solid var(--line); color: var(--muted);
   font-family: 'IBM Plex Mono', monospace; cursor: pointer;
 }
-.frame-card-tryon { width: 100%; }
+.frame-card-actions { display: flex; gap: 8px; }
+.frame-card-tryon { flex: 1; }
+.frame-card-edit { flex: 0 0 auto; padding: 10px 14px; }
 
 .selected-banner { display: none; align-items: center; gap: 12px; padding: 12px 14px; margin: 4px 0 22px; }
 .selected-banner img { width: 44px; height: 44px; border-radius: 8px; flex-shrink: 0; display: block; object-fit: contain; background: var(--bg); }
