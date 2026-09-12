@@ -11,5 +11,6 @@ export const firebaseConfig = {
   projectId: "frame-studio-ad5ed",
   storageBucket: "frame-studio-ad5ed.firebasestorage.app",
   messagingSenderId: "439341097240",
-  appId: "1:439341097240:web:d3c5265e45d0ce8b247e6d"
+  appId: "1:439341097240:web:d3c5265e45d0ce8b247e6d",
+  measurementId: "G-0VEBTFPSVY"
 };
