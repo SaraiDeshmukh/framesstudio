@@ -5,11 +5,17 @@ import {
   onAuthStateChanged, signOut
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import {
-  getFirestore, doc, setDoc, getDoc, deleteDoc, collection, getDocs, serverTimestamp
+  getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
+import { getAnalytics, isSupported, logEvent } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
 
-// No Firebase Storage import — images live directly inside Firestore documents,
-// so this app runs entirely on the free Spark plan. No billing account needed.
+// No Firebase Storage — images live directly inside Firestore documents, so this
+// app runs entirely on the free Spark plan. No billing account needed.
+//
+// No customer photo is ever written to the account either: this is a single shared
+// login used at the counter for many different people, so the photo stays purely
+// in-memory for the current visit and is discarded the moment it's replaced or the
+// page is closed.
 
 var CONFIGURED = firebaseConfig.apiKey && firebaseConfig.apiKey.indexOf('YOUR_') !== 0;
 var setupNotice = document.getElementById('setupNotice');
@@ -24,13 +30,60 @@ var app = initializeApp(firebaseConfig);
 var auth = getAuth(app);
 var db = getFirestore(app);
 
+// Analytics is initialized only after confirming the browser supports it (per
+// Firebase's own guidance), and every call site below is guarded so a missing or
+// unsupported Analytics instance can never break the actual try-on functionality.
+var analytics = null;
+isSupported().then(function (supported) {
+  if (supported) analytics = getAnalytics(app);
+}).catch(function () {});
+
+function track(eventName, params) {
+  if (!analytics) return;
+  try { logEvent(analytics, eventName, params || {}); } catch (e) { /* analytics must never break the app */ }
+}
+
 (function () {
   var MAX_FACE_DIM = 800;
-  var MAX_FRAME_DIM = 700;   // kept modest so the full image comfortably fits in a Firestore doc
+  var MAX_FRAME_DIM = 700;
   var THUMB_DIM = 260;
-  var FULL_BYTE_BUDGET = 750000;   // ~750KB, safely under Firestore's 1MB document limit
+  var FULL_BYTE_BUDGET = 750000;
   var THUMB_BYTE_BUDGET = 150000;
-  var FACE_BYTE_BUDGET = 800000;
+
+  var FACETS = {
+    shape: { options: ['round', 'square', 'catseye', 'aviator', 'browline', 'rectangle', 'oval'] },
+    color: { options: ['black', 'tortoise', 'gold', 'silver', 'clear', 'navy', 'red'] },
+    gender: { options: ['womens', 'mens', 'unisex', 'kids'] },
+    rim: { options: ['fullrim', 'semirimless', 'rimless'] }
+  };
+
+  function labelize(v) {
+    var map = {
+      catseye: 'Cat-Eye', womens: "Women's", mens: "Men's", kids: "Kids'",
+      fullrim: 'Full-Rim', semirimless: 'Semi-Rimless'
+    };
+    return map[v] || (v ? (v.charAt(0).toUpperCase() + v.slice(1)) : '');
+  }
+
+  // Renders a facet's chip buttons fresh into `container`, marking `currentValue`
+  // active. Reusable for the Add-frame form, the single-frame editor, and the
+  // bulk-edit bar -- all three just point it at a different container/state.
+  function renderChipGroup(container, facetKey, currentValue, onChange) {
+    container.innerHTML = '';
+    FACETS[facetKey].options.forEach(function (val) {
+      var chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'tag-chip' + (currentValue === val ? ' active' : '');
+      chip.textContent = labelize(val);
+      chip.addEventListener('click', function () {
+        var wasActive = chip.classList.contains('active');
+        container.querySelectorAll('.tag-chip').forEach(function (c) { c.classList.remove('active'); });
+        if (wasActive) { onChange(null); }
+        else { chip.classList.add('active'); onChange(val); }
+      });
+      container.appendChild(chip);
+    });
+  }
 
   // ---------- auth elements ----------
   var appShell = document.getElementById('appShell');
@@ -89,7 +142,6 @@ var db = getFirestore(app);
       userEmailLabel.textContent = user.email;
       resetLocalState();
       loadCatalog(user.uid);
-      loadFaceProfile(user.uid);
     } else {
       appShell.style.display = 'none';
       authGate.style.display = 'block';
@@ -149,6 +201,29 @@ var db = getFirestore(app);
   var goTryOnBtn = document.getElementById('goTryOnBtn');
   goTryOnBtn.addEventListener('click', function () { showTab('tryon'); });
 
+  // ---------- select mode / bulk edit elements ----------
+  var selectModeBtn = document.getElementById('selectModeBtn');
+  var bulkBar = document.getElementById('bulkBar');
+  var bulkCountLabel = document.getElementById('bulkCountLabel');
+  var bulkShapeChips = document.getElementById('bulkShapeChips');
+  var bulkColorChips = document.getElementById('bulkColorChips');
+  var bulkGenderChips = document.getElementById('bulkGenderChips');
+  var bulkRimChips = document.getElementById('bulkRimChips');
+  var applyBulkBtn = document.getElementById('applyBulkBtn');
+  var exitSelectModeBtn = document.getElementById('exitSelectModeBtn');
+
+  // ---------- single-frame edit elements ----------
+  var editTagsPanel = document.getElementById('editTagsPanel');
+  var editThumbWrap = document.getElementById('editThumbWrap');
+  var editShapeChips = document.getElementById('editShapeChips');
+  var editColorChips = document.getElementById('editColorChips');
+  var editGenderChips = document.getElementById('editGenderChips');
+  var editRimChips = document.getElementById('editRimChips');
+  var editFreeTagInput = document.getElementById('editFreeTagInput');
+  var editFreeTagList = document.getElementById('editFreeTagList');
+  var saveTagsBtn = document.getElementById('saveTagsBtn');
+  var cancelEditTagsBtn = document.getElementById('cancelEditTagsBtn');
+
   // ---------- add-frame elements ----------
   var frameSourceChooser = document.getElementById('frameSourceChooser');
   var frameCalibSectionEl = document.getElementById('frameCalibSection');
@@ -168,6 +243,7 @@ var db = getFirestore(app);
   var trimRight = document.getElementById('trimRight');
   var trimLeftVal = document.getElementById('trimLeftVal');
   var trimRightVal = document.getElementById('trimRightVal');
+  var autoTrimBtn = document.getElementById('autoTrimBtn');
   var frameCalibCanvas = document.getElementById('frameCalibCanvas');
   var fctx = frameCalibCanvas.getContext('2d');
   var frameCalibBanner = document.getElementById('frameCalibBanner');
@@ -177,6 +253,7 @@ var db = getFirestore(app);
   var shapeChips = document.getElementById('shapeChips');
   var colorChips = document.getElementById('colorChips');
   var genderChips = document.getElementById('genderChips');
+  var rimChips = document.getElementById('rimChips');
   var freeTagInput = document.getElementById('freeTagInput');
   var tagSuggestions = document.getElementById('tagSuggestions');
   var freeTagList = document.getElementById('freeTagList');
@@ -193,23 +270,35 @@ var db = getFirestore(app);
   var fullDataCache = {};     // id -> {img, p1, p2}       -- heavy, lazy-loaded from users/{uid}/framesFull
   var activeFrameId = null;
   var allFreeTags = new Set();
-  var activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), search: '' };
+  var activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
 
   var pendingRawCanvas = null;
   var pendingProcessedCanvas = document.createElement('canvas');
   var frameCalibPoints = [];
-  var pendingTags = { shape: null, color: null, gender: null, free: [] };
+  var pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
+  var autoTrimSuggested = false;
+
+  var selectMode = false;
+  var selectedIds = new Set();
+  var bulkPending = { shape: null, color: null, gender: null, rim: null };
+  var bulkTouched = { shape: false, color: false, gender: false, rim: false };
+
+  var editingFrameId = null;
+  var editPendingTags = null;
 
   function resetLocalState() {
     catalogIndex = []; fullDataCache = {}; activeFrameId = null;
     allFreeTags = new Set();
-    activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), search: '' };
+    activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
     faceHasImage = false; facePoints = [];
     placeholder.style.display = 'block';
     placeholder.textContent = 'No image yet. Start your camera or upload a photo to begin.';
     canvas.style.display = 'none'; video.style.display = 'none';
     retakeBtn.style.display = 'none'; fitRow.style.display = 'none';
     libraryRow.innerHTML = '';
+    selectMode = false; selectedIds = new Set();
+    bulkBar.style.display = 'none';
+    editTagsPanel.style.display = 'none'; editingFrameId = null;
   }
 
   // ---------- helpers ----------
@@ -222,18 +311,13 @@ var db = getFirestore(app);
 
   function dist(a, b) { return Math.hypot(b.x - a.x, b.y - a.y); }
 
-  function labelize(v) {
-    var map = { catseye: 'Cat-Eye', womens: "Women's", mens: "Men's", kids: "Kids'" };
-    return map[v] || (v ? (v.charAt(0).toUpperCase() + v.slice(1)) : '');
-  }
-
   function normalizeSearch(s) {
     return (s || '').toLowerCase().replace(/[\u2018\u2019'".,]/g, '');
   }
 
   function describeTags(tags) {
     var t = tags || {};
-    var parts = [t.shape, t.color, t.gender].filter(Boolean).map(labelize);
+    var parts = [t.shape, t.color, t.gender, t.rim].filter(Boolean).map(labelize);
     return parts.length ? parts.join(', ') : 'Untagged frame';
   }
 
@@ -242,8 +326,6 @@ var db = getFirestore(app);
     return null;
   }
 
-  // Progressively downsizes a canvas until its encoded data URL fits under maxBytes,
-  // so a single busy frame photo can never blow past Firestore's 1MB document limit.
   function shrinkToBudget(canvas, maxBytes, mime, quality) {
     mime = mime || 'image/png';
     var toUrl = function (c) { return quality != null ? c.toDataURL(mime, quality) : c.toDataURL(mime); };
@@ -318,7 +400,48 @@ var db = getFirestore(app);
     }
   }
 
-  // ---------- face photo / try-on ----------
+  // Estimates how much of each side is thin temple arm vs. the substantial lens/bridge
+  // front, by comparing how many opaque pixels sit in each column. Arms are consistently
+  // thin; the front is consistently tall, so the transition point is a reasonable cut line.
+  function suggestTrim(imageData) {
+    var data = imageData.data, w = imageData.width, h = imageData.height;
+    var colCount = new Array(w).fill(0);
+    for (var y = 0; y < h; y++) {
+      var rowStart = y * w * 4;
+      for (var x = 0; x < w; x++) {
+        if (data[rowStart + x * 4 + 3] > 10) colCount[x]++;
+      }
+    }
+    var maxCount = 0;
+    for (var i = 0; i < w; i++) if (colCount[i] > maxCount) maxCount = colCount[i];
+    if (maxCount < 6) return { left: 0, right: 0 };
+
+    var threshold = maxCount * 0.35;
+    var sustain = Math.max(2, Math.round(w * 0.012));
+
+    var leftEdge = 0;
+    while (leftEdge < w && colCount[leftEdge] === 0) leftEdge++;
+    var run = 0, leftLensStart = leftEdge;
+    for (var x1 = leftEdge; x1 < w; x1++) {
+      if (colCount[x1] >= threshold) { run++; if (run >= sustain) { leftLensStart = x1 - run + 1; break; } }
+      else run = 0;
+    }
+
+    var rightEdge = w - 1;
+    while (rightEdge >= 0 && colCount[rightEdge] === 0) rightEdge--;
+    run = 0;
+    var rightLensEnd = rightEdge;
+    for (var x2 = rightEdge; x2 >= 0; x2--) {
+      if (colCount[x2] >= threshold) { run++; if (run >= sustain) { rightLensEnd = x2 + run - 1; break; } }
+      else run = 0;
+    }
+
+    var leftTrim = Math.min(0.35, Math.max(0, leftLensStart - leftEdge) / w);
+    var rightTrim = Math.min(0.35, Math.max(0, rightEdge - rightLensEnd) / w);
+    return { left: leftTrim, right: rightTrim };
+  }
+
+  // ---------- face photo / try-on (session-only, never persisted) ----------
 
   function redrawFacePreview() {
     if (!faceHasImage) return;
@@ -332,7 +455,7 @@ var db = getFirestore(app);
     if (!activeFrameId) return;
     var thisId = activeFrameId;
     getFullFrameData(thisId).then(function (full) {
-      if (activeFrameId !== thisId) return; // selection moved on while this was loading
+      if (activeFrameId !== thisId) return;
       drawFrameOnFace(full, facePoints[0], facePoints[1]);
     }).catch(function (e) { console.error('Could not load frame data', e); });
   }
@@ -412,13 +535,13 @@ var db = getFirestore(app);
   function updateTryOnHint() {
     if (!catalogIndex.length) {
       noSelectionNote.style.display = 'flex';
-      noSelectionText.textContent = "You don't have any frames yet.";
+      noSelectionText.textContent = "There's nothing in the catalog yet.";
       noSelectionBtn.textContent = 'Add your first frame \u2192';
       noSelectionBtn.onclick = function () { showTab('add'); };
     } else if (!activeFrameId) {
       noSelectionNote.style.display = 'flex';
       noSelectionText.textContent = 'No frame selected yet.';
-      noSelectionBtn.textContent = 'Browse your catalog \u2192';
+      noSelectionBtn.textContent = 'Browse the catalog \u2192';
       noSelectionBtn.onclick = function () { showTab('browse'); };
     } else {
       noSelectionNote.style.display = 'none';
@@ -515,6 +638,7 @@ var db = getFirestore(app);
     retakeBtn.style.display = 'inline-block';
     redrawFacePreview();
     updateCalibBanner();
+    track('customer_session_started', { source: 'camera' });
   }
 
   function handleFaceUpload(file) {
@@ -538,6 +662,7 @@ var db = getFirestore(app);
       redrawFacePreview();
       updateCalibBanner();
       URL.revokeObjectURL(url);
+      track('customer_session_started', { source: 'upload' });
     };
     img.src = url;
   }
@@ -563,7 +688,6 @@ var db = getFirestore(app);
     facePoints.push({ x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY });
     updateCalibBanner();
     redrawFacePreview();
-    if (facePoints.length === 2 && currentUser) saveFaceProfile(currentUser.uid);
   });
 
   cameraBtn.addEventListener('click', startCamera);
@@ -576,69 +700,22 @@ var db = getFirestore(app);
   retakeBtn.addEventListener('click', retakeFace);
   fitSize.addEventListener('input', function () { fitSizeVal.textContent = fitSize.value + '%'; redrawFacePreview(); });
 
-  // ---------- firebase: face profile (single doc, embedded image) ----------
+  // ---------- add-frame tags ----------
 
-  function saveFaceProfile(uid) {
-    var dataUrl = shrinkToBudget(faceBaseCanvas, FACE_BYTE_BUDGET, 'image/jpeg', 0.82);
-    return setDoc(doc(db, 'users', uid, 'profile', 'face'), {
-      imageData: dataUrl, p1: facePoints[0], p2: facePoints[1], updatedAt: serverTimestamp()
-    }).catch(function (e) { console.error('Failed to save face profile', e); });
+  function renderAddChips() {
+    renderChipGroup(shapeChips, 'shape', pendingTags.shape, function (v) { pendingTags.shape = v; });
+    renderChipGroup(colorChips, 'color', pendingTags.color, function (v) { pendingTags.color = v; });
+    renderChipGroup(genderChips, 'gender', pendingTags.gender, function (v) { pendingTags.gender = v; });
+    renderChipGroup(rimChips, 'rim', pendingTags.rim, function (v) { pendingTags.rim = v; });
   }
-
-  function loadFaceProfile(uid) {
-    return getDoc(doc(db, 'users', uid, 'profile', 'face')).then(function (snap) {
-      if (!snap.exists()) return;
-      var data = snap.data();
-      return new Promise(function (resolve) {
-        var img = new Image();
-        img.onload = function () {
-          faceBaseCanvas.width = img.naturalWidth; faceBaseCanvas.height = img.naturalHeight;
-          faceBaseCanvas.getContext('2d').drawImage(img, 0, 0);
-          canvas.width = img.naturalWidth; canvas.height = img.naturalHeight;
-          facePoints = [data.p1, data.p2];
-          faceHasImage = true;
-          placeholder.style.display = 'none';
-          canvas.style.display = 'block';
-          retakeBtn.style.display = 'inline-block';
-          redrawFacePreview();
-          updateCalibBanner();
-          resolve();
-        };
-        img.onerror = function () { resolve(); };
-        img.src = data.imageData;
-      });
-    }).catch(function (e) { console.error('Failed to load face profile', e); });
-  }
-
-  // ---------- tags ----------
 
   function resetTagInputs() {
-    pendingTags = { shape: null, color: null, gender: null, free: [] };
-    [shapeChips, colorChips, genderChips].forEach(function (row) {
-      row.querySelectorAll('.tag-chip').forEach(function (c) { c.classList.remove('active'); });
-    });
+    pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
+    renderAddChips();
     freeTagInput.value = '';
     renderFreeTagList();
   }
-
-  function wireFacetChips(row, facet) {
-    row.querySelectorAll('.tag-chip').forEach(function (chip) {
-      chip.addEventListener('click', function () {
-        var val = chip.dataset.val;
-        if (pendingTags[facet] === val) {
-          pendingTags[facet] = null;
-          chip.classList.remove('active');
-        } else {
-          row.querySelectorAll('.tag-chip').forEach(function (c) { c.classList.remove('active'); });
-          pendingTags[facet] = val;
-          chip.classList.add('active');
-        }
-      });
-    });
-  }
-  wireFacetChips(shapeChips, 'shape');
-  wireFacetChips(colorChips, 'color');
-  wireFacetChips(genderChips, 'gender');
+  renderAddChips();
 
   function renderFreeTagList() {
     freeTagList.innerHTML = '';
@@ -666,20 +743,173 @@ var db = getFirestore(app);
     });
   }
 
-  function addFreeTag(raw) {
-    var t = raw.trim().toLowerCase();
-    if (!t || pendingTags.free.indexOf(t) !== -1) return;
-    pendingTags.free.push(t);
-    renderFreeTagList();
-    if (!allFreeTags.has(t)) { allFreeTags.add(t); refreshTagSuggestions(); }
-  }
-
   freeTagInput.addEventListener('keydown', function (e) {
     if (e.key === 'Enter') {
       e.preventDefault();
-      addFreeTag(freeTagInput.value);
+      var t = freeTagInput.value.trim().toLowerCase();
+      if (t && pendingTags.free.indexOf(t) === -1) {
+        pendingTags.free.push(t);
+        renderFreeTagList();
+        if (!allFreeTags.has(t)) { allFreeTags.add(t); refreshTagSuggestions(); }
+      }
       freeTagInput.value = '';
     }
+  });
+
+  // ---------- single-frame tag editing ----------
+
+  function renderEditFreeTagList() {
+    editFreeTagList.innerHTML = '';
+    editPendingTags.free.forEach(function (t) {
+      var chip = document.createElement('span');
+      chip.className = 'tag-chip removable';
+      chip.appendChild(document.createTextNode(t + ' '));
+      var x = document.createElement('span');
+      x.textContent = '\u00d7';
+      x.addEventListener('click', function () {
+        editPendingTags.free = editPendingTags.free.filter(function (f) { return f !== t; });
+        renderEditFreeTagList();
+      });
+      chip.appendChild(x);
+      editFreeTagList.appendChild(chip);
+    });
+  }
+
+  function openEditTags(id) {
+    var entry = findEntry(id);
+    if (!entry) return;
+    editingFrameId = id;
+    var t = entry.tags || {};
+    editPendingTags = { shape: t.shape || null, color: t.color || null, gender: t.gender || null, rim: t.rim || null, free: (t.free || []).slice() };
+
+    editThumbWrap.innerHTML = '';
+    var img = document.createElement('img');
+    img.src = entry.thumbData;
+    editThumbWrap.appendChild(img);
+
+    renderChipGroup(editShapeChips, 'shape', editPendingTags.shape, function (v) { editPendingTags.shape = v; });
+    renderChipGroup(editColorChips, 'color', editPendingTags.color, function (v) { editPendingTags.color = v; });
+    renderChipGroup(editGenderChips, 'gender', editPendingTags.gender, function (v) { editPendingTags.gender = v; });
+    renderChipGroup(editRimChips, 'rim', editPendingTags.rim, function (v) { editPendingTags.rim = v; });
+    renderEditFreeTagList();
+    editFreeTagInput.value = '';
+
+    editTagsPanel.style.display = 'block';
+    editTagsPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  function closeEditTags() {
+    editTagsPanel.style.display = 'none';
+    editingFrameId = null;
+    editPendingTags = null;
+  }
+
+  editFreeTagInput.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      var t = editFreeTagInput.value.trim().toLowerCase();
+      if (t && editPendingTags.free.indexOf(t) === -1) {
+        editPendingTags.free.push(t);
+        renderEditFreeTagList();
+        if (!allFreeTags.has(t)) { allFreeTags.add(t); refreshTagSuggestions(); }
+      }
+      editFreeTagInput.value = '';
+    }
+  });
+
+  cancelEditTagsBtn.addEventListener('click', closeEditTags);
+
+  saveTagsBtn.addEventListener('click', function () {
+    if (!editingFrameId || !currentUser || !editPendingTags) return;
+    var id = editingFrameId;
+    var newTags = {
+      shape: editPendingTags.shape, color: editPendingTags.color,
+      gender: editPendingTags.gender, rim: editPendingTags.rim,
+      free: editPendingTags.free.slice()
+    };
+    saveTagsBtn.disabled = true;
+    updateDoc(doc(db, 'users', currentUser.uid, 'frames', id), { tags: newTags }).then(function () {
+      var entry = findEntry(id);
+      if (entry) entry.tags = newTags;
+      saveTagsBtn.disabled = false;
+      renderLibrary();
+      rebuildFilterBar();
+      applyFilters();
+      if (activeFrameId === id) updateSelectedBanner();
+      closeEditTags();
+    }).catch(function (e) {
+      console.error('Failed to save tags', e);
+      saveTagsBtn.disabled = false;
+    });
+  });
+
+  // ---------- select mode / bulk tag editing ----------
+
+  function renderBulkChips() {
+    renderChipGroup(bulkShapeChips, 'shape', bulkPending.shape, function (v) { bulkPending.shape = v; bulkTouched.shape = true; updateApplyBulkState(); });
+    renderChipGroup(bulkColorChips, 'color', bulkPending.color, function (v) { bulkPending.color = v; bulkTouched.color = true; updateApplyBulkState(); });
+    renderChipGroup(bulkGenderChips, 'gender', bulkPending.gender, function (v) { bulkPending.gender = v; bulkTouched.gender = true; updateApplyBulkState(); });
+    renderChipGroup(bulkRimChips, 'rim', bulkPending.rim, function (v) { bulkPending.rim = v; bulkTouched.rim = true; updateApplyBulkState(); });
+  }
+
+  function updateBulkCountLabel() {
+    bulkCountLabel.textContent = selectedIds.size + ' selected';
+  }
+
+  function updateApplyBulkState() {
+    var anyTouched = bulkTouched.shape || bulkTouched.color || bulkTouched.gender || bulkTouched.rim;
+    applyBulkBtn.disabled = !(selectedIds.size > 0 && anyTouched);
+  }
+
+  function enterSelectMode() {
+    selectMode = true;
+    selectedIds = new Set();
+    bulkPending = { shape: null, color: null, gender: null, rim: null };
+    bulkTouched = { shape: false, color: false, gender: false, rim: false };
+    renderBulkChips();
+    bulkBar.style.display = 'block';
+    updateBulkCountLabel();
+    updateApplyBulkState();
+    renderLibrary();
+  }
+
+  function exitSelectMode() {
+    selectMode = false;
+    selectedIds = new Set();
+    bulkBar.style.display = 'none';
+    renderLibrary();
+  }
+
+  selectModeBtn.addEventListener('click', enterSelectMode);
+  exitSelectModeBtn.addEventListener('click', exitSelectMode);
+
+  applyBulkBtn.addEventListener('click', function () {
+    if (!currentUser || !selectedIds.size) return;
+    applyBulkBtn.disabled = true;
+    var uid = currentUser.uid;
+    var patch = {};
+    if (bulkTouched.shape) patch.shape = bulkPending.shape;
+    if (bulkTouched.color) patch.color = bulkPending.color;
+    if (bulkTouched.gender) patch.gender = bulkPending.gender;
+    if (bulkTouched.rim) patch.rim = bulkPending.rim;
+
+    var ids = Array.from(selectedIds);
+    var writes = ids.map(function (id) {
+      var entry = findEntry(id);
+      if (!entry) return Promise.resolve();
+      var newTags = Object.assign({}, entry.tags, patch);
+      return updateDoc(doc(db, 'users', uid, 'frames', id), { tags: newTags }).then(function () {
+        entry.tags = newTags;
+      });
+    });
+
+    Promise.all(writes).then(function () {
+      rebuildFilterBar();
+      exitSelectMode();
+    }).catch(function (e) {
+      console.error('Bulk tag update failed', e);
+      applyBulkBtn.disabled = false;
+    });
   });
 
   // ---------- filtering ----------
@@ -689,8 +919,9 @@ var db = getFirestore(app);
     if (activeFilters.shape.size && !activeFilters.shape.has(t.shape)) return false;
     if (activeFilters.color.size && !activeFilters.color.has(t.color)) return false;
     if (activeFilters.gender.size && !activeFilters.gender.has(t.gender)) return false;
+    if (activeFilters.rim.size && !activeFilters.rim.has(t.rim)) return false;
     if (activeFilters.search) {
-      var hay = normalizeSearch([t.shape, t.color, t.gender].concat(t.free || []).filter(Boolean).join(' '));
+      var hay = normalizeSearch([t.shape, t.color, t.gender, t.rim].concat(t.free || []).filter(Boolean).join(' '));
       if (hay.indexOf(activeFilters.search) === -1) return false;
     }
     return true;
@@ -736,17 +967,19 @@ var db = getFirestore(app);
     if (!catalogIndex.length) { filterBar.style.display = 'none'; return; }
     filterBar.style.display = 'block';
 
-    var shapes = new Set(), colors = new Set(), genders = new Set();
+    var shapes = new Set(), colors = new Set(), genders = new Set(), rims = new Set();
     catalogIndex.forEach(function (e) {
       var t = e.tags || {};
       if (t.shape) shapes.add(t.shape);
       if (t.color) colors.add(t.color);
       if (t.gender) genders.add(t.gender);
+      if (t.rim) rims.add(t.rim);
     });
 
     appendFilterGroup('Shape', 'shape', shapes);
     appendFilterGroup('Color', 'color', colors);
     appendFilterGroup('Gender', 'gender', genders);
+    appendFilterGroup('Rim type', 'rim', rims);
 
     var searchWrap = document.createElement('div');
     searchWrap.className = 'filter-search-row';
@@ -763,7 +996,7 @@ var db = getFirestore(app);
     clearBtn.className = 'btn ghost';
     clearBtn.textContent = 'Clear filters';
     clearBtn.addEventListener('click', function () {
-      activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), search: '' };
+      activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
       rebuildFilterBar();
       applyFilters();
     });
@@ -775,17 +1008,24 @@ var db = getFirestore(app);
   function renderLibrary() {
     libraryRow.innerHTML = '';
     catalogIndex.forEach(function (entry) {
+      var isSelected = selectMode && selectedIds.has(entry.id);
       var card = document.createElement('div');
-      card.className = 'frame-card';
+      card.className = 'frame-card' + (isSelected ? ' selected' : '');
       card.dataset.id = entry.id;
 
-      var rm = document.createElement('button');
-      rm.type = 'button';
-      rm.className = 'frame-card-remove';
-      rm.textContent = '\u00d7';
-      rm.setAttribute('aria-label', 'Remove frame');
-      rm.addEventListener('click', function (e) { e.stopPropagation(); removeFrame(entry.id); });
-      card.appendChild(rm);
+      var mark = document.createElement('span');
+      mark.className = 'frame-card-select-mark';
+      card.appendChild(mark);
+
+      if (!selectMode) {
+        var rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'frame-card-remove';
+        rm.textContent = '\u00d7';
+        rm.setAttribute('aria-label', 'Remove frame');
+        rm.addEventListener('click', function (e) { e.stopPropagation(); removeFrame(entry.id); });
+        card.appendChild(rm);
+      }
 
       var imgWrap = document.createElement('div');
       imgWrap.className = 'frame-card-image';
@@ -798,7 +1038,7 @@ var db = getFirestore(app);
 
       var tagsWrap = document.createElement('div');
       tagsWrap.className = 'frame-card-tags';
-      var parts = [entry.tags.shape, entry.tags.color, entry.tags.gender].filter(Boolean);
+      var parts = [entry.tags.shape, entry.tags.color, entry.tags.gender, entry.tags.rim].filter(Boolean);
       if (!parts.length) {
         var span = document.createElement('span');
         span.className = 'tag-chip';
@@ -806,22 +1046,45 @@ var db = getFirestore(app);
         tagsWrap.appendChild(span);
       } else {
         parts.forEach(function (p) {
-          var span = document.createElement('span');
-          span.className = 'tag-chip';
-          span.textContent = labelize(p);
-          tagsWrap.appendChild(span);
+          var s = document.createElement('span');
+          s.className = 'tag-chip';
+          s.textContent = labelize(p);
+          tagsWrap.appendChild(s);
         });
       }
       card.appendChild(tagsWrap);
 
-      var tryBtn = document.createElement('button');
-      tryBtn.type = 'button';
-      tryBtn.className = 'btn primary frame-card-tryon';
-      tryBtn.textContent = 'Try it on';
-      tryBtn.addEventListener('click', function (e) { e.stopPropagation(); selectFrame(entry.id); });
-      card.appendChild(tryBtn);
+      if (!selectMode) {
+        var actions = document.createElement('div');
+        actions.className = 'frame-card-actions';
 
-      card.addEventListener('click', function () { selectFrame(entry.id); });
+        var tryBtn = document.createElement('button');
+        tryBtn.type = 'button';
+        tryBtn.className = 'btn primary frame-card-tryon';
+        tryBtn.textContent = 'Try it on';
+        tryBtn.addEventListener('click', function (e) { e.stopPropagation(); selectFrame(entry.id); });
+        actions.appendChild(tryBtn);
+
+        var editBtn = document.createElement('button');
+        editBtn.type = 'button';
+        editBtn.className = 'btn ghost frame-card-edit';
+        editBtn.textContent = 'Edit';
+        editBtn.addEventListener('click', function (e) { e.stopPropagation(); openEditTags(entry.id); });
+        actions.appendChild(editBtn);
+
+        card.appendChild(actions);
+      }
+
+      card.addEventListener('click', function () {
+        if (selectMode) {
+          if (selectedIds.has(entry.id)) selectedIds.delete(entry.id); else selectedIds.add(entry.id);
+          card.classList.toggle('selected');
+          updateBulkCountLabel();
+          updateApplyBulkState();
+        } else {
+          selectFrame(entry.id);
+        }
+      });
 
       libraryRow.appendChild(card);
     });
@@ -830,14 +1093,15 @@ var db = getFirestore(app);
 
   function updateCatalogNote() {
     catalogNote.textContent = catalogIndex.length
-      ? catalogIndex.length + ' frame' + (catalogIndex.length === 1 ? '' : 's') + ' in your catalog.'
-      : 'Nothing saved yet \u2014 add your first frame on the Add Frames tab.';
+      ? catalogIndex.length + ' frame' + (catalogIndex.length === 1 ? '' : 's') + ' in the catalog.'
+      : 'Nothing saved yet \u2014 add the first frame on the Add Frames tab.';
   }
 
   function removeFrame(id) {
     if (!currentUser) return;
     catalogIndex = catalogIndex.filter(function (f) { return f.id !== id; });
     delete fullDataCache[id];
+    selectedIds.delete(id);
     var el = libraryRow.querySelector('[data-id="' + id + '"]');
     if (el) el.parentNode.removeChild(el);
     if (activeFrameId === id) { activeFrameId = null; redrawFacePreview(); }
@@ -861,6 +1125,14 @@ var db = getFirestore(app);
     updateTryOnHint();
     updateSimilarCarousel();
     redrawFacePreview();
+    var entry = findEntry(id);
+    if (entry) {
+      track('frame_tried_on', {
+        shape: entry.tags.shape || 'untagged',
+        color: entry.tags.color || 'untagged',
+        rim: entry.tags.rim || 'untagged'
+      });
+    }
   }
 
   function loadCatalog(uid) {
@@ -905,6 +1177,7 @@ var db = getFirestore(app);
     frameCalibPoints = [];
     alreadyTransparentCheckbox.checked = false;
     toleranceRow.style.display = 'block';
+    autoTrimSuggested = false;
     trimLeft.value = 0; trimRight.value = 0;
     trimLeftVal.textContent = '0%'; trimRightVal.textContent = '0%';
     resetTagInputs();
@@ -978,6 +1251,16 @@ var db = getFirestore(app);
     pctx.drawImage(pendingRawCanvas, 0, 0);
     var imgData = pctx.getImageData(0, 0, w, h);
     if (!alreadyTransparentCheckbox.checked) removeBackground(imgData, parseInt(bgTolerance.value, 10));
+
+    if (!autoTrimSuggested) {
+      var suggestion = suggestTrim(imgData);
+      trimLeft.value = Math.round(suggestion.left * 100);
+      trimRight.value = Math.round(suggestion.right * 100);
+      trimLeftVal.textContent = trimLeft.value + '%';
+      trimRightVal.textContent = trimRight.value + '%';
+      autoTrimSuggested = true;
+    }
+
     trimSides(imgData, trimLeft.value / 100, trimRight.value / 100);
     pctx.putImageData(imgData, 0, 0);
 
@@ -1013,6 +1296,7 @@ var db = getFirestore(app);
   });
   trimLeft.addEventListener('input', function () { trimLeftVal.textContent = trimLeft.value + '%'; processPendingFrame(); });
   trimRight.addEventListener('input', function () { trimRightVal.textContent = trimRight.value + '%'; processPendingFrame(); });
+  autoTrimBtn.addEventListener('click', function () { autoTrimSuggested = false; processPendingFrame(); });
 
   frameCalibCanvas.addEventListener('click', function (e) {
     if (!pendingRawCanvas || frameCalibPoints.length >= 2) return;
@@ -1050,7 +1334,7 @@ var db = getFirestore(app);
     var thumbData = shrinkToBudget(thumbCanvas, THUMB_BYTE_BUDGET, 'image/png');
 
     var p1 = frameCalibPoints[0], p2 = frameCalibPoints[1];
-    var tags = { shape: pendingTags.shape, color: pendingTags.color, gender: pendingTags.gender, free: pendingTags.free.slice() };
+    var tags = { shape: pendingTags.shape, color: pendingTags.color, gender: pendingTags.gender, rim: pendingTags.rim, free: pendingTags.free.slice() };
 
     Promise.all([
       setDoc(doc(db, 'users', uid, 'frames', id), { thumbData: thumbData, tags: tags, createdAt: serverTimestamp() }),
@@ -1065,6 +1349,7 @@ var db = getFirestore(app);
       rebuildFilterBar();
       applyFilters();
       updateCatalogNote();
+      track('frame_added', { shape: tags.shape || 'untagged', color: tags.color || 'untagged', rim: tags.rim || 'untagged' });
 
       pendingRawCanvas = null;
       frameSourcePlaceholder.textContent = 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
