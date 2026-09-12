@@ -47,6 +47,7 @@ h1 { font-size: clamp(24px, 5.5vw, 34px); font-weight: 700; line-height: 1.08; m
 .btn.primary { background: var(--fundus); border-color: var(--fundus); color: #FFFFFF; }
 .btn.primary:hover { background: var(--fundus-dim); border-color: var(--fundus-dim); }
 .btn.ghost { color: var(--muted); background: transparent; }
+.btn.ghost.active { color: #FFFFFF; background: var(--slitlamp); border-color: var(--slitlamp); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .btn:disabled:hover { border-color: var(--line); }
 

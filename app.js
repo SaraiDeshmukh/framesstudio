@@ -244,6 +244,8 @@ function track(eventName, params) {
   var trimLeftVal = document.getElementById('trimLeftVal');
   var trimRightVal = document.getElementById('trimRightVal');
   var autoTrimBtn = document.getElementById('autoTrimBtn');
+  var eraseSpotBtn = document.getElementById('eraseSpotBtn');
+  var eraseSpotHint = document.getElementById('eraseSpotHint');
   var frameCalibCanvas = document.getElementById('frameCalibCanvas');
   var fctx = frameCalibCanvas.getContext('2d');
   var frameCalibBanner = document.getElementById('frameCalibBanner');
@@ -277,6 +279,8 @@ function track(eventName, params) {
   var frameCalibPoints = [];
   var pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
   var autoTrimSuggested = false;
+  var eraseSpots = [];
+  var eraseModeActive = false;
 
   var selectMode = false;
   var selectedIds = new Set();
@@ -369,20 +373,164 @@ function track(eventName, params) {
     }
   }
 
-  function removeBackground(imageData, tolerance) {
-    var data = imageData.data;
-    var w = imageData.width, h = imageData.height;
-    function samplePx(x, y) { var i = (y * w + x) * 4; return [data[i], data[i + 1], data[i + 2]]; }
-    var corners = [samplePx(0, 0), samplePx(w - 1, 0), samplePx(0, h - 1), samplePx(w - 1, h - 1)];
-    var bg = [0, 0, 0];
-    corners.forEach(function (c) { bg[0] += c[0] / 4; bg[1] += c[1] / 4; bg[2] += c[2] / 4; });
-    var soft = Math.max(8, tolerance * 0.6);
-    for (var i = 0; i < data.length; i += 4) {
-      var dr = data[i] - bg[0], dg = data[i + 1] - bg[1], db = data[i + 2] - bg[2];
-      var d = Math.sqrt(dr * dr + dg * dg + db * db);
-      if (d < tolerance) data[i + 3] = 0;
-      else if (d < tolerance + soft) data[i + 3] = Math.round(255 * (d - tolerance) / soft);
+  // Samples a small patch (average, not a single pixel) at each corner so sensor
+  // noise/paper grain doesn't skew the reference color used there.
+  function sampleCornerPatch(data, w, h, cx, cy) {
+    var half = Math.max(1, Math.floor(Math.min(w, h) * 0.03));
+    var x0 = Math.max(0, cx - half), x1 = Math.min(w - 1, cx + half);
+    var y0 = Math.max(0, cy - half), y1 = Math.min(h - 1, cy + half);
+    var sum = [0, 0, 0], n = 0;
+    for (var y = y0; y <= y1; y++) {
+      for (var x = x0; x <= x1; x++) {
+        var i = (y * w + x) * 4;
+        sum[0] += data[i]; sum[1] += data[i + 1]; sum[2] += data[i + 2]; n++;
+      }
     }
+    return [sum[0] / n, sum[1] / n, sum[2] / n];
+  }
+
+  // Removes background by comparing each pixel to a background estimate that is
+  // BILINEARLY INTERPOLATED across the image from its four corners, instead of one
+  // flat global average. A single flat reference is what let uneven lighting (a soft
+  // shadow gathering toward one side of the shot) survive as leftover opaque background
+  // in the old version -- interpolating per-pixel means the reference itself already
+  // accounts for that gradient. Being purely color-based (not connectivity-based) also
+  // means it reaches background-colored pixels trapped inside an enclosed area, like
+  // the paper visible through a lens opening, which a border-seeded flood fill never could.
+  function removeBackground(imageData, tolerance) {
+    var data = imageData.data, w = imageData.width, h = imageData.height;
+    var c00 = sampleCornerPatch(data, w, h, 0, 0);
+    var c10 = sampleCornerPatch(data, w, h, w - 1, 0);
+    var c01 = sampleCornerPatch(data, w, h, 0, h - 1);
+    var c11 = sampleCornerPatch(data, w, h, w - 1, h - 1);
+    var soft = Math.max(8, tolerance * 0.6);
+
+    for (var y = 0; y < h; y++) {
+      var fy = h > 1 ? y / (h - 1) : 0;
+      for (var x = 0; x < w; x++) {
+        var fx = w > 1 ? x / (w - 1) : 0;
+        var topRr = c00[0] + (c10[0] - c00[0]) * fx;
+        var topGg = c00[1] + (c10[1] - c00[1]) * fx;
+        var topBb = c00[2] + (c10[2] - c00[2]) * fx;
+        var botRr = c01[0] + (c11[0] - c01[0]) * fx;
+        var botGg = c01[1] + (c11[1] - c01[1]) * fx;
+        var botBb = c01[2] + (c11[2] - c01[2]) * fx;
+        var bgR = topRr + (botRr - topRr) * fy;
+        var bgG = topGg + (botGg - topGg) * fy;
+        var bgB = topBb + (botBb - topBb) * fy;
+
+        var i = (y * w + x) * 4;
+        var dr = data[i] - bgR, dg = data[i + 1] - bgG, db = data[i + 2] - bgB;
+        var d = Math.sqrt(dr * dr + dg * dg + db * db);
+        if (d < tolerance) data[i + 3] = 0;
+        else if (d < tolerance + soft) data[i + 3] = Math.round(255 * (d - tolerance) / soft);
+      }
+    }
+
+    keepLargestOpaqueRegion(imageData);
+    featherEdges(imageData);
+  }
+
+  // After the flood fill, anything still opaque that ISN'T part of the frame's own
+  // silhouette is almost always leftover clutter showing through the lens opening --
+  // a finger, a reflection, a shadow blob -- because it's fully surrounded by the lens
+  // area that just got cleared to transparent. Keep only the largest connected opaque
+  // region (the frame itself) and clear every smaller disconnected island.
+  function keepLargestOpaqueRegion(imageData) {
+    var data = imageData.data, w = imageData.width, h = imageData.height;
+    var n = w * h;
+    var labels = new Int32Array(n).fill(-1);
+    var qx = new Int32Array(n), qy = new Int32Array(n);
+    var sizes = [];
+
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var id = y * w + x;
+        if (labels[id] !== -1) continue;
+        if (data[id * 4 + 3] < 10) { labels[id] = -2; continue; }
+        var label = sizes.length;
+        var qHead = 0, qTail = 0;
+        qx[qTail] = x; qy[qTail] = y; qTail++;
+        labels[id] = label;
+        var count = 0;
+        while (qHead < qTail) {
+          var cx = qx[qHead], cy = qy[qHead]; qHead++;
+          count++;
+          var neighbors = [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]];
+          for (var k = 0; k < 4; k++) {
+            var nx = neighbors[k][0], ny = neighbors[k][1];
+            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+            var nid = ny * w + nx;
+            if (labels[nid] !== -1) continue;
+            if (data[nid * 4 + 3] < 10) { labels[nid] = -2; continue; }
+            labels[nid] = label;
+            qx[qTail] = nx; qy[qTail] = ny; qTail++;
+          }
+        }
+        sizes.push(count);
+      }
+    }
+
+    if (!sizes.length) return;
+    var maxLabel = 0, maxSize = sizes[0];
+    for (var l = 1; l < sizes.length; l++) { if (sizes[l] > maxSize) { maxSize = sizes[l]; maxLabel = l; } }
+    for (var id2 = 0; id2 < n; id2++) { if (labels[id2] >= 0 && labels[id2] !== maxLabel) data[id2 * 4 + 3] = 0; }
+  }
+
+  // Light feather so the hard flood-fill cutout doesn't leave jagged pixel edges --
+  // only touches pixels adjacent to an alpha transition, so solid interior/exterior
+  // regions are left untouched.
+  function featherEdges(imageData) {
+    var data = imageData.data, w = imageData.width, h = imageData.height;
+    var origA = new Uint8ClampedArray(w * h);
+    for (var p = 0; p < w * h; p++) origA[p] = data[p * 4 + 3];
+    for (var y = 1; y < h - 1; y++) {
+      for (var x = 1; x < w - 1; x++) {
+        var id = y * w + x;
+        var a = origA[id], an = origA[id - w], as = origA[id + w], ae = origA[id + 1], aw = origA[id - 1];
+        if (a === an && a === as && a === ae && a === aw) continue;
+        data[id * 4 + 3] = Math.round((a * 4 + an + as + ae + aw) / 8);
+      }
+    }
+  }
+
+  // Manual cleanup for whatever the automatic passes above don't catch (usually
+  // clutter that happens to touch the frame silhouette, so it survives the
+  // largest-region pass too). Erases the connected opaque blob under (x0, y0).
+  // Capped so an accidental tap on the frame itself can't wipe out the whole thing.
+  function eraseConnectedComponent(imageData, x0, y0) {
+    var data = imageData.data, w = imageData.width, h = imageData.height;
+    if (x0 < 0 || y0 < 0 || x0 >= w || y0 >= h) return false;
+    var startId = y0 * w + x0;
+    if (data[startId * 4 + 3] < 10) return false;
+
+    var n = w * h;
+    var visited = new Uint8Array(n);
+    var qx = new Int32Array(n), qy = new Int32Array(n);
+    var qHead = 0, qTail = 0;
+    qx[qTail] = x0; qy[qTail] = y0; qTail++;
+    visited[startId] = 1;
+    var cap = Math.max(2000, Math.round(n * 0.15));
+    var collected = [startId];
+
+    while (qHead < qTail) {
+      var cx = qx[qHead], cy = qy[qHead]; qHead++;
+      if (collected.length > cap) return false; // too big to be a stray artifact -- bail out untouched
+      var neighbors = [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]];
+      for (var k = 0; k < 4; k++) {
+        var nx = neighbors[k][0], ny = neighbors[k][1];
+        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
+        var nid = ny * w + nx;
+        if (visited[nid]) continue;
+        visited[nid] = 1;
+        if (data[nid * 4 + 3] < 10) continue;
+        collected.push(nid);
+        qx[qTail] = nx; qy[qTail] = ny; qTail++;
+      }
+    }
+    if (collected.length > cap) return false;
+    collected.forEach(function (id) { data[id * 4 + 3] = 0; });
+    return true;
   }
 
   function trimSides(imageData, leftFrac, rightFrac) {
@@ -1178,6 +1326,8 @@ function track(eventName, params) {
     alreadyTransparentCheckbox.checked = false;
     toleranceRow.style.display = 'block';
     autoTrimSuggested = false;
+    eraseSpots = [];
+    setEraseMode(false);
     trimLeft.value = 0; trimRight.value = 0;
     trimLeftVal.textContent = '0%'; trimRightVal.textContent = '0%';
     resetTagInputs();
@@ -1262,6 +1412,7 @@ function track(eventName, params) {
     }
 
     trimSides(imgData, trimLeft.value / 100, trimRight.value / 100);
+    eraseSpots.forEach(function (p) { eraseConnectedComponent(imgData, p.x, p.y); });
     pctx.putImageData(imgData, 0, 0);
 
     frameCalibCanvas.width = w;
@@ -1298,11 +1449,27 @@ function track(eventName, params) {
   trimRight.addEventListener('input', function () { trimRightVal.textContent = trimRight.value + '%'; processPendingFrame(); });
   autoTrimBtn.addEventListener('click', function () { autoTrimSuggested = false; processPendingFrame(); });
 
+  function setEraseMode(on) {
+    eraseModeActive = on;
+    eraseSpotBtn.classList.toggle('active', on);
+    eraseSpotHint.style.display = on ? 'block' : 'none';
+    frameCalibCanvas.style.cursor = on ? 'crosshair' : '';
+  }
+  eraseSpotBtn.addEventListener('click', function () { setEraseMode(!eraseModeActive); });
+
   frameCalibCanvas.addEventListener('click', function (e) {
-    if (!pendingRawCanvas || frameCalibPoints.length >= 2) return;
+    if (!pendingRawCanvas) return;
     var rect = frameCalibCanvas.getBoundingClientRect();
     var scaleX = frameCalibCanvas.width / rect.width, scaleY = frameCalibCanvas.height / rect.height;
-    frameCalibPoints.push({ x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY });
+    var x = Math.round((e.clientX - rect.left) * scaleX), y = Math.round((e.clientY - rect.top) * scaleY);
+
+    if (eraseModeActive) {
+      eraseSpots.push({ x: x, y: y });
+      processPendingFrame();
+      return;
+    }
+    if (frameCalibPoints.length >= 2) return;
+    frameCalibPoints.push({ x: x, y: y });
     drawFrameCalibView();
   });
 
@@ -1367,6 +1534,8 @@ function track(eventName, params) {
   cancelFrameBtn.addEventListener('click', function () {
     pendingRawCanvas = null;
     frameCalibPoints = [];
+    eraseSpots = [];
+    setEraseMode(false);
     showFrameSourceChooser();
   });
 
