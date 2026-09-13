@@ -170,24 +170,12 @@
             <input type="range" id="bgTolerance" min="5" max="120" value="45">
           </div>
 
-          <div class="trim-pair">
-            <div class="tolerance-row">
-              <div class="slider-label">Trim left arm <span class="val" id="trimLeftVal">0%</span></div>
-              <input type="range" id="trimLeft" min="0" max="40" value="0">
-            </div>
-            <div class="tolerance-row">
-              <div class="slider-label">Trim right arm <span class="val" id="trimRightVal">0%</span></div>
-              <input type="range" id="trimRight" min="0" max="40" value="0">
-            </div>
-          </div>
-          <div class="row" style="margin-top:-8px">
-            <button class="btn ghost" id="autoTrimBtn" type="button">Re-detect automatically</button>
+          <div class="row">
             <button class="btn ghost" id="eraseSpotBtn" type="button">Erase</button>
             <button class="btn ghost" id="restoreSpotBtn" type="button">Restore</button>
             <button class="btn ghost" id="undoToolBtn" type="button" disabled>Undo</button>
           </div>
-          <div class="hint" id="autoTrimHint">Estimated automatically — adjust the sliders above if needed.</div>
-          <div class="hint" id="eraseSpotHint" style="display:none">Tap a small leftover bit to remove it, or drag over a bigger area like a hand or shadow. Tap "Erase" again to stop.</div>
+          <div class="hint" id="eraseSpotHint" style="display:none">Tap a small leftover bit to remove it, or drag over a bigger area — an arm showing through the lens, a hand, a shadow. Tap "Erase" again to stop.</div>
           <div class="hint" id="restoreSpotHint" style="display:none">Tap or drag to bring back part of the frame that got removed by mistake — common on very clear or light-colored frames. Tap "Restore" again to stop.</div>
 
           <div class="frame-calib-viewport">
