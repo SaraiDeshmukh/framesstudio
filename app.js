@@ -247,6 +247,7 @@ function track(eventName, params) {
   var eraseSpotHint = document.getElementById('eraseSpotHint');
   var restoreSpotBtn = document.getElementById('restoreSpotBtn');
   var restoreSpotHint = document.getElementById('restoreSpotHint');
+  var undoToolBtn = document.getElementById('undoToolBtn');
   var frameCalibCanvas = document.getElementById('frameCalibCanvas');
   var fctx = frameCalibCanvas.getContext('2d');
   var frameCalibBanner = document.getElementById('frameCalibBanner');
@@ -280,15 +281,15 @@ function track(eventName, params) {
   var frameCalibPoints = [];
   var pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
   var autoTrimSuggested = false;
-  var eraseSpots = [];
-  var eraseBrushPoints = [];
-  var restoreBrushPoints = [];
+  var toolHistory = []; // ordered actions: {type:'eraseSpot',x,y} | {type:'eraseStroke',points} | {type:'restoreStroke',points}
+  var currentStrokePoints = [];
+  var currentStrokeType = null; // 'erase' | 'restore', while a drag is in progress
   var eraseModeActive = false;
   var restoreModeActive = false;
   var eraseDragging = false;
   var eraseDownPos = null;
   var ERASE_DRAG_THRESHOLD = 6;
-  var ERASE_BRUSH_RADIUS = 24;
+  var ERASE_BRUSH_RADIUS = 10;
 
   var selectMode = false;
   var selectedIds = new Set();
@@ -437,6 +438,68 @@ function track(eventName, params) {
   // above. Being purely color-based (not connectivity-based) also means it reaches
   // background-colored pixels trapped inside an enclosed area, like the surface
   // visible through a lens opening, which a border-seeded flood fill never could.
+  // Shrinks the opaque region inward by `r` in a separable pass (min-filter along
+  // each axis), then grows it back out by the same amount with dilateAlpha. Run
+  // together this is a standard "opening": it snips off anything only as wide as a thin bridge
+  // (a reflection connected to the rim by a sliver of similarly-lit plastic) while
+  // leaving the substantial frame itself basically untouched, so the size-based
+  // region-keeping step below can then correctly recognize and discard the artifact.
+  function erodeAlpha(data, w, h, r) {
+    var src = new Uint8ClampedArray(w * h);
+    for (var p = 0; p < w * h; p++) src[p] = data[p * 4 + 3];
+    var tmp = new Uint8ClampedArray(w * h);
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var m = 255;
+        for (var dx = -r; dx <= r; dx++) {
+          var nx = x + dx; if (nx < 0 || nx >= w) continue;
+          var v = src[y * w + nx]; if (v < m) m = v;
+        }
+        tmp[y * w + x] = m;
+      }
+    }
+    var out = new Uint8ClampedArray(w * h);
+    for (var y2 = 0; y2 < h; y2++) {
+      for (var x2 = 0; x2 < w; x2++) {
+        var m2 = 255;
+        for (var dy = -r; dy <= r; dy++) {
+          var ny = y2 + dy; if (ny < 0 || ny >= h) continue;
+          var v2 = tmp[ny * w + x2]; if (v2 < m2) m2 = v2;
+        }
+        out[y2 * w + x2] = m2;
+      }
+    }
+    for (var i = 0; i < w * h; i++) data[i * 4 + 3] = out[i];
+  }
+
+  function dilateAlpha(data, w, h, r) {
+    var src = new Uint8ClampedArray(w * h);
+    for (var p = 0; p < w * h; p++) src[p] = data[p * 4 + 3];
+    var tmp = new Uint8ClampedArray(w * h);
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var m = 0;
+        for (var dx = -r; dx <= r; dx++) {
+          var nx = x + dx; if (nx < 0 || nx >= w) continue;
+          var v = src[y * w + nx]; if (v > m) m = v;
+        }
+        tmp[y * w + x] = m;
+      }
+    }
+    var out = new Uint8ClampedArray(w * h);
+    for (var y2 = 0; y2 < h; y2++) {
+      for (var x2 = 0; x2 < w; x2++) {
+        var m2 = 0;
+        for (var dy = -r; dy <= r; dy++) {
+          var ny = y2 + dy; if (ny < 0 || ny >= h) continue;
+          var v2 = tmp[ny * w + x2]; if (v2 > m2) m2 = v2;
+        }
+        out[y2 * w + x2] = m2;
+      }
+    }
+    for (var i = 0; i < w * h; i++) data[i * 4 + 3] = out[i];
+  }
+
   function removeBackground(imageData, tolerance) {
     var data = imageData.data, w = imageData.width, h = imageData.height;
     var model = buildBackgroundModel(data, w, h);
@@ -452,6 +515,10 @@ function track(eventName, params) {
         else if (d < tolerance + soft) data[i + 3] = Math.round(255 * (d - tolerance) / soft);
       }
     }
+
+    var openRadius = 2;
+    erodeAlpha(data, w, h, openRadius);
+    dilateAlpha(data, w, h, openRadius);
 
     keepLargeOpaqueRegions(imageData);
     featherEdges(imageData);
@@ -1393,10 +1460,9 @@ function track(eventName, params) {
     frameCalibPoints = [];
     toleranceRow.style.display = 'block';
     autoTrimSuggested = false;
-    eraseSpots = [];
-    eraseBrushPoints = [];
-    restoreBrushPoints = [];
+    toolHistory = [];
     setTool('none');
+    updateUndoState();
     trimLeft.value = 0; trimRight.value = 0;
     trimLeftVal.textContent = '0%'; trimRightVal.textContent = '0%';
     resetTagInputs();
@@ -1481,12 +1547,23 @@ function track(eventName, params) {
     }
 
     trimSides(imgData, trimLeft.value / 100, trimRight.value / 100);
-    eraseSpots.forEach(function (p) { eraseConnectedComponent(imgData, p.x, p.y); });
-    eraseBrushPoints.forEach(function (p) { eraseBrush(imgData, p.x, p.y, p.radius); });
-    if (restoreBrushPoints.length) {
-      var rawData = pendingRawCanvas.getContext('2d').getImageData(0, 0, w, h);
-      restoreBrushPoints.forEach(function (p) { restoreBrush(rawData, imgData, p.x, p.y, p.radius); });
+
+    var needsRaw = currentStrokeType === 'restore';
+    for (var hIdx = 0; !needsRaw && hIdx < toolHistory.length; hIdx++) {
+      if (toolHistory[hIdx].type === 'restoreStroke') needsRaw = true;
     }
+    var rawData = needsRaw ? pendingRawCanvas.getContext('2d').getImageData(0, 0, w, h) : null;
+
+    function applyToolAction(action) {
+      if (action.type === 'eraseSpot') eraseConnectedComponent(imgData, action.x, action.y);
+      else if (action.type === 'eraseStroke') action.points.forEach(function (p) { eraseBrush(imgData, p.x, p.y, p.radius); });
+      else if (action.type === 'restoreStroke') action.points.forEach(function (p) { restoreBrush(rawData, imgData, p.x, p.y, p.radius); });
+    }
+    toolHistory.forEach(applyToolAction);
+    if (currentStrokePoints.length) {
+      applyToolAction({ type: currentStrokeType === 'erase' ? 'eraseStroke' : 'restoreStroke', points: currentStrokePoints });
+    }
+
     pctx.putImageData(imgData, 0, 0);
 
     frameCalibCanvas.width = w;
@@ -1529,6 +1606,8 @@ function track(eventName, params) {
     frameCalibCanvas.style.cursor = (eraseModeActive || restoreModeActive) ? 'crosshair' : '';
     eraseDragging = false;
     eraseDownPos = null;
+    currentStrokePoints = [];
+    currentStrokeType = null;
   }
   eraseSpotBtn.addEventListener('click', function () { setTool(eraseModeActive ? 'none' : 'erase'); });
   restoreSpotBtn.addEventListener('click', function () { setTool(restoreModeActive ? 'none' : 'restore'); });
@@ -1539,10 +1618,17 @@ function track(eventName, params) {
     return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
   }
 
-  function addToolStroke(x, y) {
-    if (eraseModeActive) eraseBrushPoints.push({ x: x, y: y, radius: ERASE_BRUSH_RADIUS });
-    else if (restoreModeActive) restoreBrushPoints.push({ x: x, y: y, radius: ERASE_BRUSH_RADIUS });
+  function updateUndoState() {
+    undoToolBtn.disabled = !toolHistory.length;
   }
+
+  function undoLastToolAction() {
+    if (!toolHistory.length) return;
+    toolHistory.pop();
+    processPendingFrame();
+    updateUndoState();
+  }
+  undoToolBtn.addEventListener('click', undoLastToolAction);
 
   frameCalibCanvas.addEventListener('click', function (e) {
     if (!pendingRawCanvas || eraseModeActive || restoreModeActive) return; // handled by the pointer events below
@@ -1556,6 +1642,8 @@ function track(eventName, params) {
     if (!pendingRawCanvas || (!eraseModeActive && !restoreModeActive)) return;
     eraseDownPos = imagePosFromEvent(e);
     eraseDragging = false;
+    currentStrokePoints = [];
+    currentStrokeType = eraseModeActive ? 'erase' : 'restore';
     frameCalibCanvas.setPointerCapture(e.pointerId);
   });
 
@@ -1565,10 +1653,10 @@ function track(eventName, params) {
     var dx = pos.x - eraseDownPos.x, dy = pos.y - eraseDownPos.y;
     if (!eraseDragging && Math.sqrt(dx * dx + dy * dy) > ERASE_DRAG_THRESHOLD) {
       eraseDragging = true;
-      addToolStroke(eraseDownPos.x, eraseDownPos.y);
+      currentStrokePoints.push({ x: eraseDownPos.x, y: eraseDownPos.y, radius: ERASE_BRUSH_RADIUS });
     }
     if (eraseDragging) {
-      addToolStroke(pos.x, pos.y);
+      currentStrokePoints.push({ x: pos.x, y: pos.y, radius: ERASE_BRUSH_RADIUS });
       processPendingFrame();
     }
   });
@@ -1576,12 +1664,20 @@ function track(eventName, params) {
   frameCalibCanvas.addEventListener('pointerup', function (e) {
     if (!pendingRawCanvas || (!eraseModeActive && !restoreModeActive) || !eraseDownPos) { eraseDownPos = null; return; }
     if (!eraseDragging) {
-      if (eraseModeActive) eraseSpots.push({ x: Math.round(eraseDownPos.x), y: Math.round(eraseDownPos.y) });
-      else addToolStroke(eraseDownPos.x, eraseDownPos.y);
-      processPendingFrame();
+      if (eraseModeActive) {
+        toolHistory.push({ type: 'eraseSpot', x: Math.round(eraseDownPos.x), y: Math.round(eraseDownPos.y) });
+      } else {
+        toolHistory.push({ type: 'restoreStroke', points: [{ x: eraseDownPos.x, y: eraseDownPos.y, radius: ERASE_BRUSH_RADIUS }] });
+      }
+    } else {
+      toolHistory.push({ type: currentStrokeType === 'erase' ? 'eraseStroke' : 'restoreStroke', points: currentStrokePoints.slice() });
     }
+    currentStrokePoints = [];
+    currentStrokeType = null;
     eraseDownPos = null;
     eraseDragging = false;
+    processPendingFrame();
+    updateUndoState();
   });
 
   function makeThumbCanvas(imgSource, size) {
@@ -1645,10 +1741,9 @@ function track(eventName, params) {
   cancelFrameBtn.addEventListener('click', function () {
     pendingRawCanvas = null;
     frameCalibPoints = [];
-    eraseSpots = [];
-    eraseBrushPoints = [];
-    restoreBrushPoints = [];
+    toolHistory = [];
     setTool('none');
+    updateUndoState();
     showFrameSourceChooser();
   });
 
