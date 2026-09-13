@@ -238,11 +238,6 @@ function track(eventName, params) {
   var toleranceRow = document.getElementById('toleranceRow');
   var bgTolerance = document.getElementById('bgTolerance');
   var bgToleranceVal = document.getElementById('bgToleranceVal');
-  var trimLeft = document.getElementById('trimLeft');
-  var trimRight = document.getElementById('trimRight');
-  var trimLeftVal = document.getElementById('trimLeftVal');
-  var trimRightVal = document.getElementById('trimRightVal');
-  var autoTrimBtn = document.getElementById('autoTrimBtn');
   var eraseSpotBtn = document.getElementById('eraseSpotBtn');
   var eraseSpotHint = document.getElementById('eraseSpotHint');
   var restoreSpotBtn = document.getElementById('restoreSpotBtn');
@@ -280,8 +275,7 @@ function track(eventName, params) {
   var pendingProcessedCanvas = document.createElement('canvas');
   var frameCalibPoints = [];
   var pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
-  var autoTrimSuggested = false;
-  var toolHistory = []; // ordered actions: {type:'eraseSpot',x,y} | {type:'eraseStroke',points} | {type:'restoreStroke',points}
+  var toolHistory = []; // ordered actions: {type:'eraseStroke',points} | {type:'restoreStroke',points} -- a tap is just a 1-point stroke
   var currentStrokePoints = [];
   var currentStrokeType = null; // 'erase' | 'restore', while a drag is in progress
   var eraseModeActive = false;
@@ -591,48 +585,11 @@ function track(eventName, params) {
     }
   }
 
-  // Manual cleanup for whatever the automatic passes above don't catch (usually
-  // clutter that happens to touch the frame silhouette, so it survives the
-  // largest-region pass too). Erases the connected opaque blob under (x0, y0).
-  // Capped so an accidental tap on the frame itself can't wipe out the whole thing.
-  function eraseConnectedComponent(imageData, x0, y0) {
-    var data = imageData.data, w = imageData.width, h = imageData.height;
-    if (x0 < 0 || y0 < 0 || x0 >= w || y0 >= h) return false;
-    var startId = y0 * w + x0;
-    if (data[startId * 4 + 3] < 10) return false;
-
-    var n = w * h;
-    var visited = new Uint8Array(n);
-    var qx = new Int32Array(n), qy = new Int32Array(n);
-    var qHead = 0, qTail = 0;
-    qx[qTail] = x0; qy[qTail] = y0; qTail++;
-    visited[startId] = 1;
-    var cap = Math.max(2000, Math.round(n * 0.15));
-    var collected = [startId];
-
-    while (qHead < qTail) {
-      var cx = qx[qHead], cy = qy[qHead]; qHead++;
-      if (collected.length > cap) return false; // too big to be a stray artifact -- bail out untouched
-      var neighbors = [[cx - 1, cy], [cx + 1, cy], [cx, cy - 1], [cx, cy + 1]];
-      for (var k = 0; k < 4; k++) {
-        var nx = neighbors[k][0], ny = neighbors[k][1];
-        if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-        var nid = ny * w + nx;
-        if (visited[nid]) continue;
-        visited[nid] = 1;
-        if (data[nid * 4 + 3] < 10) continue;
-        collected.push(nid);
-        qx[qTail] = nx; qy[qTail] = ny; qTail++;
-      }
-    }
-    if (collected.length > cap) return false;
-    collected.forEach(function (id) { data[id * 4 + 3] = 0; });
-    return true;
-  }
-
-  // Deliberate paint-to-erase, used when the user drags rather than taps.
-  // Unlike the spot eraser above, this has no size cap -- a drag is unambiguous
-  // intent, so it can clear something as large as a hand holding the frame.
+  // Manual cleanup for whatever the automatic passes above don't catch. A tap and a
+  // drag now both use the same simple brush below -- no size cap, no connectivity
+  // logic to second-guess -- so it behaves exactly the same and just as reliably
+  // whether you're dabbing away one small speck or dragging across a whole band of
+  // arm visible through the lens opening.
   function eraseBrush(imageData, cx, cy, radius) {
     var data = imageData.data, w = imageData.width, h = imageData.height;
     var r2 = radius * radius;
@@ -666,62 +623,6 @@ function track(eventName, params) {
         }
       }
     }
-  }
-
-  function trimSides(imageData, leftFrac, rightFrac) {
-    var data = imageData.data;
-    var w = imageData.width, h = imageData.height;
-    var leftCut = Math.round(w * leftFrac);
-    var rightCut = Math.round(w * (1 - rightFrac));
-    for (var y = 0; y < h; y++) {
-      for (var x = 0; x < w; x++) {
-        if (x < leftCut || x >= rightCut) {
-          var i = (y * w + x) * 4;
-          data[i + 3] = 0;
-        }
-      }
-    }
-  }
-
-  // Estimates how much of each side is thin temple arm vs. the substantial lens/bridge
-  // front, by comparing how many opaque pixels sit in each column. Arms are consistently
-  // thin; the front is consistently tall, so the transition point is a reasonable cut line.
-  function suggestTrim(imageData) {
-    var data = imageData.data, w = imageData.width, h = imageData.height;
-    var colCount = new Array(w).fill(0);
-    for (var y = 0; y < h; y++) {
-      var rowStart = y * w * 4;
-      for (var x = 0; x < w; x++) {
-        if (data[rowStart + x * 4 + 3] > 10) colCount[x]++;
-      }
-    }
-    var maxCount = 0;
-    for (var i = 0; i < w; i++) if (colCount[i] > maxCount) maxCount = colCount[i];
-    if (maxCount < 6) return { left: 0, right: 0 };
-
-    var threshold = maxCount * 0.35;
-    var sustain = Math.max(2, Math.round(w * 0.012));
-
-    var leftEdge = 0;
-    while (leftEdge < w && colCount[leftEdge] === 0) leftEdge++;
-    var run = 0, leftLensStart = leftEdge;
-    for (var x1 = leftEdge; x1 < w; x1++) {
-      if (colCount[x1] >= threshold) { run++; if (run >= sustain) { leftLensStart = x1 - run + 1; break; } }
-      else run = 0;
-    }
-
-    var rightEdge = w - 1;
-    while (rightEdge >= 0 && colCount[rightEdge] === 0) rightEdge--;
-    run = 0;
-    var rightLensEnd = rightEdge;
-    for (var x2 = rightEdge; x2 >= 0; x2--) {
-      if (colCount[x2] >= threshold) { run++; if (run >= sustain) { rightLensEnd = x2 + run - 1; break; } }
-      else run = 0;
-    }
-
-    var leftTrim = Math.min(0.35, Math.max(0, leftLensStart - leftEdge) / w);
-    var rightTrim = Math.min(0.35, Math.max(0, rightEdge - rightLensEnd) / w);
-    return { left: leftTrim, right: rightTrim };
   }
 
   // ---------- face photo / try-on (session-only, never persisted) ----------
@@ -1459,12 +1360,9 @@ function track(eventName, params) {
 
     frameCalibPoints = [];
     toleranceRow.style.display = 'block';
-    autoTrimSuggested = false;
     toolHistory = [];
     setTool('none');
     updateUndoState();
-    trimLeft.value = 0; trimRight.value = 0;
-    trimLeftVal.textContent = '0%'; trimRightVal.textContent = '0%';
     resetTagInputs();
     showFrameCalibSection();
     processPendingFrame();
@@ -1537,17 +1435,6 @@ function track(eventName, params) {
     var imgData = pctx.getImageData(0, 0, w, h);
     removeBackground(imgData, parseInt(bgTolerance.value, 10));
 
-    if (!autoTrimSuggested) {
-      var suggestion = suggestTrim(imgData);
-      trimLeft.value = Math.round(suggestion.left * 100);
-      trimRight.value = Math.round(suggestion.right * 100);
-      trimLeftVal.textContent = trimLeft.value + '%';
-      trimRightVal.textContent = trimRight.value + '%';
-      autoTrimSuggested = true;
-    }
-
-    trimSides(imgData, trimLeft.value / 100, trimRight.value / 100);
-
     var needsRaw = currentStrokeType === 'restore';
     for (var hIdx = 0; !needsRaw && hIdx < toolHistory.length; hIdx++) {
       if (toolHistory[hIdx].type === 'restoreStroke') needsRaw = true;
@@ -1555,8 +1442,7 @@ function track(eventName, params) {
     var rawData = needsRaw ? pendingRawCanvas.getContext('2d').getImageData(0, 0, w, h) : null;
 
     function applyToolAction(action) {
-      if (action.type === 'eraseSpot') eraseConnectedComponent(imgData, action.x, action.y);
-      else if (action.type === 'eraseStroke') action.points.forEach(function (p) { eraseBrush(imgData, p.x, p.y, p.radius); });
+      if (action.type === 'eraseStroke') action.points.forEach(function (p) { eraseBrush(imgData, p.x, p.y, p.radius); });
       else if (action.type === 'restoreStroke') action.points.forEach(function (p) { restoreBrush(rawData, imgData, p.x, p.y, p.radius); });
     }
     toolHistory.forEach(applyToolAction);
@@ -1592,9 +1478,6 @@ function track(eventName, params) {
     bgToleranceVal.textContent = bgTolerance.value;
     processPendingFrame();
   });
-  trimLeft.addEventListener('input', function () { trimLeftVal.textContent = trimLeft.value + '%'; processPendingFrame(); });
-  trimRight.addEventListener('input', function () { trimRightVal.textContent = trimRight.value + '%'; processPendingFrame(); });
-  autoTrimBtn.addEventListener('click', function () { autoTrimSuggested = false; processPendingFrame(); });
 
   function setTool(tool) {
     eraseModeActive = (tool === 'erase');
@@ -1663,15 +1546,8 @@ function track(eventName, params) {
 
   frameCalibCanvas.addEventListener('pointerup', function (e) {
     if (!pendingRawCanvas || (!eraseModeActive && !restoreModeActive) || !eraseDownPos) { eraseDownPos = null; return; }
-    if (!eraseDragging) {
-      if (eraseModeActive) {
-        toolHistory.push({ type: 'eraseSpot', x: Math.round(eraseDownPos.x), y: Math.round(eraseDownPos.y) });
-      } else {
-        toolHistory.push({ type: 'restoreStroke', points: [{ x: eraseDownPos.x, y: eraseDownPos.y, radius: ERASE_BRUSH_RADIUS }] });
-      }
-    } else {
-      toolHistory.push({ type: currentStrokeType === 'erase' ? 'eraseStroke' : 'restoreStroke', points: currentStrokePoints.slice() });
-    }
+    var pts = eraseDragging ? currentStrokePoints.slice() : [{ x: eraseDownPos.x, y: eraseDownPos.y, radius: ERASE_BRUSH_RADIUS }];
+    toolHistory.push({ type: (eraseModeActive ? 'erase' : 'restore') + 'Stroke', points: pts });
     currentStrokePoints = [];
     currentStrokeType = null;
     eraseDownPos = null;
