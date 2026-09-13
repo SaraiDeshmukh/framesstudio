@@ -235,7 +235,6 @@ function track(eventName, params) {
   var frameCaptureBtn = document.getElementById('frameCaptureBtn');
   var addedMsg = document.getElementById('addedMsg');
 
-  var alreadyTransparentCheckbox = document.getElementById('alreadyTransparent');
   var toleranceRow = document.getElementById('toleranceRow');
   var bgTolerance = document.getElementById('bgTolerance');
   var bgToleranceVal = document.getElementById('bgToleranceVal');
@@ -246,6 +245,8 @@ function track(eventName, params) {
   var autoTrimBtn = document.getElementById('autoTrimBtn');
   var eraseSpotBtn = document.getElementById('eraseSpotBtn');
   var eraseSpotHint = document.getElementById('eraseSpotHint');
+  var restoreSpotBtn = document.getElementById('restoreSpotBtn');
+  var restoreSpotHint = document.getElementById('restoreSpotHint');
   var frameCalibCanvas = document.getElementById('frameCalibCanvas');
   var fctx = frameCalibCanvas.getContext('2d');
   var frameCalibBanner = document.getElementById('frameCalibBanner');
@@ -280,7 +281,14 @@ function track(eventName, params) {
   var pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
   var autoTrimSuggested = false;
   var eraseSpots = [];
+  var eraseBrushPoints = [];
+  var restoreBrushPoints = [];
   var eraseModeActive = false;
+  var restoreModeActive = false;
+  var eraseDragging = false;
+  var eraseDownPos = null;
+  var ERASE_DRAG_THRESHOLD = 6;
+  var ERASE_BRUSH_RADIUS = 24;
 
   var selectMode = false;
   var selectedIds = new Set();
@@ -373,70 +381,89 @@ function track(eventName, params) {
     }
   }
 
-  // Samples a small patch (average, not a single pixel) at each corner so sensor
-  // noise/paper grain doesn't skew the reference color used there.
-  function sampleCornerPatch(data, w, h, cx, cy) {
-    var half = Math.max(1, Math.floor(Math.min(w, h) * 0.03));
-    var x0 = Math.max(0, cx - half), x1 = Math.min(w - 1, cx + half);
-    var y0 = Math.max(0, cy - half), y1 = Math.min(h - 1, cy + half);
-    var sum = [0, 0, 0], n = 0;
-    for (var y = y0; y <= y1; y++) {
-      for (var x = x0; x <= x1; x++) {
-        var i = (y * w + x) * 4;
-        sum[0] += data[i]; sum[1] += data[i + 1]; sum[2] += data[i + 2]; n++;
+  // Samples many points along the outer border (not just 4 corners) and builds a
+  // coarse, spatially-interpolated background model via inverse-distance weighting.
+  // This tracks uneven lighting -- a highlight pooling in the middle of one edge, a
+  // shadow gathering in a corner -- far more precisely than a plain corner-to-corner
+  // gradient, which is what let stray opaque background survive as leftover clutter,
+  // or conversely let translucent frame material near a bright spot get erased as if
+  // it were background.
+  function buildBackgroundModel(data, w, h) {
+    var margin = Math.max(2, Math.round(Math.min(w, h) * 0.035));
+    var step = Math.max(4, Math.round(Math.min(w, h) / 50));
+    var samples = [];
+    function add(x, y) {
+      x = Math.max(0, Math.min(w - 1, x)); y = Math.max(0, Math.min(h - 1, y));
+      var i = (y * w + x) * 4;
+      samples.push({ x: x, y: y, r: data[i], g: data[i + 1], b: data[i + 2] });
+    }
+    for (var x = 0; x < w; x += step) { add(x, margin); add(x, h - 1 - margin); }
+    for (var y = 0; y < h; y += step) { add(margin, y); add(w - 1 - margin, y); }
+
+    var gridSize = 14;
+    var grid = new Array(gridSize * gridSize);
+    for (var gy = 0; gy < gridSize; gy++) {
+      for (var gx = 0; gx < gridSize; gx++) {
+        var px = (gx + 0.5) / gridSize * w, py = (gy + 0.5) / gridSize * h;
+        var wsum = 0, rsum = 0, gsum = 0, bsum = 0;
+        for (var s = 0; s < samples.length; s++) {
+          var sm = samples[s];
+          var dx = sm.x - px, dy = sm.y - py;
+          var wt = 1 / (dx * dx + dy * dy + 400);
+          wsum += wt; rsum += sm.r * wt; gsum += sm.g * wt; bsum += sm.b * wt;
+        }
+        grid[gy * gridSize + gx] = [rsum / wsum, gsum / wsum, bsum / wsum];
       }
     }
-    return [sum[0] / n, sum[1] / n, sum[2] / n];
+    return { grid: grid, gridSize: gridSize, w: w, h: h };
   }
 
-  // Removes background by comparing each pixel to a background estimate that is
-  // BILINEARLY INTERPOLATED across the image from its four corners, instead of one
-  // flat global average. A single flat reference is what let uneven lighting (a soft
-  // shadow gathering toward one side of the shot) survive as leftover opaque background
-  // in the old version -- interpolating per-pixel means the reference itself already
-  // accounts for that gradient. Being purely color-based (not connectivity-based) also
-  // means it reaches background-colored pixels trapped inside an enclosed area, like
-  // the paper visible through a lens opening, which a border-seeded flood fill never could.
+  function backgroundAt(model, x, y) {
+    var gs = model.gridSize;
+    var gx = (x / model.w) * gs - 0.5, gy = (y / model.h) * gs - 0.5;
+    var gx0 = Math.max(0, Math.min(gs - 1, Math.floor(gx)));
+    var gy0 = Math.max(0, Math.min(gs - 1, Math.floor(gy)));
+    var gx1 = Math.min(gs - 1, gx0 + 1), gy1 = Math.min(gs - 1, gy0 + 1);
+    var fx = Math.max(0, Math.min(1, gx - gx0)), fy = Math.max(0, Math.min(1, gy - gy0));
+    var c00 = model.grid[gy0 * gs + gx0], c10 = model.grid[gy0 * gs + gx1];
+    var c01 = model.grid[gy1 * gs + gx0], c11 = model.grid[gy1 * gs + gx1];
+    var r = (c00[0] * (1 - fx) + c10[0] * fx) * (1 - fy) + (c01[0] * (1 - fx) + c11[0] * fx) * fy;
+    var g = (c00[1] * (1 - fx) + c10[1] * fx) * (1 - fy) + (c01[1] * (1 - fx) + c11[1] * fx) * fy;
+    var b = (c00[2] * (1 - fx) + c10[2] * fx) * (1 - fy) + (c01[2] * (1 - fx) + c11[2] * fx) * fy;
+    return [r, g, b];
+  }
+
+  // Removes background by comparing each pixel to the spatially-interpolated model
+  // above. Being purely color-based (not connectivity-based) also means it reaches
+  // background-colored pixels trapped inside an enclosed area, like the surface
+  // visible through a lens opening, which a border-seeded flood fill never could.
   function removeBackground(imageData, tolerance) {
     var data = imageData.data, w = imageData.width, h = imageData.height;
-    var c00 = sampleCornerPatch(data, w, h, 0, 0);
-    var c10 = sampleCornerPatch(data, w, h, w - 1, 0);
-    var c01 = sampleCornerPatch(data, w, h, 0, h - 1);
-    var c11 = sampleCornerPatch(data, w, h, w - 1, h - 1);
+    var model = buildBackgroundModel(data, w, h);
     var soft = Math.max(8, tolerance * 0.6);
 
     for (var y = 0; y < h; y++) {
-      var fy = h > 1 ? y / (h - 1) : 0;
       for (var x = 0; x < w; x++) {
-        var fx = w > 1 ? x / (w - 1) : 0;
-        var topRr = c00[0] + (c10[0] - c00[0]) * fx;
-        var topGg = c00[1] + (c10[1] - c00[1]) * fx;
-        var topBb = c00[2] + (c10[2] - c00[2]) * fx;
-        var botRr = c01[0] + (c11[0] - c01[0]) * fx;
-        var botGg = c01[1] + (c11[1] - c01[1]) * fx;
-        var botBb = c01[2] + (c11[2] - c01[2]) * fx;
-        var bgR = topRr + (botRr - topRr) * fy;
-        var bgG = topGg + (botGg - topGg) * fy;
-        var bgB = topBb + (botBb - topBb) * fy;
-
+        var bg = backgroundAt(model, x, y);
         var i = (y * w + x) * 4;
-        var dr = data[i] - bgR, dg = data[i + 1] - bgG, db = data[i + 2] - bgB;
+        var dr = data[i] - bg[0], dg = data[i + 1] - bg[1], db = data[i + 2] - bg[2];
         var d = Math.sqrt(dr * dr + dg * dg + db * db);
         if (d < tolerance) data[i + 3] = 0;
         else if (d < tolerance + soft) data[i + 3] = Math.round(255 * (d - tolerance) / soft);
       }
     }
 
-    keepLargestOpaqueRegion(imageData);
+    keepLargeOpaqueRegions(imageData);
     featherEdges(imageData);
   }
 
-  // After the flood fill, anything still opaque that ISN'T part of the frame's own
-  // silhouette is almost always leftover clutter showing through the lens opening --
-  // a finger, a reflection, a shadow blob -- because it's fully surrounded by the lens
-  // area that just got cleared to transparent. Keep only the largest connected opaque
-  // region (the frame itself) and clear every smaller disconnected island.
-  function keepLargestOpaqueRegion(imageData) {
+  // After the color pass, anything opaque that's fully disconnected from the main
+  // frame silhouette is almost always clutter -- a finger, a reflection, a shadow
+  // blob. But a very translucent frame can occasionally get cut through at a thin
+  // point (a temple arm catching a highlight) and split into two real pieces, so
+  // this keeps every region big enough to plausibly be part of the frame, not just
+  // the single largest one, and only discards genuinely small leftover islands.
+  function keepLargeOpaqueRegions(imageData) {
     var data = imageData.data, w = imageData.width, h = imageData.height;
     var n = w * h;
     var labels = new Int32Array(n).fill(-1);
@@ -472,9 +499,12 @@ function track(eventName, params) {
     }
 
     if (!sizes.length) return;
-    var maxLabel = 0, maxSize = sizes[0];
-    for (var l = 1; l < sizes.length; l++) { if (sizes[l] > maxSize) { maxSize = sizes[l]; maxLabel = l; } }
-    for (var id2 = 0; id2 < n; id2++) { if (labels[id2] >= 0 && labels[id2] !== maxLabel) data[id2 * 4 + 3] = 0; }
+    var maxSize = 0;
+    for (var l = 0; l < sizes.length; l++) if (sizes[l] > maxSize) maxSize = sizes[l];
+    var keepThreshold = Math.max(30, maxSize * 0.12);
+    for (var id2 = 0; id2 < n; id2++) {
+      if (labels[id2] >= 0 && sizes[labels[id2]] < keepThreshold) data[id2 * 4 + 3] = 0;
+    }
   }
 
   // Light feather so the hard flood-fill cutout doesn't leave jagged pixel edges --
@@ -531,6 +561,44 @@ function track(eventName, params) {
     if (collected.length > cap) return false;
     collected.forEach(function (id) { data[id * 4 + 3] = 0; });
     return true;
+  }
+
+  // Deliberate paint-to-erase, used when the user drags rather than taps.
+  // Unlike the spot eraser above, this has no size cap -- a drag is unambiguous
+  // intent, so it can clear something as large as a hand holding the frame.
+  function eraseBrush(imageData, cx, cy, radius) {
+    var data = imageData.data, w = imageData.width, h = imageData.height;
+    var r2 = radius * radius;
+    var minX = Math.max(0, Math.floor(cx - radius)), maxX = Math.min(w - 1, Math.ceil(cx + radius));
+    var minY = Math.max(0, Math.floor(cy - radius)), maxY = Math.min(h - 1, Math.ceil(cy + radius));
+    for (var y = minY; y <= maxY; y++) {
+      for (var x = minX; x <= maxX; x++) {
+        var dx = x - cx, dy = y - cy;
+        if (dx * dx + dy * dy <= r2) data[(y * w + x) * 4 + 3] = 0;
+      }
+    }
+  }
+
+  // The counterpart to eraseBrush: paints original, fully-opaque pixels back in from
+  // the untouched raw photo. This is the honest fallback for a genuinely translucent
+  // frame, where no automatic color-based pass can perfectly tell "clear plastic with
+  // background showing through" apart from actual background -- when the automatic
+  // pass takes a bit too much off a thin or backlit section, this brings it back.
+  function restoreBrush(rawImageData, workingImageData, cx, cy, radius) {
+    var rd = rawImageData.data, wd = workingImageData.data;
+    var w = workingImageData.width, h = workingImageData.height;
+    var r2 = radius * radius;
+    var minX = Math.max(0, Math.floor(cx - radius)), maxX = Math.min(w - 1, Math.ceil(cx + radius));
+    var minY = Math.max(0, Math.floor(cy - radius)), maxY = Math.min(h - 1, Math.ceil(cy + radius));
+    for (var y = minY; y <= maxY; y++) {
+      for (var x = minX; x <= maxX; x++) {
+        var dx = x - cx, dy = y - cy;
+        if (dx * dx + dy * dy <= r2) {
+          var i = (y * w + x) * 4;
+          wd[i] = rd[i]; wd[i + 1] = rd[i + 1]; wd[i + 2] = rd[i + 2]; wd[i + 3] = 255;
+        }
+      }
+    }
   }
 
   function trimSides(imageData, leftFrac, rightFrac) {
@@ -1323,11 +1391,12 @@ function track(eventName, params) {
     pendingRawCanvas.getContext('2d').drawImage(source, 0, 0, capped.w, capped.h);
 
     frameCalibPoints = [];
-    alreadyTransparentCheckbox.checked = false;
     toleranceRow.style.display = 'block';
     autoTrimSuggested = false;
     eraseSpots = [];
-    setEraseMode(false);
+    eraseBrushPoints = [];
+    restoreBrushPoints = [];
+    setTool('none');
     trimLeft.value = 0; trimRight.value = 0;
     trimLeftVal.textContent = '0%'; trimRightVal.textContent = '0%';
     resetTagInputs();
@@ -1400,7 +1469,7 @@ function track(eventName, params) {
     pctx.clearRect(0, 0, w, h);
     pctx.drawImage(pendingRawCanvas, 0, 0);
     var imgData = pctx.getImageData(0, 0, w, h);
-    if (!alreadyTransparentCheckbox.checked) removeBackground(imgData, parseInt(bgTolerance.value, 10));
+    removeBackground(imgData, parseInt(bgTolerance.value, 10));
 
     if (!autoTrimSuggested) {
       var suggestion = suggestTrim(imgData);
@@ -1413,6 +1482,11 @@ function track(eventName, params) {
 
     trimSides(imgData, trimLeft.value / 100, trimRight.value / 100);
     eraseSpots.forEach(function (p) { eraseConnectedComponent(imgData, p.x, p.y); });
+    eraseBrushPoints.forEach(function (p) { eraseBrush(imgData, p.x, p.y, p.radius); });
+    if (restoreBrushPoints.length) {
+      var rawData = pendingRawCanvas.getContext('2d').getImageData(0, 0, w, h);
+      restoreBrushPoints.forEach(function (p) { restoreBrush(rawData, imgData, p.x, p.y, p.radius); });
+    }
     pctx.putImageData(imgData, 0, 0);
 
     frameCalibCanvas.width = w;
@@ -1439,38 +1513,75 @@ function track(eventName, params) {
 
   bgTolerance.addEventListener('input', function () {
     bgToleranceVal.textContent = bgTolerance.value;
-    if (!alreadyTransparentCheckbox.checked) processPendingFrame();
-  });
-  alreadyTransparentCheckbox.addEventListener('change', function () {
-    toleranceRow.style.display = alreadyTransparentCheckbox.checked ? 'none' : 'block';
     processPendingFrame();
   });
   trimLeft.addEventListener('input', function () { trimLeftVal.textContent = trimLeft.value + '%'; processPendingFrame(); });
   trimRight.addEventListener('input', function () { trimRightVal.textContent = trimRight.value + '%'; processPendingFrame(); });
   autoTrimBtn.addEventListener('click', function () { autoTrimSuggested = false; processPendingFrame(); });
 
-  function setEraseMode(on) {
-    eraseModeActive = on;
-    eraseSpotBtn.classList.toggle('active', on);
-    eraseSpotHint.style.display = on ? 'block' : 'none';
-    frameCalibCanvas.style.cursor = on ? 'crosshair' : '';
+  function setTool(tool) {
+    eraseModeActive = (tool === 'erase');
+    restoreModeActive = (tool === 'restore');
+    eraseSpotBtn.classList.toggle('active', eraseModeActive);
+    restoreSpotBtn.classList.toggle('active', restoreModeActive);
+    eraseSpotHint.style.display = eraseModeActive ? 'block' : 'none';
+    restoreSpotHint.style.display = restoreModeActive ? 'block' : 'none';
+    frameCalibCanvas.style.cursor = (eraseModeActive || restoreModeActive) ? 'crosshair' : '';
+    eraseDragging = false;
+    eraseDownPos = null;
   }
-  eraseSpotBtn.addEventListener('click', function () { setEraseMode(!eraseModeActive); });
+  eraseSpotBtn.addEventListener('click', function () { setTool(eraseModeActive ? 'none' : 'erase'); });
+  restoreSpotBtn.addEventListener('click', function () { setTool(restoreModeActive ? 'none' : 'restore'); });
 
-  frameCalibCanvas.addEventListener('click', function (e) {
-    if (!pendingRawCanvas) return;
+  function imagePosFromEvent(e) {
     var rect = frameCalibCanvas.getBoundingClientRect();
     var scaleX = frameCalibCanvas.width / rect.width, scaleY = frameCalibCanvas.height / rect.height;
-    var x = Math.round((e.clientX - rect.left) * scaleX), y = Math.round((e.clientY - rect.top) * scaleY);
+    return { x: (e.clientX - rect.left) * scaleX, y: (e.clientY - rect.top) * scaleY };
+  }
 
-    if (eraseModeActive) {
-      eraseSpots.push({ x: x, y: y });
-      processPendingFrame();
-      return;
-    }
+  function addToolStroke(x, y) {
+    if (eraseModeActive) eraseBrushPoints.push({ x: x, y: y, radius: ERASE_BRUSH_RADIUS });
+    else if (restoreModeActive) restoreBrushPoints.push({ x: x, y: y, radius: ERASE_BRUSH_RADIUS });
+  }
+
+  frameCalibCanvas.addEventListener('click', function (e) {
+    if (!pendingRawCanvas || eraseModeActive || restoreModeActive) return; // handled by the pointer events below
     if (frameCalibPoints.length >= 2) return;
-    frameCalibPoints.push({ x: x, y: y });
+    var pos = imagePosFromEvent(e);
+    frameCalibPoints.push({ x: Math.round(pos.x), y: Math.round(pos.y) });
     drawFrameCalibView();
+  });
+
+  frameCalibCanvas.addEventListener('pointerdown', function (e) {
+    if (!pendingRawCanvas || (!eraseModeActive && !restoreModeActive)) return;
+    eraseDownPos = imagePosFromEvent(e);
+    eraseDragging = false;
+    frameCalibCanvas.setPointerCapture(e.pointerId);
+  });
+
+  frameCalibCanvas.addEventListener('pointermove', function (e) {
+    if (!pendingRawCanvas || (!eraseModeActive && !restoreModeActive) || !eraseDownPos) return;
+    var pos = imagePosFromEvent(e);
+    var dx = pos.x - eraseDownPos.x, dy = pos.y - eraseDownPos.y;
+    if (!eraseDragging && Math.sqrt(dx * dx + dy * dy) > ERASE_DRAG_THRESHOLD) {
+      eraseDragging = true;
+      addToolStroke(eraseDownPos.x, eraseDownPos.y);
+    }
+    if (eraseDragging) {
+      addToolStroke(pos.x, pos.y);
+      processPendingFrame();
+    }
+  });
+
+  frameCalibCanvas.addEventListener('pointerup', function (e) {
+    if (!pendingRawCanvas || (!eraseModeActive && !restoreModeActive) || !eraseDownPos) { eraseDownPos = null; return; }
+    if (!eraseDragging) {
+      if (eraseModeActive) eraseSpots.push({ x: Math.round(eraseDownPos.x), y: Math.round(eraseDownPos.y) });
+      else addToolStroke(eraseDownPos.x, eraseDownPos.y);
+      processPendingFrame();
+    }
+    eraseDownPos = null;
+    eraseDragging = false;
   });
 
   function makeThumbCanvas(imgSource, size) {
@@ -1535,7 +1646,9 @@ function track(eventName, params) {
     pendingRawCanvas = null;
     frameCalibPoints = [];
     eraseSpots = [];
-    setEraseMode(false);
+    eraseBrushPoints = [];
+    restoreBrushPoints = [];
+    setTool('none');
     showFrameSourceChooser();
   });
 
