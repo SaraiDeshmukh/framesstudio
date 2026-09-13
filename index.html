@@ -13,7 +13,7 @@
   <div class="root">
     <div class="eyebrow">Optical · Frame Try-On Studio</div>
     <h1>Frame try-on studio</h1>
-    <p class="sub">One shared login for the counter — your catalog is saved to it, each customer's photo is not.</p>
+    <p class="sub">Try on any frame in seconds.</p>
 
     <!-- shown until firebase-config.js has real values in it -->
     <div id="setupNotice" class="setup-note" style="display:none">
@@ -25,7 +25,7 @@
     <!-- ================= AUTH GATE ================= -->
     <div id="authGate" class="auth-wrap" style="display:none">
       <div class="label">Sign in</div>
-      <p class="sub" style="margin-bottom:16px">One login for the front desk — your catalog is saved here so it's ready for whoever's working the counter.</p>
+      <p class="sub" style="margin-bottom:16px">Sign in to see your saved frames.</p>
       <form id="authForm">
         <input type="email" id="authEmail" placeholder="Email" autocomplete="email" required>
         <input type="password" id="authPassword" placeholder="Password (6+ characters)" autocomplete="current-password" required>
@@ -35,7 +35,7 @@
           <button type="button" class="btn" id="signUpBtn">Create account</button>
         </div>
       </form>
-      <div class="auth-note">Your email and password are handled entirely by Firebase Authentication — this app never sees or stores your password.</div>
+      <div class="auth-note">Your password is kept private and secure.</div>
     </div>
 
     <!-- ================= APP SHELL ================= -->
@@ -70,7 +70,7 @@
           <div class="chip-row" id="bulkGenderChips"></div>
           <div class="label">Rim type</div>
           <div class="chip-row" id="bulkRimChips"></div>
-          <div class="hint">Only facets you tap here get applied — anything you leave untouched stays as it was on each frame.</div>
+          <div class="hint">Only the tags you tap here will change — everything else stays the same.</div>
           <div class="row">
             <button class="btn primary" id="applyBulkBtn" disabled>Apply to selected</button>
             <button class="btn ghost" id="exitSelectModeBtn" type="button">Done</button>
@@ -81,7 +81,6 @@
           <div class="label">Edit tags</div>
           <div class="edit-panel-head">
             <span id="editThumbWrap"></span>
-            <span class="hint" style="margin:0">Changes here apply to this frame only.</span>
           </div>
           <div class="label">Shape</div>
           <div class="chip-row" id="editShapeChips"></div>
@@ -114,7 +113,6 @@
       <!-- ================= TRY ON ================= -->
       <div id="pageTryOn" style="display:none">
         <div class="label">Customer's photo</div>
-        <p class="hint" style="margin-top:-4px">Capture fresh for whoever's at the counter now — this is never saved between customers.</p>
         <div class="row">
           <button class="btn primary" id="cameraBtn">Use camera</button>
           <button class="btn" id="uploadBtn">Upload a photo</button>
@@ -126,7 +124,7 @@
           <canvas id="canvas" style="display:none"></canvas>
           <button class="btn primary capture-btn" id="captureBtn" style="display:none">Capture photo</button>
         </div>
-        <div class="calib-banner" id="calibBanner">Click one pupil in the photo to size the frame.</div>
+        <div class="calib-banner" id="calibBanner">Tap one pupil in the photo to size the frame.</div>
         <div class="action-row">
           <button class="btn ghost" id="recalBtn" style="display:none">Recalibrate</button>
           <button class="btn ghost" id="retakeBtn" style="display:none">Retake photo</button>
@@ -135,7 +133,7 @@
         <div class="fit-row" id="fitRow">
           <div class="slider-label">Frame fit <span class="val" id="fitSizeVal">100%</span></div>
           <input type="range" id="fitSize" min="70" max="130" value="100">
-          <div class="hint" style="margin:6px 0 0">If a frame looks too narrow or wide for this customer's face, adjust here — this stays put when you switch frames.</div>
+          <div class="hint" style="margin:6px 0 0">If the frame looks too narrow or wide, adjust here.</div>
         </div>
 
         <div class="no-selection-note" id="noSelectionNote">
@@ -165,8 +163,7 @@
         </div>
 
         <div id="frameCalibSection" style="display:none">
-          <label class="check-row"><input type="checkbox" id="alreadyTransparent"> Photo already has a transparent background</label>
-          <div class="hint">Cutout works best with a plain, contrasting background and the frame shot fairly front-on.</div>
+          <div class="hint">Works best with a plain background and the frame shot fairly front-on.</div>
 
           <div class="tolerance-row" id="toleranceRow">
             <div class="slider-label">Background removal strength <span class="val" id="bgToleranceVal">45</span></div>
@@ -185,15 +182,17 @@
           </div>
           <div class="row" style="margin-top:-8px">
             <button class="btn ghost" id="autoTrimBtn" type="button">Re-detect automatically</button>
-            <button class="btn ghost" id="eraseSpotBtn" type="button">Erase leftover spot</button>
+            <button class="btn ghost" id="eraseSpotBtn" type="button">Erase</button>
+            <button class="btn ghost" id="restoreSpotBtn" type="button">Restore</button>
           </div>
-          <div class="hint" id="autoTrimHint">Arm width is estimated automatically from the cutout — nudge the sliders above if either side isn't quite right.</div>
-          <div class="hint" id="eraseSpotHint" style="display:none">Tap the leftover bit (finger, reflection, shadow) inside the lens to clear it. Tap "Erase leftover spot" again to stop.</div>
+          <div class="hint" id="autoTrimHint">Estimated automatically — adjust the sliders above if needed.</div>
+          <div class="hint" id="eraseSpotHint" style="display:none">Tap a small leftover bit to remove it, or drag over a bigger area like a hand or shadow. Tap "Erase" again to stop.</div>
+          <div class="hint" id="restoreSpotHint" style="display:none">Tap or drag to bring back part of the frame that got removed by mistake — common on very clear or light-colored frames. Tap "Restore" again to stop.</div>
 
           <div class="frame-calib-viewport">
             <canvas id="frameCalibCanvas"></canvas>
           </div>
-          <div class="calib-banner" id="frameCalibBanner" style="display:block">Click one lens center, then the other.</div>
+          <div class="calib-banner" id="frameCalibBanner" style="display:block">Tap one lens center, then the other.</div>
 
           <div class="label">Shape <span style="text-transform:none">(optional)</span></div>
           <div class="chip-row" id="shapeChips"></div>
@@ -221,8 +220,6 @@
         </div>
       </div>
     </div>
-
-    <div class="footer">Simplified 2D preview. Background removal and arm trimming are basic, adjustable cutout tools, not real segmentation — arm width is auto-estimated and adjustable. Tag search ignores apostrophes and punctuation. Your catalog and tags are stored in your Firestore database and not shared beyond this account. Customer photos are never saved. Not an exact optical fitting.</div>
   </div>
 
   <script type="module" src="app.js"></script>
