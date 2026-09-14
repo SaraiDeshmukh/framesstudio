@@ -5,7 +5,7 @@ import {
   onAuthStateChanged, signOut
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
 import {
-  getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp
+  getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp, increment
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAnalytics, isSupported, logEvent } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
 
@@ -142,6 +142,7 @@ function track(eventName, params) {
       userEmailLabel.textContent = user.email;
       resetLocalState();
       loadCatalog(user.uid);
+      loadPhotoCount(user.uid);
     } else {
       appShell.style.display = 'none';
       authGate.style.display = 'block';
@@ -154,6 +155,7 @@ function track(eventName, params) {
   var tabAddBtn = document.getElementById('tabAddBtn');
   var pageBrowse = document.getElementById('pageBrowse');
   var pageTryOn = document.getElementById('pageTryOn');
+  var photoCountDisplay = document.getElementById('photoCountDisplay');
   var pageAdd = document.getElementById('pageAdd');
 
   function showTab(name) {
@@ -236,6 +238,10 @@ function track(eventName, params) {
   var addedMsg = document.getElementById('addedMsg');
 
   var toleranceRow = document.getElementById('toleranceRow');
+  var bgModeSingleBtn = document.getElementById('bgModeSingleBtn');
+  var bgModeTwoShotBtn = document.getElementById('bgModeTwoShotBtn');
+  var bgModeHint = document.getElementById('bgModeHint');
+  var twoShotStepLabel = document.getElementById('twoShotStepLabel');
   var bgTolerance = document.getElementById('bgTolerance');
   var bgToleranceVal = document.getElementById('bgToleranceVal');
   var eraseSpotBtn = document.getElementById('eraseSpotBtn');
@@ -272,6 +278,9 @@ function track(eventName, params) {
   var activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
 
   var pendingRawCanvas = null;
+  var pendingBgOnlyCanvas = null; // the empty-surface reference photo, only used in two-shot mode
+  var bgRemovalMode = 'single'; // 'single' | 'twoShot'
+  var twoShotStep = 1; // 1 = capturing the empty surface, 2 = capturing the frame on it
   var pendingProcessedCanvas = document.createElement('canvas');
   var frameCalibPoints = [];
   var pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
@@ -504,6 +513,35 @@ function track(eventName, params) {
         var bg = backgroundAt(model, x, y);
         var i = (y * w + x) * 4;
         var dr = data[i] - bg[0], dg = data[i + 1] - bg[1], db = data[i + 2] - bg[2];
+        var d = Math.sqrt(dr * dr + dg * dg + db * db);
+        if (d < tolerance) data[i + 3] = 0;
+        else if (d < tolerance + soft) data[i + 3] = Math.round(255 * (d - tolerance) / soft);
+      }
+    }
+
+    var openRadius = 2;
+    erodeAlpha(data, w, h, openRadius);
+    dilateAlpha(data, w, h, openRadius);
+
+    keepLargeOpaqueRegions(imageData);
+    featherEdges(imageData);
+  }
+
+  // The two-shot alternative: instead of estimating what the background probably
+  // looks like, this compares against an actual photo of the same empty surface.
+  // Exact subtraction beats any estimate -- no assumption about the border being
+  // background, no getting fooled by a gradient the model didn't fit well. Requires
+  // the two photos to be taken from the same camera position; any drift between them
+  // shows up as a false edge, which is why the UI asks the person to keep it still.
+  function removeBackgroundDiff(imageData, bgOnlyImageData, tolerance) {
+    var data = imageData.data, bgData = bgOnlyImageData.data;
+    var w = imageData.width, h = imageData.height;
+    var soft = Math.max(8, tolerance * 0.6);
+
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        var i = (y * w + x) * 4;
+        var dr = data[i] - bgData[i], dg = data[i + 1] - bgData[i + 1], db = data[i + 2] - bgData[i + 2];
         var d = Math.sqrt(dr * dr + dg * dg + db * db);
         if (d < tolerance) data[i + 3] = 0;
         else if (d < tolerance + soft) data[i + 3] = Math.round(255 * (d - tolerance) / soft);
@@ -823,6 +861,7 @@ function track(eventName, params) {
     redrawFacePreview();
     updateCalibBanner();
     track('customer_session_started', { source: 'camera' });
+    bumpPhotoCount();
   }
 
   function handleFaceUpload(file) {
@@ -847,6 +886,7 @@ function track(eventName, params) {
       updateCalibBanner();
       URL.revokeObjectURL(url);
       track('customer_session_started', { source: 'upload' });
+      bumpPhotoCount();
     };
     img.src = url;
   }
@@ -1319,6 +1359,26 @@ function track(eventName, params) {
     }
   }
 
+  // A plain count of how many times a customer photo has been captured for try-on --
+  // no identity, no image, nothing that could tie a number back to a specific person.
+  // Lives at users/{uid}/stats/customerPhotos, so it's covered by the same per-account
+  // security rule as everything else and needs no separate Firestore rule change.
+  function loadPhotoCount(uid) {
+    getDoc(doc(db, 'users', uid, 'stats', 'customerPhotos')).then(function (snap) {
+      var count = (snap.exists() && snap.data().count) || 0;
+      photoCountDisplay.textContent = count + ' patient photo' + (count === 1 ? '' : 's') + ' taken (all-time)';
+    }).catch(function (e) { console.error('Could not load photo count', e); });
+  }
+
+  function bumpPhotoCount() {
+    if (!currentUser) return;
+    var ref = doc(db, 'users', currentUser.uid, 'stats', 'customerPhotos');
+    updateDoc(ref, { count: increment(1) })
+      .catch(function () { return setDoc(ref, { count: 1 }, { merge: true }); })
+      .catch(function (e) { console.error('Could not update photo count', e); })
+      .then(function () { loadPhotoCount(currentUser.uid); });
+  }
+
   function loadCatalog(uid) {
     return getDocs(collection(db, 'users', uid, 'frames')).then(function (snap) {
       catalogIndex = [];
@@ -1352,12 +1412,59 @@ function track(eventName, params) {
     frameCalibSectionEl.style.display = 'none';
   }
 
-  function beginAddFrameFromSource(source, naturalW, naturalH) {
-    var capped = capDimensions(naturalW, naturalH, MAX_FRAME_DIM);
-    pendingRawCanvas = document.createElement('canvas');
-    pendingRawCanvas.width = capped.w; pendingRawCanvas.height = capped.h;
-    pendingRawCanvas.getContext('2d').drawImage(source, 0, 0, capped.w, capped.h);
+  function resetTwoShotState() {
+    pendingBgOnlyCanvas = null;
+    twoShotStep = 1;
+    twoShotStepLabel.style.display = (bgRemovalMode === 'twoShot') ? 'block' : 'none';
+    twoShotStepLabel.textContent = 'Step 1 of 2: the empty surface';
+    frameSourcePlaceholder.textContent = (bgRemovalMode === 'twoShot')
+      ? 'No photo yet. Photograph the empty surface first, with nothing on it.'
+      : 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
+    frameSourcePlaceholder.style.display = 'block';
+  }
 
+  function setBgMode(mode) {
+    bgRemovalMode = mode;
+    bgModeSingleBtn.classList.toggle('active', mode === 'single');
+    bgModeTwoShotBtn.classList.toggle('active', mode === 'twoShot');
+    bgModeHint.style.display = (mode === 'twoShot') ? 'block' : 'none';
+    resetTwoShotState();
+  }
+  bgModeSingleBtn.addEventListener('click', function () { setBgMode('single'); });
+  bgModeTwoShotBtn.addEventListener('click', function () { setBgMode('twoShot'); });
+
+  function beginAddFrameFromSource(source, naturalW, naturalH) {
+    var canvas = document.createElement('canvas');
+
+    if (bgRemovalMode === 'twoShot' && twoShotStep === 1) {
+      var cappedBg = capDimensions(naturalW, naturalH, MAX_FRAME_DIM);
+      canvas.width = cappedBg.w; canvas.height = cappedBg.h;
+      canvas.getContext('2d').drawImage(source, 0, 0, cappedBg.w, cappedBg.h);
+      // That was the empty-surface reference shot -- hold onto it and ask for the
+      // second photo, with the frame placed on the same spot, before moving on.
+      pendingBgOnlyCanvas = canvas;
+      twoShotStep = 2;
+      twoShotStepLabel.textContent = 'Step 2 of 2: place the frame, same spot, same camera position';
+      frameSourcePlaceholder.textContent = 'Now place the frame on the same surface and photograph again \u2014 keep the camera in the same spot.';
+      frameSourcePlaceholder.style.display = 'block';
+      addedMsg.style.display = 'none';
+      return;
+    }
+
+    if (bgRemovalMode === 'twoShot' && twoShotStep === 2 && pendingBgOnlyCanvas) {
+      // Force the exact same pixel dimensions as the reference shot, so every pixel
+      // in this photo lines up spatially with the same pixel in that one -- required
+      // for the diff to compare the right spot against itself.
+      canvas.width = pendingBgOnlyCanvas.width;
+      canvas.height = pendingBgOnlyCanvas.height;
+      canvas.getContext('2d').drawImage(source, 0, 0, canvas.width, canvas.height);
+    } else {
+      var capped = capDimensions(naturalW, naturalH, MAX_FRAME_DIM);
+      canvas.width = capped.w; canvas.height = capped.h;
+      canvas.getContext('2d').drawImage(source, 0, 0, capped.w, capped.h);
+    }
+
+    pendingRawCanvas = canvas;
     frameCalibPoints = [];
     toleranceRow.style.display = 'block';
     toolHistory = [];
@@ -1433,7 +1540,12 @@ function track(eventName, params) {
     pctx.clearRect(0, 0, w, h);
     pctx.drawImage(pendingRawCanvas, 0, 0);
     var imgData = pctx.getImageData(0, 0, w, h);
-    removeBackground(imgData, parseInt(bgTolerance.value, 10));
+    if (bgRemovalMode === 'twoShot' && pendingBgOnlyCanvas && pendingBgOnlyCanvas.width === w && pendingBgOnlyCanvas.height === h) {
+      var bgOnlyData = pendingBgOnlyCanvas.getContext('2d').getImageData(0, 0, w, h);
+      removeBackgroundDiff(imgData, bgOnlyData, parseInt(bgTolerance.value, 10));
+    } else {
+      removeBackground(imgData, parseInt(bgTolerance.value, 10));
+    }
 
     var needsRaw = currentStrokeType === 'restore';
     for (var hIdx = 0; !needsRaw && hIdx < toolHistory.length; hIdx++) {
@@ -1602,8 +1714,7 @@ function track(eventName, params) {
       track('frame_added', { shape: tags.shape || 'untagged', color: tags.color || 'untagged', rim: tags.rim || 'untagged' });
 
       pendingRawCanvas = null;
-      frameSourcePlaceholder.textContent = 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
-      frameSourcePlaceholder.style.display = 'block';
+      resetTwoShotState();
       showFrameSourceChooser();
       addedMsg.style.display = 'block';
       selectFrame(id);
@@ -1620,6 +1731,7 @@ function track(eventName, params) {
     toolHistory = [];
     setTool('none');
     updateUndoState();
+    resetTwoShotState();
     showFrameSourceChooser();
   });
 
