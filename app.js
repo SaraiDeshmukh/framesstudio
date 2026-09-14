@@ -241,7 +241,9 @@ function track(eventName, params) {
   var bgModeSingleBtn = document.getElementById('bgModeSingleBtn');
   var bgModeTwoShotBtn = document.getElementById('bgModeTwoShotBtn');
   var bgModeHint = document.getElementById('bgModeHint');
+  var twoShotStepRow = document.getElementById('twoShotStepRow');
   var twoShotStepLabel = document.getElementById('twoShotStepLabel');
+  var retakeBgBtn = document.getElementById('retakeBgBtn');
   var bgTolerance = document.getElementById('bgTolerance');
   var bgToleranceVal = document.getElementById('bgToleranceVal');
   var eraseSpotBtn = document.getElementById('eraseSpotBtn');
@@ -1412,15 +1414,40 @@ function track(eventName, params) {
     frameCalibSectionEl.style.display = 'none';
   }
 
-  function resetTwoShotState() {
+  function updateFrameSourceUI() {
+    if (bgRemovalMode !== 'twoShot') {
+      twoShotStepRow.style.display = 'none';
+      frameSourcePlaceholder.textContent = 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
+      frameSourcePlaceholder.style.display = 'block';
+      return;
+    }
+    twoShotStepRow.style.display = 'flex';
+    retakeBgBtn.style.display = pendingBgOnlyCanvas ? 'inline-block' : 'none';
+    if (twoShotStep === 1) {
+      twoShotStepLabel.textContent = 'Step 1 of 2: the empty surface';
+      frameSourcePlaceholder.textContent = 'No photo yet. Photograph the empty surface first, with nothing on it.';
+    } else {
+      twoShotStepLabel.textContent = 'Step 2 of 2: place the frame, same spot, same camera position';
+      frameSourcePlaceholder.textContent = 'Place the frame on the same surface and photograph it \u2014 keep the camera in the same spot.';
+    }
+    frameSourcePlaceholder.style.display = 'block';
+  }
+
+  // Full reset, including the saved background -- used when switching into two-shot
+  // mode fresh, or when the person explicitly wants to retake the background because
+  // the camera moved or the surface changed.
+  function clearBackgroundReference() {
     pendingBgOnlyCanvas = null;
     twoShotStep = 1;
-    twoShotStepLabel.style.display = (bgRemovalMode === 'twoShot') ? 'block' : 'none';
-    twoShotStepLabel.textContent = 'Step 1 of 2: the empty surface';
-    frameSourcePlaceholder.textContent = (bgRemovalMode === 'twoShot')
-      ? 'No photo yet. Photograph the empty surface first, with nothing on it.'
-      : 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
-    frameSourcePlaceholder.style.display = 'block';
+    updateFrameSourceUI();
+  }
+
+  // Used after a frame is added or cancelled: if a background photo is already saved,
+  // skip straight to step 2 so it carries over for the next frame instead of asking to
+  // retake it every single time.
+  function advanceForNextCapture() {
+    twoShotStep = (bgRemovalMode === 'twoShot' && pendingBgOnlyCanvas) ? 2 : 1;
+    updateFrameSourceUI();
   }
 
   function setBgMode(mode) {
@@ -1428,10 +1455,11 @@ function track(eventName, params) {
     bgModeSingleBtn.classList.toggle('active', mode === 'single');
     bgModeTwoShotBtn.classList.toggle('active', mode === 'twoShot');
     bgModeHint.style.display = (mode === 'twoShot') ? 'block' : 'none';
-    resetTwoShotState();
+    clearBackgroundReference();
   }
   bgModeSingleBtn.addEventListener('click', function () { setBgMode('single'); });
   bgModeTwoShotBtn.addEventListener('click', function () { setBgMode('twoShot'); });
+  retakeBgBtn.addEventListener('click', clearBackgroundReference);
 
   function beginAddFrameFromSource(source, naturalW, naturalH) {
     var canvas = document.createElement('canvas');
@@ -1444,9 +1472,7 @@ function track(eventName, params) {
       // second photo, with the frame placed on the same spot, before moving on.
       pendingBgOnlyCanvas = canvas;
       twoShotStep = 2;
-      twoShotStepLabel.textContent = 'Step 2 of 2: place the frame, same spot, same camera position';
-      frameSourcePlaceholder.textContent = 'Now place the frame on the same surface and photograph again \u2014 keep the camera in the same spot.';
-      frameSourcePlaceholder.style.display = 'block';
+      updateFrameSourceUI();
       addedMsg.style.display = 'none';
       return;
     }
@@ -1714,7 +1740,7 @@ function track(eventName, params) {
       track('frame_added', { shape: tags.shape || 'untagged', color: tags.color || 'untagged', rim: tags.rim || 'untagged' });
 
       pendingRawCanvas = null;
-      resetTwoShotState();
+      advanceForNextCapture();
       showFrameSourceChooser();
       addedMsg.style.display = 'block';
       selectFrame(id);
@@ -1731,7 +1757,7 @@ function track(eventName, params) {
     toolHistory = [];
     setTool('none');
     updateUndoState();
-    resetTwoShotState();
+    advanceForNextCapture();
     showFrameSourceChooser();
   });
 
