@@ -112,7 +112,10 @@
 
       <!-- ================= TRY ON ================= -->
       <div id="pageTryOn" style="display:none">
-        <div class="label">Customer's photo</div>
+        <div class="label" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Customer's photo</span>
+          <span class="hint" id="photoCountDisplay" style="margin:0"></span>
+        </div>
         <div class="row">
           <button class="btn primary" id="cameraBtn">Use camera</button>
           <button class="btn" id="uploadBtn">Upload a photo</button>
@@ -148,6 +151,12 @@
       <!-- ================= ADD FRAMES ================= -->
       <div id="pageAdd" style="display:none">
         <div class="label">Frame photo</div>
+        <div class="row" id="bgModeToggle">
+          <button class="btn ghost active" id="bgModeSingleBtn" type="button">Single photo</button>
+          <button class="btn ghost" id="bgModeTwoShotBtn" type="button">Two photos (more precise)</button>
+        </div>
+        <div class="hint" id="bgModeHint" style="display:none">First photograph the empty surface alone, then place the frame and photograph again without moving the camera. Comparing the two gives a much cleaner cutout than guessing from one photo.</div>
+        <div class="label" id="twoShotStepLabel" style="display:none">Step 1 of 2: the empty surface</div>
         <div id="frameSourceChooser">
           <div class="row">
             <button class="btn primary" id="frameCameraBtn">Use camera</button>
