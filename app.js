@@ -816,9 +816,20 @@ function track(eventName, params) {
     });
   }
 
+  // 'ideal' is only a soft preference -- some browsers/devices don't reliably honor
+  // it and default to the front camera anyway. 'exact' forces the issue; if a device
+  // genuinely can't satisfy it (rare, but possible on some hardware), fall back to
+  // the soft preference rather than failing outright.
+  function getBackCameraStream() {
+    return navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } }, audio: false })
+      .catch(function () {
+        return navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
+      });
+  }
+
   function startCamera() {
     stopStream();
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false }).then(function (s) {
+    getBackCameraStream().then(function (s) {
       stream = s;
       video.srcObject = stream;
       return video.play();
@@ -1512,7 +1523,7 @@ function track(eventName, params) {
   function startFrameCamera() {
     stopFrameStream();
     addedMsg.style.display = 'none';
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false }).then(function (s) {
+    getBackCameraStream().then(function (s) {
       frameStream = s;
       frameVideo.srcObject = frameStream;
       return frameVideo.play();
