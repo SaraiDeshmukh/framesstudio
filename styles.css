@@ -79,7 +79,6 @@ h1 { font-size: clamp(24px, 5.5vw, 34px); font-weight: 700; line-height: 1.08; m
   display: flex; align-items: center; justify-content: center;
 }
 .viewport video, .viewport canvas { width: 100%; height: auto; display: block; }
-.viewport video.mirrored { transform: scaleX(-1); }
 .viewport canvas { cursor: crosshair; }
 
 .placeholder {
