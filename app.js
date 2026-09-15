@@ -818,7 +818,7 @@ function track(eventName, params) {
 
   function startCamera() {
     stopStream();
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false }).then(function (s) {
+    navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false }).then(function (s) {
       stream = s;
       video.srcObject = stream;
       return video.play();
@@ -848,9 +848,7 @@ function track(eventName, params) {
     faceBaseCanvas.width = w; faceBaseCanvas.height = h;
     canvas.width = w; canvas.height = h;
     var bctx = faceBaseCanvas.getContext('2d');
-    bctx.setTransform(-1, 0, 0, 1, w, 0);
     bctx.drawImage(video, 0, 0, w, h);
-    bctx.setTransform(1, 0, 0, 1, 0, 0);
 
     stopStream();
     faceHasImage = true;
