@@ -8,6 +8,7 @@ import {
   getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp, increment
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAnalytics, isSupported, logEvent } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision";
 
 // No Firebase Storage — images live directly inside Firestore documents, so this
 // app runs entirely on the free Spark plan. No billing account needed.
@@ -269,6 +270,7 @@ function track(eventName, params) {
   var stream = null;
   var faceHasImage = false;
   var facePoints = [];
+  var detectingPupils = false;
   var faceBaseCanvas = document.createElement('canvas');
 
   var frameStream = null;
@@ -739,7 +741,12 @@ function track(eventName, params) {
 
   function updateCalibBanner() {
     if (!faceHasImage) { calibBanner.style.display = 'none'; return; }
-    if (facePoints.length === 0) {
+    if (detectingPupils) {
+      calibBanner.textContent = 'Finding the pupils automatically\u2026';
+      calibBanner.style.display = 'block';
+      recalBtn.style.display = 'none';
+      fitRow.style.display = 'none';
+    } else if (facePoints.length === 0) {
       calibBanner.textContent = 'Tap one pupil in the photo to size the frame.';
       calibBanner.style.display = 'block';
       recalBtn.style.display = 'none';
@@ -853,6 +860,59 @@ function track(eventName, params) {
     if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
   }
 
+  // Loaded once, on first use, not eagerly on page load -- the model is a real
+  // download and most visits to this app never touch the Try On tab at all.
+  var faceLandmarkerPromise = null;
+  function getFaceLandmarker() {
+    if (!faceLandmarkerPromise) {
+      faceLandmarkerPromise = FilesetResolver.forVisionTasks(
+        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
+      ).then(function (filesetResolver) {
+        return FaceLandmarker.createFromOptions(filesetResolver, {
+          baseOptions: {
+            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+          },
+          runningMode: "IMAGE",
+          numFaces: 1
+        });
+      });
+    }
+    return faceLandmarkerPromise;
+  }
+
+  function midpointOf(a, b) {
+    if (!a || !b) return null;
+    return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+  }
+
+  // Tries to find both pupils automatically in the given canvas. Resolves with two
+  // pixel-coordinate points on success, or null if no face was found, the model
+  // failed to load, or anything else went wrong -- callers treat null exactly like
+  // "no taps yet" and fall straight back into the existing manual tap flow, so this
+  // can only ever save a step, never block one.
+  function detectPupilsAutomatically(sourceCanvas) {
+    return getFaceLandmarker().then(function (landmarker) {
+      var result = landmarker.detect(sourceCanvas);
+      var landmarks = result && result.faceLandmarks && result.faceLandmarks[0];
+      if (!landmarks || !landmarks.length) return null;
+      var w = sourceCanvas.width, h = sourceCanvas.height;
+      var left, right;
+      if (landmarks.length >= 478) {
+        left = landmarks[468]; right = landmarks[473]; // iris centers
+      } else {
+        // No iris landmarks in this result for some reason -- approximate eye
+        // center from the inner/outer corner points of the base 468-point mesh.
+        left = midpointOf(landmarks[33], landmarks[133]);
+        right = midpointOf(landmarks[362], landmarks[263]);
+      }
+      if (!left || !right) return null;
+      return [{ x: left.x * w, y: left.y * h }, { x: right.x * w, y: right.y * h }];
+    }).catch(function (e) {
+      console.error('Automatic pupil detection failed', e);
+      return null;
+    });
+  }
+
   function capturePhoto() {
     var capped = capDimensions(video.videoWidth || 640, video.videoHeight || 480, MAX_FACE_DIM);
     var w = capped.w, h = capped.h;
@@ -870,7 +930,14 @@ function track(eventName, params) {
     captureBtn.style.display = 'none';
     retakeBtn.style.display = 'inline-block';
     redrawFacePreview();
+    detectingPupils = true;
     updateCalibBanner();
+    detectPupilsAutomatically(faceBaseCanvas).then(function (points) {
+      detectingPupils = false;
+      if (points) facePoints = points;
+      redrawFacePreview();
+      updateCalibBanner();
+    });
     track('customer_session_started', { source: 'camera' });
     bumpPhotoCount();
   }
@@ -894,7 +961,14 @@ function track(eventName, params) {
       captureBtn.style.display = 'none';
       retakeBtn.style.display = 'inline-block';
       redrawFacePreview();
+      detectingPupils = true;
       updateCalibBanner();
+      detectPupilsAutomatically(faceBaseCanvas).then(function (points) {
+        detectingPupils = false;
+        if (points) facePoints = points;
+        redrawFacePreview();
+        updateCalibBanner();
+      });
       URL.revokeObjectURL(url);
       track('customer_session_started', { source: 'upload' });
       bumpPhotoCount();
