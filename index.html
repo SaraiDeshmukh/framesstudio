@@ -154,8 +154,10 @@
         <div class="row" id="bgModeToggle">
           <button class="btn ghost active" id="bgModeSingleBtn" type="button">Single photo</button>
           <button class="btn ghost" id="bgModeTwoShotBtn" type="button">Two photos (more precise)</button>
+          <button class="btn ghost" id="bgModeAiBtn" type="button">AI removal (remove.bg)</button>
         </div>
         <div class="hint" id="bgModeHint" style="display:none">First photograph the empty surface alone, then place the frame and photograph again without moving the camera. The saved surface photo carries over for the next frame too, so you only need to retake it if the camera moves. Comparing the two gives a much cleaner cutout than guessing from one photo.</div>
+        <div class="hint" id="bgModeAiHint" style="display:none">Sends the photo to remove.bg for background removal. Usually the cleanest result, but it needs an internet connection and counts against your remove.bg usage.</div>
         <div class="row" id="twoShotStepRow" style="display:none;align-items:center;justify-content:space-between">
           <span class="label" id="twoShotStepLabel" style="margin:0">Step 1 of 2: the empty surface</span>
           <button class="btn ghost" id="retakeBgBtn" type="button" style="display:none">Retake background</button>
@@ -223,6 +225,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=3"></script>
+  <script type="module" src="app.js?v=4"></script>
 </body>
 </html>
