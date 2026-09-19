@@ -241,7 +241,9 @@ function track(eventName, params) {
   var toleranceRow = document.getElementById('toleranceRow');
   var bgModeSingleBtn = document.getElementById('bgModeSingleBtn');
   var bgModeTwoShotBtn = document.getElementById('bgModeTwoShotBtn');
+  var bgModeAiBtn = document.getElementById('bgModeAiBtn');
   var bgModeHint = document.getElementById('bgModeHint');
+  var bgModeAiHint = document.getElementById('bgModeAiHint');
   var twoShotStepRow = document.getElementById('twoShotStepRow');
   var twoShotStepLabel = document.getElementById('twoShotStepLabel');
   var retakeBgBtn = document.getElementById('retakeBgBtn');
@@ -283,7 +285,10 @@ function track(eventName, params) {
 
   var pendingRawCanvas = null;
   var pendingBgOnlyCanvas = null; // the empty-surface reference photo, only used in two-shot mode
-  var bgRemovalMode = 'single'; // 'single' | 'twoShot'
+  var pendingAiRemovedCanvas = null; // the remove.bg result, only used in AI mode
+  var aiRemovalLoading = false;
+  var REMOVEBG_WORKER_URL = 'https://removebg-proxy.thesaraideshmukh.workers.dev/';
+  var bgRemovalMode = 'single'; // 'single' | 'twoShot' | 'ai'
   var twoShotStep = 1; // 1 = capturing the empty surface, 2 = capturing the frame on it
   var pendingProcessedCanvas = document.createElement('canvas');
   var frameCalibPoints = [];
@@ -1498,6 +1503,12 @@ function track(eventName, params) {
   }
 
   function updateFrameSourceUI() {
+    if (bgRemovalMode === 'ai') {
+      twoShotStepRow.style.display = 'none';
+      frameSourcePlaceholder.textContent = 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
+      frameSourcePlaceholder.style.display = 'block';
+      return;
+    }
     if (bgRemovalMode !== 'twoShot') {
       twoShotStepRow.style.display = 'none';
       frameSourcePlaceholder.textContent = 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
@@ -1537,11 +1548,14 @@ function track(eventName, params) {
     bgRemovalMode = mode;
     bgModeSingleBtn.classList.toggle('active', mode === 'single');
     bgModeTwoShotBtn.classList.toggle('active', mode === 'twoShot');
+    bgModeAiBtn.classList.toggle('active', mode === 'ai');
     bgModeHint.style.display = (mode === 'twoShot') ? 'block' : 'none';
+    bgModeAiHint.style.display = (mode === 'ai') ? 'block' : 'none';
     clearBackgroundReference();
   }
   bgModeSingleBtn.addEventListener('click', function () { setBgMode('single'); });
   bgModeTwoShotBtn.addEventListener('click', function () { setBgMode('twoShot'); });
+  bgModeAiBtn.addEventListener('click', function () { setBgMode('ai'); });
   retakeBgBtn.addEventListener('click', clearBackgroundReference);
 
   function beginAddFrameFromSource(source, naturalW, naturalH) {
@@ -1574,14 +1588,43 @@ function track(eventName, params) {
     }
 
     pendingRawCanvas = canvas;
+    pendingAiRemovedCanvas = null;
     frameCalibPoints = [];
-    toleranceRow.style.display = 'block';
+    toleranceRow.style.display = (bgRemovalMode === 'ai') ? 'none' : 'block';
     toolHistory = [];
     setTool('none');
     updateUndoState();
     resetTagInputs();
     showFrameCalibSection();
-    processPendingFrame();
+
+    if (bgRemovalMode === 'ai') {
+      aiRemovalLoading = true;
+      updateFrameCalibBanner();
+      canvas.toBlob(function (blob) {
+        fetch(REMOVEBG_WORKER_URL, { method: 'POST', body: blob })
+          .then(function (resp) {
+            if (!resp.ok) return resp.text().then(function (t) { throw new Error(t || ('Worker returned ' + resp.status)); });
+            return resp.blob();
+          })
+          .then(function (resultBlob) { return createImageBitmap(resultBlob); })
+          .then(function (bitmap) {
+            var aiCanvas = document.createElement('canvas');
+            aiCanvas.width = canvas.width; aiCanvas.height = canvas.height;
+            aiCanvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+            pendingAiRemovedCanvas = aiCanvas;
+          })
+          .catch(function (e) {
+            console.error('AI background removal failed, falling back to local removal', e);
+            pendingAiRemovedCanvas = null;
+          })
+          .then(function () {
+            aiRemovalLoading = false;
+            processPendingFrame();
+          });
+      }, 'image/png');
+    } else {
+      processPendingFrame();
+    }
   }
 
   function openAddFrameFromFile(file) {
@@ -1646,10 +1689,20 @@ function track(eventName, params) {
     pendingProcessedCanvas.width = w;
     pendingProcessedCanvas.height = h;
     var pctx = pendingProcessedCanvas.getContext('2d', { willReadFrequently: true });
+    var useAi = (bgRemovalMode === 'ai' && pendingAiRemovedCanvas &&
+      pendingAiRemovedCanvas.width === w && pendingAiRemovedCanvas.height === h);
+    var useTwoShot = !useAi && bgRemovalMode === 'twoShot' && pendingBgOnlyCanvas &&
+      pendingBgOnlyCanvas.width === w && pendingBgOnlyCanvas.height === h;
+
     pctx.clearRect(0, 0, w, h);
-    pctx.drawImage(pendingRawCanvas, 0, 0);
+    pctx.drawImage(useAi ? pendingAiRemovedCanvas : pendingRawCanvas, 0, 0, w, h);
     var imgData = pctx.getImageData(0, 0, w, h);
-    if (bgRemovalMode === 'twoShot' && pendingBgOnlyCanvas && pendingBgOnlyCanvas.width === w && pendingBgOnlyCanvas.height === h) {
+
+    if (useAi) {
+      // Already cleanly cut out by remove.bg -- the local cleanup passes below exist
+      // to compensate for the weaker color-based methods, and could only hurt an
+      // already-good result, so they're skipped here.
+    } else if (useTwoShot) {
       var bgOnlyData = pendingBgOnlyCanvas.getContext('2d').getImageData(0, 0, w, h);
       removeBackgroundDiff(imgData, bgOnlyData, parseInt(bgTolerance.value, 10));
     } else {
@@ -1689,7 +1742,8 @@ function track(eventName, params) {
   }
 
   function updateFrameCalibBanner() {
-    addToLibraryBtn.disabled = frameCalibPoints.length < 2;
+    addToLibraryBtn.disabled = frameCalibPoints.length < 2 || aiRemovalLoading;
+    if (aiRemovalLoading) { frameCalibBanner.textContent = 'Removing background with AI\u2026'; return; }
     if (frameCalibPoints.length === 0) frameCalibBanner.textContent = 'Tap one lens center, then the other.';
     else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = 'Now tap the other lens center.';
     else frameCalibBanner.textContent = 'Ready \u2014 add it to your library.';
@@ -1823,6 +1877,7 @@ function track(eventName, params) {
       track('frame_added', { shape: tags.shape || 'untagged', color: tags.color || 'untagged', rim: tags.rim || 'untagged' });
 
       pendingRawCanvas = null;
+      pendingAiRemovedCanvas = null;
       advanceForNextCapture();
       showFrameSourceChooser();
       addedMsg.style.display = 'block';
@@ -1836,6 +1891,8 @@ function track(eventName, params) {
 
   cancelFrameBtn.addEventListener('click', function () {
     pendingRawCanvas = null;
+    pendingAiRemovedCanvas = null;
+    aiRemovalLoading = false;
     frameCalibPoints = [];
     toolHistory = [];
     setTool('none');
