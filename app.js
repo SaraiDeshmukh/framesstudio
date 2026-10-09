@@ -8,8 +8,13 @@ import {
   getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp, increment
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAnalytics, isSupported, logEvent } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
-import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision";
-import { PoseSmoother, poseFromLandmarks, frameTransform, drawFrame } from './tracking.js?v=1';
+// MediaPipe is pinned to a tested version (JS and WASM must match; an unpinned
+// URL silently picks up new major versions).
+import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
+import { PoseSmoother, poseFromLandmarks, frameTransform, drawFrame } from './tracking.js';
+import { estimateHeadPose, HeadPoseFilter, eulerFromMatrix } from './headpose.js';
+import { createTryOnRenderer, DEFAULT_PD_MM } from './ar-renderer.js';
+import { cleanSize, sizeLabel } from './glasses-model.js';
 
 // No Firebase Storage — images live directly inside Firestore documents, so this
 // app runs entirely on the free Spark plan. No billing account needed.
@@ -187,6 +192,9 @@ function track(eventName, params) {
   var captureBtn = document.getElementById('captureBtn');
   var calibBanner = document.getElementById('calibBanner');
   var recalBtn = document.getElementById('recalBtn');
+  var photoCatalogBtn = document.getElementById('photoCatalogBtn');
+  var photoToggleBtn = document.getElementById('photoToggleBtn');
+  var photoOverlayOn = true;
   var retakeBtn = document.getElementById('retakeBtn');
   var fitRow = document.getElementById('fitRow');
   var fitSize = document.getElementById('fitSize');
@@ -196,6 +204,9 @@ function track(eventName, params) {
   var noSelectionBtn = document.getElementById('noSelectionBtn');
   var similarLabel = document.getElementById('similarLabel');
   var similarRow = document.getElementById('similarRow');
+  var photoStage = document.getElementById('photoStage');
+  var livePd = document.getElementById('livePd');
+  var photoPd = document.getElementById('photoPd');
 
   // ---------- browse elements ----------
   var filterBar = document.getElementById('filterBar');
@@ -263,6 +274,23 @@ function track(eventName, params) {
   var addToLibraryBtn = document.getElementById('addToLibraryBtn');
   var cancelFrameBtn = document.getElementById('cancelFrameBtn');
 
+  var sizeEye = document.getElementById('sizeEye');
+  var sizeBridge = document.getElementById('sizeBridge');
+  var sizeTemple = document.getElementById('sizeTemple');
+  var frontOnlySection = document.getElementById('frontOnlySection');
+  var framePhotoLabel = document.getElementById('framePhotoLabel');
+  var sideTarget = document.getElementById('sideTarget');
+  var sideTargetThumb = document.getElementById('sideTargetThumb');
+  var sideTargetText = document.getElementById('sideTargetText');
+  var sideTargetCancel = document.getElementById('sideTargetCancel');
+  var sideTargetHint = document.getElementById('sideTargetHint');
+  var addedMsgText = document.getElementById('addedMsgText');
+  var addSideAfterBtn = document.getElementById('addSideAfterBtn');
+  var modelPreview = document.getElementById('modelPreview');
+  var modelPreviewStage = document.getElementById('modelPreviewStage');
+  var modelPreviewYaw = document.getElementById('modelPreviewYaw');
+  var modelPreviewHint = document.getElementById('modelPreviewHint');
+
   var shapeChips = document.getElementById('shapeChips');
   var colorChips = document.getElementById('colorChips');
   var genderChips = document.getElementById('genderChips');
@@ -277,6 +305,9 @@ function track(eventName, params) {
   var facePoints = [];
   var detectingPupils = false;
   var faceBaseCanvas = document.createElement('canvas');
+  // When the photo's face was found automatically: its landmarks and 3D head pose,
+  // so the frame is drawn in 3D. null = manual taps / 2D overlay.
+  var photo3d = null;
 
   var frameStream = null;
 
@@ -313,8 +344,36 @@ function track(eventName, params) {
 
   var editingFrameId = null;
   var editPendingTags = null;
+  var editSizeEye = document.getElementById('editSizeEye');
+  var editSizeBridge = document.getElementById('editSizeBridge');
+  var editSizeTemple = document.getElementById('editSizeTemple');
+  var editSideStatus = document.getElementById('editSideStatus');
+  var editSideBtn = document.getElementById('editSideBtn');
+
+  // What the Add Frames page is photographing: a new frame's front, or the temple
+  // (side view) of an existing frame, used for its 3D temples.
+  var addTarget = { kind: 'front', frameId: null };
+  var lastAddedId = null;
+  var SIDE_BYTE_BUDGET = 700000;
+
+  // 3D preview of the model generated from the photo being added (own renderer).
+  var preview = { renderer: null, promise: null, key: null, seq: 0, timer: 0, failed: false };
+
+  function readSize(eye, bridge, temple) {
+    return cleanSize({ eye: eye.value, bridge: bridge.value, temple: temple.value });
+  }
+  function fillSize(size, eye, bridge, temple) {
+    eye.value = size && size.eye ? size.eye : '';
+    bridge.value = size && size.bridge ? size.bridge : '';
+    temple.value = size && size.temple ? size.temple : '';
+  }
 
   function resetLocalState() {
+    if (ar.renderer) { ar.renderer.dispose(); }
+    ar.renderer = null; ar.promise = null; ar.frameKey = null; ar.loadingKey = null; ar.failedKey = null;
+    sideCache = {};
+    photo3d = null;
+    livePd.value = ''; photoPd.value = '';
     catalogIndex = []; fullDataCache = {}; activeFrameId = null;
     allFreeTags = new Set();
     activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
@@ -349,27 +408,40 @@ function track(eventName, params) {
     return parts.length ? parts.join(', ') : 'Untagged frame';
   }
 
+  // Tags plus the recorded size (if any), e.g. "Round, Tortoise \u00b7 49\u25A121 145".
+  function describeFrame(entry) {
+    if (!entry) return '';
+    var size = sizeLabel(entry.size);
+    return describeTags(entry.tags) + (size ? ' \u00b7 ' + size : '');
+  }
+
   function findEntry(id) {
     for (var i = 0; i < catalogIndex.length; i++) { if (catalogIndex[i].id === id) return catalogIndex[i]; }
     return null;
   }
 
   function shrinkToBudget(canvas, maxBytes, mime, quality) {
+    return shrinkToBudgetScaled(canvas, maxBytes, mime, quality).dataUrl;
+  }
+
+  // Same, but also reports the final pixel size, so points tapped on the original
+  // canvas (lens centres, hinge) can be scaled to match the saved image.
+  function shrinkToBudgetScaled(canvas, maxBytes, mime, quality) {
     mime = mime || 'image/png';
     var toUrl = function (c) { return quality != null ? c.toDataURL(mime, quality) : c.toDataURL(mime); };
     var dataUrl = toUrl(canvas);
-    var scale = 1, tries = 0;
+    var scale = 1, tries = 0, w = canvas.width, h = canvas.height;
     while (dataUrl.length > maxBytes && tries < 7) {
       scale *= 0.82;
-      var w = Math.max(80, Math.round(canvas.width * scale));
-      var h = Math.max(80, Math.round(canvas.height * scale));
+      w = Math.max(80, Math.round(canvas.width * scale));
+      h = Math.max(80, Math.round(canvas.height * scale));
       var tmp = document.createElement('canvas');
       tmp.width = w; tmp.height = h;
       tmp.getContext('2d').drawImage(canvas, 0, 0, w, h);
       dataUrl = toUrl(tmp);
       tries++;
     }
-    return dataUrl;
+    return { dataUrl: dataUrl, w: w, h: h, sx: w / canvas.width, sy: h / canvas.height };
   }
 
   function drawMarkerOn(c, x, y) {
@@ -678,20 +750,45 @@ function track(eventName, params) {
   // ---------- face photo / try-on (session-only, never persisted) ----------
 
   function redrawFacePreview() {
-    if (!faceHasImage) return;
+    if (!faceHasImage) { hidePhotoAr(); return; }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     ctx.drawImage(faceBaseCanvas, 0, 0);
     if (facePoints.length < 2) {
+      hidePhotoAr();
       facePoints.forEach(function (p) { drawMarkerOn(ctx, p.x, p.y); });
       return;
     }
-    if (!activeFrameId) return;
+    if (!activeFrameId || !photoOverlayOn) { hidePhotoAr(); return; }
     var thisId = activeFrameId;
-    getFullFrameData(thisId).then(function (full) {
-      if (activeFrameId !== thisId) return;
-      drawFrameOnFace(full, facePoints[0], facePoints[1]);
-    }).catch(function (e) { console.error('Could not load frame data', e); });
+    var draw2d = function () {
+      hidePhotoAr();
+      getFullFrameData(thisId).then(function (full) {
+        if (activeFrameId !== thisId) return;
+        drawFrameOnFace(full, facePoints[0], facePoints[1]);
+      }).catch(function (e) { console.error('Could not load frame data', e); });
+    };
+    if (!photo3d || !photo3d.pose) { draw2d(); return; }
+    var shot = photo3d;
+    ensureRenderer().then(function (r) {
+      if (!r) return false;
+      return arUseFrame(thisId);
+    }).then(function (ok) {
+      if (activeFrameId !== thisId || photo3d !== shot || !faceHasImage || !photoOverlayOn) return;
+      if (!ok) { draw2d(); return; }           // no WebGL, or this frame's photo can't be turned into 3D
+      var r = ar.renderer;
+      r.attach(photoStage);
+      r.setSize(canvas.width, canvas.height);
+      r.setFit(fitSize.value / 100);
+      r.setVisible(true);
+      r.setExposure(shot.exposure);
+      r.resetFaceFit();
+      r.renderFace(shot.pose, shot.lm);
+    });
+  }
+
+  function hidePhotoAr() {
+    if (ar.renderer && ar.renderer.canvas.parentNode === photoStage) ar.renderer.detach();
   }
 
   function getFullFrameData(id) {
@@ -703,7 +800,7 @@ function track(eventName, params) {
       return new Promise(function (resolve, reject) {
         var img = new Image();
         img.onload = function () {
-          var result = { img: img, p1: data.p1, p2: data.p2 };
+          var result = { img: img, p1: scalePoint(data.p1, data, img), p2: scalePoint(data.p2, data, img) };
           fullDataCache[id] = result;
           resolve(result);
         };
@@ -748,7 +845,13 @@ function track(eventName, params) {
   }
 
   function updateCalibBanner() {
-    if (!faceHasImage) { calibBanner.style.display = 'none'; return; }
+    updateCatalogButtons();
+    if (!faceHasImage) {
+      calibBanner.style.display = 'none';
+      recalBtn.style.display = 'none';
+      fitRow.style.display = 'none';
+      return;
+    }
     if (detectingPupils) {
       calibBanner.textContent = 'Finding the pupils automatically\u2026';
       calibBanner.style.display = 'block';
@@ -795,7 +898,7 @@ function track(eventName, params) {
     var img = document.createElement('img');
     img.src = entry.thumbData;
     selectedThumbWrap.appendChild(img);
-    selectedText.textContent = 'Selected: ' + describeTags(entry.tags);
+    selectedText.textContent = 'Selected: ' + describeFrame(entry);
   }
 
   function updateSimilarCarousel() {
@@ -824,7 +927,7 @@ function track(eventName, params) {
       img.src = e.thumbData;
       item.appendChild(img);
       var cap = document.createElement('span');
-      cap.textContent = describeTags(e.tags);
+      cap.textContent = describeFrame(e);
       item.appendChild(cap);
       item.addEventListener('click', function () { selectFrame(e.id); });
       similarRow.appendChild(item);
@@ -868,7 +971,7 @@ function track(eventName, params) {
     if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
   }
 
-  var MP_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm";
+  var MP_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
   var MP_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
 
   // Loaded once, on first use, not eagerly on page load -- the model is a real
@@ -889,6 +992,31 @@ function track(eventName, params) {
     return faceLandmarkerPromise;
   }
 
+  var lastPhotoLandmarks = null;     // full landmarks from the last automatic detection
+
+  // Runs automatic detection on the photo and, when a face is found, sets up the
+  // 3D overlay (photo3d). Falls back to the manual two-tap flow otherwise.
+  var photoSeq = 0;                  // bumped per photo, so a slow detection can't land on a newer one
+  function detectFaceInPhoto() {
+    var seq = ++photoSeq;
+    detectingPupils = true;
+    photo3d = null;
+    lastPhotoLandmarks = null;
+    updateCalibBanner();
+    var w = faceBaseCanvas.width, h = faceBaseCanvas.height;
+    detectPupilsAutomatically(faceBaseCanvas).then(function (points) {
+      if (seq !== photoSeq) return;
+      detectingPupils = false;
+      if (points) {
+        facePoints = points;
+        var pose = lastPhotoLandmarks ? estimateHeadPose(lastPhotoLandmarks, w, h) : null;
+        if (pose) photo3d = { lm: lastPhotoLandmarks, pose: pose, exposure: measureExposure(faceBaseCanvas, lastPhotoLandmarks, w, h) };
+      }
+      redrawFacePreview();
+      updateCalibBanner();
+    });
+  }
+
   function midpointOf(a, b) {
     if (!a || !b) return null;
     return { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -904,6 +1032,7 @@ function track(eventName, params) {
       var result = landmarker.detect(sourceCanvas);
       var landmarks = result && result.faceLandmarks && result.faceLandmarks[0];
       if (!landmarks || !landmarks.length) return null;
+      lastPhotoLandmarks = landmarks;
       var w = sourceCanvas.width, h = sourceCanvas.height;
       var left, right;
       if (landmarks.length >= 478) {
@@ -939,14 +1068,7 @@ function track(eventName, params) {
     captureBtn.style.display = 'none';
     retakeBtn.style.display = 'inline-block';
     redrawFacePreview();
-    detectingPupils = true;
-    updateCalibBanner();
-    detectPupilsAutomatically(faceBaseCanvas).then(function (points) {
-      detectingPupils = false;
-      if (points) facePoints = points;
-      redrawFacePreview();
-      updateCalibBanner();
-    });
+    detectFaceInPhoto();
     track('customer_session_started', { source: 'camera' });
     bumpPhotoCount();
   }
@@ -970,17 +1092,15 @@ function track(eventName, params) {
       captureBtn.style.display = 'none';
       retakeBtn.style.display = 'inline-block';
       redrawFacePreview();
-      detectingPupils = true;
-      updateCalibBanner();
-      detectPupilsAutomatically(faceBaseCanvas).then(function (points) {
-        detectingPupils = false;
-        if (points) facePoints = points;
-        redrawFacePreview();
-        updateCalibBanner();
-      });
+      detectFaceInPhoto();
       URL.revokeObjectURL(url);
       track('customer_session_started', { source: 'upload' });
       bumpPhotoCount();
+    };
+    img.onerror = function () {
+      URL.revokeObjectURL(url);
+      placeholder.textContent = "That file couldn't be opened as an image. Try a JPEG or PNG photo.";
+      placeholder.style.display = 'block';
     };
     img.src = url;
   }
@@ -989,6 +1109,11 @@ function track(eventName, params) {
     stopStream();
     faceHasImage = false;
     facePoints = [];
+    photo3d = null;
+    lastPhotoLandmarks = null;
+    photoSeq++;
+    detectingPupils = false;
+    hidePhotoAr();
     fitSize.value = 100; fitSizeVal.textContent = '100%';
     placeholder.textContent = 'No image yet. Start your camera or upload a photo to begin.';
     placeholder.style.display = 'block';
@@ -1009,16 +1134,174 @@ function track(eventName, params) {
   });
 
   cameraBtn.addEventListener('click', function () { stopLive(); startCamera(); });
-  uploadBtn.addEventListener('click', function () { stopLive(); fileInput.click(); });
+  uploadBtn.addEventListener('click', function () { stopLive(); fileInput.value = ''; fileInput.click(); });
   fileInput.addEventListener('change', function (e) {
     if (e.target.files && e.target.files[0]) handleFaceUpload(e.target.files[0]);
   });
   captureBtn.addEventListener('click', capturePhoto);
-  recalBtn.addEventListener('click', function () { facePoints = []; updateCalibBanner(); redrawFacePreview(); });
+  // Manual taps replace the automatic fit (and its 3D pose) with the 2D overlay.
+  recalBtn.addEventListener('click', function () { facePoints = []; photo3d = null; updateCalibBanner(); redrawFacePreview(); });
   retakeBtn.addEventListener('click', retakeFace);
+  photoCatalogBtn.addEventListener('click', function () { showInCatalog(activeFrameId); });
+  photoToggleBtn.addEventListener('click', function () {
+    photoOverlayOn = !photoOverlayOn;
+    updateCatalogButtons();
+    redrawFacePreview();
+  });
   fitSize.addEventListener('input', function () { fitSizeVal.textContent = fitSize.value + '%'; redrawFacePreview(); });
 
-  // ---------- live try-on (real-time tracking; see tracking.js for the maths) ----------
+  // ---------- 3D renderer (shared by live and photo try-on; see ar-renderer.js) ----------
+  // Loaded on first use. If WebGL is missing or three.js can't load, everything
+  // falls back to the flat 2D overlay.
+
+  var ar = { renderer: null, promise: null, failed: false, frameKey: null, loadingKey: null, loadingPromise: null, failedKey: null };
+  var sideCache = {};   // id -> Promise<{img, hinge, tip} | null>
+
+  function ensureRenderer() {
+    if (ar.renderer) return Promise.resolve(ar.renderer);
+    if (ar.failed) return Promise.resolve(null);
+    if (!ar.promise) {
+      ar.promise = createTryOnRenderer().then(function (r) {
+        ar.renderer = r;
+        r.setPD(customerPD());
+        return r;
+      }).catch(function (e) {
+        console.warn('3D try-on unavailable on this device; using the flat overlay', e);
+        ar.failed = true;
+        return null;
+      });
+    }
+    return ar.promise;
+  }
+
+  function loadImage(src) {
+    return new Promise(function (resolve, reject) {
+      var img = new Image();
+      img.onload = function () { resolve(img); };
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  // Points stored with a photo refer to the canvas it was saved from (imgW x imgH).
+  function scalePoint(pt, data, img) {
+    if (!pt) return pt;
+    var w = data.imgW, h = data.imgH;
+    if (!w || !h) {
+      var f = legacyShrinkFactor(img);
+      return f === 1 ? pt : { x: pt.x * f, y: pt.y * f };
+    }
+    if (w === img.naturalWidth && h === img.naturalHeight) return pt;
+    return { x: pt.x * img.naturalWidth / w, y: pt.y * img.naturalHeight / h };
+  }
+
+  // Frames saved before imgW/imgH were recorded: if the photo had to be shrunk
+  // (by 0.82 per step) to fit in Firestore, its lens points were left in the
+  // original 700 px coordinates. Such images have a tell-tale long side.
+  function legacyShrinkFactor(img) {
+    var long = Math.max(img.naturalWidth, img.naturalHeight), s = 1;
+    for (var n = 1; n <= 7; n++) {
+      s *= 0.82;
+      if (Math.abs(long - Math.max(80, Math.round(MAX_FRAME_DIM * s))) <= 1) return long / MAX_FRAME_DIM;
+    }
+    return 1;
+  }
+
+  function getSideData(id) {
+    var entry = findEntry(id);
+    if (!entry || !entry.hasSide || !currentUser) return Promise.resolve(null);
+    if (!sideCache[id]) {
+      sideCache[id] = getDoc(doc(db, 'users', currentUser.uid, 'framesSide', id)).then(function (snap) {
+        if (!snap.exists()) return null;
+        var d = snap.data();
+        return loadImage(d.imageData).then(function (img) {
+          return { img: img, hinge: scalePoint(d.hinge, d, img), tip: scalePoint(d.tip, d, img) };
+        });
+      }).catch(function (e) {
+        console.error('Could not load the temple photo', e);
+        delete sideCache[id];
+        return null;
+      });
+    }
+    return sideCache[id];
+  }
+
+  function getTryOnFrame(id) {
+    var entry = findEntry(id);
+    return Promise.all([getFullFrameData(id), getSideData(id)]).then(function (r) {
+      return { img: r[0].img, p1: r[0].p1, p2: r[0].p2, tags: (entry && entry.tags) || {}, size: entry ? entry.size : null, side: r[1] };
+    });
+  }
+
+  // Makes the renderer show frame `id`; resolves true when it's ready, false if it
+  // can't be shown in 3D (then the caller uses the 2D overlay for this frame).
+  function arUseFrame(id) {
+    var r = ar.renderer;
+    if (!r || !id) return Promise.resolve(false);
+    if (ar.failedKey === id) return Promise.resolve(false);
+    if (ar.frameKey === id && r.current) return Promise.resolve(true);
+    if (ar.loadingKey === id && ar.loadingPromise) return ar.loadingPromise;
+    ar.loadingKey = id;
+    ar.loadingPromise = getTryOnFrame(id).then(function (data) {
+      if (ar.loadingKey !== id) return ar.frameKey === id;
+      var res = r.setFrame(id, data);
+      ar.loadingKey = null;
+      if (!res.ok) {
+        console.warn('Frame ' + id + ' cannot be shown in 3D: ' + res.reason);
+        ar.failedKey = id; ar.frameKey = null;
+        return false;
+      }
+      ar.frameKey = id;
+      return true;
+    }).catch(function (e) {
+      console.error('Could not prepare frame for 3D', e);
+      if (ar.loadingKey === id) { ar.loadingKey = null; ar.failedKey = id; }
+      return false;
+    });
+    return ar.loadingPromise;
+  }
+
+  // Drop cached 3D data for a frame after its photo, size or tags change.
+  function arForget(id) {
+    if (ar.renderer) ar.renderer.forget(id);
+    if (ar.frameKey === id) ar.frameKey = null;
+    if (ar.failedKey === id) ar.failedKey = null;
+    delete sideCache[id];
+  }
+
+  // Average brightness of the forehead and cheeks, relative to a well-lit face,
+  // so the frame isn't brighter than everything around it in a dim room.
+  var EXPOSURE_SPOTS = [151, 9, 50, 280, 101, 330];
+  var exposureCanvas = null;
+  function measureExposure(source, lm, w, h) {
+    try {
+      if (!exposureCanvas) exposureCanvas = document.createElement('canvas');
+      var c = exposureCanvas; c.width = 64; c.height = 64;
+      var g = c.getContext('2d', { willReadFrequently: true });
+      var size = Math.max(4, Math.abs(lm[454].x - lm[234].x) * w * 0.06), sum = 0, n = 0;
+      for (var i = 0; i < EXPOSURE_SPOTS.length; i++) {
+        var p = lm[EXPOSURE_SPOTS[i]];
+        g.drawImage(source, p.x * w - size / 2, p.y * h - size / 2, size, size, 0, 0, 8, 8);
+        var d = g.getImageData(0, 0, 8, 8).data;
+        for (var k = 0; k < d.length; k += 4) { sum += 0.2126 * d[k] + 0.7152 * d[k + 1] + 0.0722 * d[k + 2]; n++; }
+      }
+      return n ? (sum / n / 255) / 0.62 : 1;
+    } catch (e) { return 1; }
+  }
+
+  function customerPD() {
+    var v = parseFloat(livePd.value || photoPd.value);
+    return (v >= 50 && v <= 80) ? v : DEFAULT_PD_MM;
+  }
+  function onPdInput(src, other) {
+    other.value = src.value;
+    if (ar.renderer) ar.renderer.setPD(customerPD());
+    redrawFacePreview();
+  }
+  livePd.addEventListener('input', function () { onPdInput(livePd, photoPd); });
+  photoPd.addEventListener('input', function () { onPdInput(photoPd, livePd); });
+
+  // ---------- live try-on (real-time tracking; see headpose.js / tracking.js for the maths) ----------
   // Camera frames are processed locally by MediaPipe in this tab. Nothing from the
   // camera is stored, uploaded or captured; the stream is stopped whenever the
   // customer leaves the Try On tab, hides the page, signs out or presses Stop.
@@ -1040,15 +1323,18 @@ function track(eventName, params) {
   var liveStrip = document.getElementById('liveStrip');
   var liveSearch = document.getElementById('liveSearch');
   var liveStripEmpty = document.getElementById('liveStripEmpty');
+  var liveCatalogBtn = document.getElementById('liveCatalogBtn');
 
   var CANCELLED = { cancelled: true };
   var FACE_LOST_GRACE_MS = 500;   // keep the last frame on screen through brief detection dropouts
+  var FACE_BLINK_MS = 150;        // 3D: hold the last glasses this long before hiding them
 
   var live = {
     token: 0, running: false, stream: null, landmarker: null, raf: 0,
     mirrored: true, overlayOn: true, devices: [], currentDeviceId: null,
-    lastVideoTime: -1, lastTs: 0, lastSeen: 0, statusText: '',
-    smoother: new PoseSmoother(),
+    lastVideoTime: -1, lastTs: 0, lastSeen: 0, statusText: '', synced: false, lastExposureAt: 0, exposure: 0,
+    smoother: new PoseSmoother(),        // 2D fallback
+    filter: new HeadPoseFilter(),        // 3D
     frame: null, frameId: null, loadingId: null, failedId: null
   };
 
@@ -1081,10 +1367,13 @@ function track(eventName, params) {
     liveError.style.display = msg ? 'block' : 'none';
   }
 
-  function liveCameraErrorMessage(err) {
+  var CAMERA_BLOCKED_MSG = "Camera access was blocked. Tap the camera/padlock icon in your browser's address bar, allow the camera for this site, then press Start again. You can also upload a photo below.";
+
+  function liveCameraErrorMessage(err, permissionState) {
     var name = err && err.name;
-    if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
-      return "Camera access was blocked. Tap the camera/padlock icon in your browser's address bar, allow the camera for this site, then press Start again. You can also upload a photo below.";
+    // some browsers report a refused permission with other error names
+    if (permissionState === 'denied' || name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+      return CAMERA_BLOCKED_MSG;
     }
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') {
       return "No camera was found on this device. Connect one and try again, or upload a photo below.";
@@ -1093,6 +1382,13 @@ function track(eventName, params) {
       return "The camera is busy or couldn't start. Close other apps or tabs that are using it, then try again.";
     }
     return "Couldn't start the camera. Try again, or upload a photo below.";
+  }
+
+  function cameraPermissionState() {
+    try {
+      if (!navigator.permissions || !navigator.permissions.query) return Promise.resolve('unknown');
+      return navigator.permissions.query({ name: 'camera' }).then(function (s) { return s.state; }, function () { return 'unknown'; });
+    } catch (e) { return Promise.resolve('unknown'); }
   }
 
   function syncLiveToggle() {
@@ -1104,6 +1400,7 @@ function track(eventName, params) {
     liveStartBtn.disabled = false;
     liveStopBtn.style.display = running ? 'inline-block' : 'none';
     liveToggleBtn.style.display = running ? 'inline-block' : 'none';
+    liveCatalogBtn.style.display = running && activeFrameId ? 'inline-block' : 'none';
     liveFitRow.style.display = running ? 'block' : 'none';
     liveStripWrap.style.display = running ? 'block' : 'none';
     if (!running) liveSwitchBtn.style.display = 'none';
@@ -1120,7 +1417,11 @@ function track(eventName, params) {
     g.setTransform(1, 0, 0, 1, 0, 0);
     g.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
     liveViewport.style.display = 'none';
+    liveViewport.classList.remove('synced');
+    live.synced = false;
+    if (ar.renderer && ar.renderer.canvas.parentNode === liveViewport) { ar.renderer.clear(); ar.renderer.detach(); }
     live.smoother.reset();
+    live.filter.reset();
     live.lastVideoTime = -1;
     live.frame = null; live.frameId = null; live.loadingId = null; live.failedId = null;
     setLiveStatus('');
@@ -1161,9 +1462,19 @@ function track(eventName, params) {
       if (token !== live.token) throw CANCELLED;
       stage = 'model';
       setLiveStatus('Loading face tracking…');
-      return getLiveLandmarker();
-    }).then(function (landmarker) {
+      // the 3D renderer loads alongside the tracking model; it never blocks the start
+      return Promise.all([getLiveLandmarker(), ensureRenderer()]);
+    }).then(function (loaded) {
       if (token !== live.token) throw CANCELLED;
+      var landmarker = loaded[0];
+      if (loaded[1]) {
+        loaded[1].attach(liveViewport);
+        loaded[1].resetFaceFit();
+        loaded[1].setFit(liveFit.value / 100);
+        loaded[1].setVisible(true);
+      }
+      live.filter.reset();
+      live.exposure = 0; live.lastExposureAt = 0;
       live.landmarker = landmarker;
       live.running = true;
       live.lastSeen = performance.now();
@@ -1184,9 +1495,11 @@ function track(eventName, params) {
       if (err === CANCELLED) return;
       console.error('Live try-on failed to start (' + stage + ')', err);
       stopLive();
-      showLiveError(stage === 'model'
-        ? "Couldn't load the face-tracking model. Check your internet connection and try again."
-        : liveCameraErrorMessage(err));
+      if (stage === 'model') {
+        showLiveError("Couldn't load the face-tracking model. Check your internet connection and try again.");
+        return;
+      }
+      cameraPermissionState().then(function (state) { showLiveError(liveCameraErrorMessage(err, state)); });
     });
   }
 
@@ -1214,30 +1527,66 @@ function track(eventName, params) {
     var ts = Math.max(now, live.lastTs + 1);    // MediaPipe needs strictly increasing timestamps
     live.lastTs = ts;
 
+    // Snapshot the camera frame first and track that snapshot: the picture shown
+    // and the picture tracked are then exactly the same pixels, drawn together
+    // with the glasses, so the two can never drift apart (on a slow device the
+    // picture updates less often instead of the glasses trailing the face). The
+    // <video> element is only the source and is hidden once this starts.
+    var g = liveCanvas.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.drawImage(v, 0, 0, liveCanvas.width, liveCanvas.height);
+    if (!live.synced) { live.synced = true; liveViewport.classList.add('synced'); }
+
     var result;
-    try { result = live.landmarker.detectForVideo(v, ts); }
+    try { result = live.landmarker.detectForVideo(liveCanvas, ts); }
     catch (e) { console.error('Face tracking error', e); return; }
 
     var lm = result && result.faceLandmarks && result.faceLandmarks[0];
     var raw = lm ? poseFromLandmarks(lm, v.videoWidth, v.videoHeight) : null;
-    var g = liveCanvas.getContext('2d');
+    var r3 = ar.renderer && ar.renderer.canvas.parentNode === liveViewport ? ar.renderer : null;
 
     if (!raw) {
       if (now - live.lastSeen > FACE_LOST_GRACE_MS) {
         live.smoother.reset();
-        g.setTransform(1, 0, 0, 1, 0, 0);
-        g.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+        live.filter.reset();
+        if (r3) r3.clear();
         setLiveStatus('No face found — move into view and look at the camera');
-      }
+      } else if (r3 && now - live.lastSeen > FACE_BLINK_MS) {
+        r3.clear();               // don't leave glasses floating where the face was
+      }                           // (a one- or two-frame dropout keeps the last glasses: no flicker)
       return;
     }
     live.lastSeen = now;
 
-    g.setTransform(1, 0, 0, 1, 0, 0);
-    g.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+    if (!activeFrameId) { if (r3) r3.clear(); setLiveStatus('Pick a frame below to try it on'); return; }
+    if (!live.overlayOn) { if (r3) r3.clear(); setLiveStatus('Frame removed — tap "Show frame" or pick another'); return; }
 
-    if (!activeFrameId) { setLiveStatus('Pick a frame below to try it on'); return; }
-    if (!live.overlayOn) { setLiveStatus('Frame removed — tap "Show frame" or pick another'); return; }
+    // 3D path: full head pose (turns, nods, tilts), perspective, occlusion
+    if (r3 && ar.failedKey !== activeFrameId) {
+      if (ar.frameKey !== activeFrameId) {
+        r3.clear();
+        arUseFrame(activeFrameId);
+        setLiveStatus('Building the 3D frame…');
+        return;
+      }
+      var pose3 = estimateHeadPose(lm, v.videoWidth, v.videoHeight);
+      if (!pose3) { r3.clear(); return; }
+      if (now - live.lastExposureAt > 500) {
+        live.lastExposureAt = now;
+        var e = measureExposure(liveCanvas, lm, v.videoWidth, v.videoHeight);
+        live.exposure = live.exposure ? live.exposure + (e - live.exposure) * 0.3 : e;
+        r3.setExposure(live.exposure);
+      }
+      var sm = live.filter.update(pose3, now);
+      r3.setSize(v.videoWidth, v.videoHeight);
+      r3.renderFace(sm, lm);
+      var turn = Math.abs(eulerFromMatrix(sm.R).yaw);
+      setLiveStatus(turn > 1.0 ? 'Turn back towards the camera' : '');
+      return;
+    }
+    if (r3) r3.clear();
+
+    // 2D fallback (no WebGL, or this frame can't be built in 3D)
     if (live.failedId === activeFrameId) { setLiveStatus("Couldn't load this frame — pick another"); return; }
     if (live.frameId !== activeFrameId) { loadLiveFrame(activeFrameId); setLiveStatus('Loading frame…'); return; }
 
@@ -1253,7 +1602,7 @@ function track(eventName, params) {
     var q = normalizeSearch(liveSearch.value);
     var list = catalogIndex.filter(function (e) {
       if (!q) return true;
-      var hay = normalizeSearch(describeTags(e.tags) + ' ' + ((e.tags && e.tags.free) || []).join(' '));
+      var hay = normalizeSearch(describeFrame(e) + ' ' + ((e.tags && e.tags.free) || []).join(' '));
       return q.split(/\s+/).every(function (word) { return hay.indexOf(word) !== -1; });
     });
     list.forEach(function (e) {
@@ -1268,8 +1617,9 @@ function track(eventName, params) {
       img.src = e.thumbData;
       item.appendChild(img);
       var cap = document.createElement('span');
-      cap.textContent = describeTags(e.tags);
+      cap.textContent = describeFrame(e);
       item.appendChild(cap);
+      item.setAttribute('aria-label', 'Try on: ' + describeFrame(e));
       item.addEventListener('click', function () { selectFrame(e.id); });
       liveStrip.appendChild(item);
     });
@@ -1306,7 +1656,11 @@ function track(eventName, params) {
     live.devices.forEach(function (d, i) { if (d.deviceId === live.currentDeviceId) idx = i; });
     startLive(live.devices[(idx + 1) % live.devices.length].deviceId);
   });
-  liveFit.addEventListener('input', function () { liveFitVal.textContent = liveFit.value + '%'; });
+  liveFit.addEventListener('input', function () {
+    liveFitVal.textContent = liveFit.value + '%';
+    if (ar.renderer) ar.renderer.setFit(liveFit.value / 100);
+  });
+  liveCatalogBtn.addEventListener('click', function () { showInCatalog(activeFrameId); });
   liveSearch.addEventListener('input', renderLiveStrip);
   // Privacy: never keep the camera open while the page is hidden or being closed.
   document.addEventListener('visibilitychange', function () { if (document.hidden) stopLive(); });
@@ -1315,14 +1669,15 @@ function track(eventName, params) {
   // ---------- add-frame tags ----------
 
   function renderAddChips() {
-    renderChipGroup(shapeChips, 'shape', pendingTags.shape, function (v) { pendingTags.shape = v; });
-    renderChipGroup(colorChips, 'color', pendingTags.color, function (v) { pendingTags.color = v; });
+    renderChipGroup(shapeChips, 'shape', pendingTags.shape, function (v) { pendingTags.shape = v; schedulePreview(); });
+    renderChipGroup(colorChips, 'color', pendingTags.color, function (v) { pendingTags.color = v; schedulePreview(); });
     renderChipGroup(genderChips, 'gender', pendingTags.gender, function (v) { pendingTags.gender = v; });
     renderChipGroup(rimChips, 'rim', pendingTags.rim, function (v) { pendingTags.rim = v; });
   }
 
   function resetTagInputs() {
     pendingTags = { shape: null, color: null, gender: null, rim: null, free: [] };
+    fillSize(null, sizeEye, sizeBridge, sizeTemple);
     renderAddChips();
     freeTagInput.value = '';
     renderFreeTagList();
@@ -1405,6 +1760,9 @@ function track(eventName, params) {
     renderChipGroup(editRimChips, 'rim', editPendingTags.rim, function (v) { editPendingTags.rim = v; });
     renderEditFreeTagList();
     editFreeTagInput.value = '';
+    fillSize(entry.size, editSizeEye, editSizeBridge, editSizeTemple);
+    editSideStatus.textContent = entry.hasSide ? 'Uses its own temple photo.' : 'Uses a temple generated from the front photo.';
+    editSideBtn.textContent = entry.hasSide ? 'Replace temple photo' : 'Add temple photo';
 
     editTagsPanel.style.display = 'block';
     editTagsPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -1430,6 +1788,11 @@ function track(eventName, params) {
   });
 
   cancelEditTagsBtn.addEventListener('click', closeEditTags);
+  editSideBtn.addEventListener('click', function () {
+    var id = editingFrameId;
+    closeEditTags();
+    if (id) enterSideMode(id);
+  });
 
   saveTagsBtn.addEventListener('click', function () {
     if (!editingFrameId || !currentUser || !editPendingTags) return;
@@ -1439,10 +1802,14 @@ function track(eventName, params) {
       gender: editPendingTags.gender, rim: editPendingTags.rim,
       free: editPendingTags.free.slice()
     };
+    var newSize = readSize(editSizeEye, editSizeBridge, editSizeTemple);
     saveTagsBtn.disabled = true;
-    updateDoc(doc(db, 'users', currentUser.uid, 'frames', id), { tags: newTags }).then(function () {
+    updateDoc(doc(db, 'users', currentUser.uid, 'frames', id), { tags: newTags, size: newSize }).then(function () {
       var entry = findEntry(id);
-      if (entry) entry.tags = newTags;
+      if (entry) { entry.tags = newTags; entry.size = newSize; }
+      arForget(id);                       // tags/size change how the 3D model is built
+      renderLiveStrip();
+      if (activeFrameId === id) redrawFacePreview();
       saveTagsBtn.disabled = false;
       renderLibrary();
       rebuildFilterBar();
@@ -1512,6 +1879,7 @@ function track(eventName, params) {
       var newTags = Object.assign({}, entry.tags, patch);
       return updateDoc(doc(db, 'users', uid, 'frames', id), { tags: newTags }).then(function () {
         entry.tags = newTags;
+        arForget(id);
       });
     });
 
@@ -1651,7 +2019,14 @@ function track(eventName, params) {
       var tagsWrap = document.createElement('div');
       tagsWrap.className = 'frame-card-tags';
       var parts = [entry.tags.shape, entry.tags.color, entry.tags.gender, entry.tags.rim].filter(Boolean);
-      if (!parts.length) {
+      var sizeText = sizeLabel(entry.size);
+      if (sizeText) {
+        var sz = document.createElement('span');
+        sz.className = 'tag-chip';
+        sz.textContent = sizeText;
+        tagsWrap.appendChild(sz);
+      }
+      if (!parts.length && !sizeText) {
         var span = document.createElement('span');
         span.className = 'tag-chip';
         span.textContent = 'Untagged';
@@ -1727,13 +2102,45 @@ function track(eventName, params) {
     var uid = currentUser.uid;
     deleteDoc(doc(db, 'users', uid, 'frames', id)).catch(function (e) { console.error('Failed to delete frame doc', e); });
     deleteDoc(doc(db, 'users', uid, 'framesFull', id)).catch(function (e) { console.error('Failed to delete frame data', e); });
+    deleteDoc(doc(db, 'users', uid, 'framesSide', id)).catch(function (e) { console.error('Failed to delete temple photo', e); });
+    arForget(id);
+    if (addTarget.kind === 'side' && addTarget.frameId === id) { discardPendingFrame(); exitSideMode(); }
+  }
+
+  // "Return to the product": the frame's card in the catalog (Browse tab).
+  function showInCatalog(id) {
+    if (!id) return;
+    showTab('browse');
+    var card = libraryRow.querySelector('[data-id="' + id + '"]');
+    if (card && card.style.display === 'none') {        // hidden by a filter: clear filters so it shows
+      activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
+      rebuildFilterBar();
+      applyFilters();
+    }
+    if (!card) return;
+    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    card.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
+    card.classList.add('flash');
+    setTimeout(function () { card.classList.remove('flash'); }, 1800);
+    var btn = card.querySelector('.frame-card-tryon');
+    if (btn) btn.focus({ preventScroll: true });
+  }
+
+  function updateCatalogButtons() {
+    liveCatalogBtn.style.display = live.running && activeFrameId ? 'inline-block' : 'none';
+    var photoReady = faceHasImage && activeFrameId && facePoints.length >= 2;
+    photoCatalogBtn.style.display = photoReady ? 'inline-block' : 'none';
+    photoToggleBtn.style.display = photoReady ? 'inline-block' : 'none';
+    photoToggleBtn.textContent = photoOverlayOn ? 'Remove frame' : 'Show frame';
   }
 
   function selectFrame(id) {
     activeFrameId = id;
     live.overlayOn = true;
+    photoOverlayOn = true;
     syncLiveToggle();
     updateLiveStripActive();
+    updateCatalogButtons();
     var cards = libraryRow.querySelectorAll('.frame-card');
     for (var i = 0; i < cards.length; i++) cards[i].classList.toggle('active', cards[i].dataset.id === id);
     updateSelectedBanner();
@@ -1776,7 +2183,7 @@ function track(eventName, params) {
       snap.forEach(function (d) {
         var data = d.data();
         if (data.tags && data.tags.free) data.tags.free.forEach(function (t) { allFreeTags.add(t); });
-        catalogIndex.push({ id: d.id, thumbData: data.thumbData, tags: data.tags || {} });
+        catalogIndex.push({ id: d.id, thumbData: data.thumbData, tags: data.tags || {}, size: cleanSize(data.size), hasSide: !!data.hasSide });
       });
       refreshTagSuggestions();
       renderLibrary();
@@ -1805,15 +2212,18 @@ function track(eventName, params) {
   }
 
   function updateFrameSourceUI() {
+    var none = addTarget.kind === 'side'
+      ? 'No temple photo yet.\nUse your camera or upload a side view of the frame.'
+      : 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
     if (bgRemovalMode === 'ai') {
       twoShotStepRow.style.display = 'none';
-      frameSourcePlaceholder.textContent = 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
+      frameSourcePlaceholder.textContent = none;
       frameSourcePlaceholder.style.display = 'block';
       return;
     }
     if (bgRemovalMode !== 'twoShot') {
       twoShotStepRow.style.display = 'none';
-      frameSourcePlaceholder.textContent = 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
+      frameSourcePlaceholder.textContent = none;
       frameSourcePlaceholder.style.display = 'block';
       return;
     }
@@ -2041,14 +2451,161 @@ function track(eventName, params) {
     fctx.drawImage(pendingProcessedCanvas, 0, 0);
     frameCalibPoints.forEach(function (p) { drawMarkerOn(fctx, p.x, p.y); });
     updateFrameCalibBanner();
+    schedulePreview();
+  }
+
+  // ---------- add-frame: 3D preview of the generated model ----------
+
+  function schedulePreview() {
+    clearTimeout(preview.timer);
+    if (!pendingRawCanvas || frameCalibPoints.length < 2 || aiRemovalLoading) {
+      modelPreview.style.display = 'none';
+      return;
+    }
+    preview.timer = setTimeout(buildPreview, 180);   // let slider drags settle first
+  }
+
+  function buildPreview() {
+    if (preview.failed || !pendingRawCanvas || frameCalibPoints.length < 2) return;
+    var seq = ++preview.seq;
+    // snapshot: the processed canvas keeps changing while the tools are used
+    var snap = document.createElement('canvas');
+    snap.width = pendingProcessedCanvas.width; snap.height = pendingProcessedCanvas.height;
+    snap.getContext('2d').drawImage(pendingProcessedCanvas, 0, 0);
+    var pts = frameCalibPoints.slice();
+    var target = addTarget;
+    if (!preview.promise) {
+      preview.promise = createTryOnRenderer().then(function (r) { preview.renderer = r; return r; })
+        .catch(function (e) { console.warn('3D preview unavailable', e); preview.failed = true; return null; });
+    }
+    var dataPromise = target.kind === 'side'
+      ? getFullFrameData(target.frameId).then(function (full) {
+          var entry = findEntry(target.frameId) || {};
+          return { img: full.img, p1: full.p1, p2: full.p2, tags: entry.tags || {}, size: entry.size || null, side: { img: snap, hinge: pts[0], tip: pts[1] } };
+        })
+      : Promise.resolve({ img: snap, p1: pts[0], p2: pts[1], tags: pendingTags, size: readSize(sizeEye, sizeBridge, sizeTemple), side: null });
+    Promise.all([preview.promise, dataPromise]).then(function (res) {
+      var r = res[0], data = res[1];
+      if (seq !== preview.seq || !r) { if (!r) modelPreview.style.display = 'none'; return; }
+      if (preview.key) r.forget(preview.key);
+      preview.key = 'pending-' + seq;
+      var out = r.setFrame(preview.key, data);
+      modelPreview.style.display = 'block';
+      r.attach(modelPreviewStage);
+      if (!out.ok) {
+        r.clear();
+        modelPreviewHint.textContent = target.kind === 'side'
+          ? "Couldn't find the temple between the two points \u2014 check the cut-out and tap again."
+          : "This cut-out can't be turned into 3D (" + out.reason + "). The flat overlay will be used for it.";
+        return;
+      }
+      var a = out.analysis;
+      modelPreviewHint.textContent = target.kind === 'side'
+        ? 'The 3D try-on will use this temple. Slide to turn it.'
+        : 'Generated from this photo' + (a.lensFound[0] || a.lensFound[1] ? ', with glass lenses' : '') + (a.metal ? ', metal finish' : '') + '. Slide to turn it.';
+      renderPreviewNow();
+    }).catch(function (e) { console.error('Preview failed', e); });
+  }
+
+  function renderPreviewNow() {
+    var r = preview.renderer;
+    if (!r || !r.current) return;
+    var rect = modelPreviewStage.getBoundingClientRect();
+    var w = Math.max(320, Math.round(rect.width * (window.devicePixelRatio || 1)));
+    r.setSize(Math.min(w, 960), Math.round(Math.min(w, 960) * 9 / 16));
+    r.renderPreview(modelPreviewYaw.value * Math.PI / 180, -0.12);
+  }
+  modelPreviewYaw.addEventListener('input', renderPreviewNow);
+  [sizeEye, sizeBridge, sizeTemple].forEach(function (el) { el.addEventListener('change', schedulePreview); });
+
+  // ---------- add-frame: temple (side) photo for an existing frame ----------
+
+  function enterSideMode(id) {
+    var entry = findEntry(id);
+    if (!entry) return;
+    showTab('add');
+    discardPendingFrame();
+    addTarget = { kind: 'side', frameId: id };
+    sideTargetThumb.innerHTML = '';
+    var img = document.createElement('img');
+    img.src = entry.thumbData; img.alt = '';
+    sideTargetThumb.appendChild(img);
+    sideTargetText.textContent = (entry.hasSide ? 'Replace the temple photo for: ' : 'Temple photo for: ') + describeFrame(entry);
+    sideTarget.style.display = 'flex';
+    sideTargetHint.style.display = 'block';
+    framePhotoLabel.textContent = 'Temple photo';
+    frontOnlySection.style.display = 'none';
+    addToLibraryBtn.textContent = 'Save temple photo';
+    addedMsg.style.display = 'none';
+    advanceForNextCapture();
+  }
+
+  function exitSideMode() {
+    addTarget = { kind: 'front', frameId: null };
+    sideTarget.style.display = 'none';
+    sideTargetHint.style.display = 'none';
+    framePhotoLabel.textContent = 'Frame photo';
+    frontOnlySection.style.display = 'block';
+    addToLibraryBtn.textContent = 'Add to library';
+    updateFrameSourceUI();
+  }
+
+  function discardPendingFrame() {
+    pendingRawCanvas = null;
+    pendingAiRemovedCanvas = null;
+    aiRemovalLoading = false;
+    frameCalibPoints = [];
+    toolHistory = [];
+    setTool('none');
+    updateUndoState();
+    stopFrameStream();
+    frameVideo.style.display = 'none';
+    frameCaptureBtn.style.display = 'none';
+    modelPreview.style.display = 'none';
+    showFrameSourceChooser();
+  }
+
+  sideTargetCancel.addEventListener('click', function () {
+    discardPendingFrame();
+    exitSideMode();
+  });
+  addSideAfterBtn.addEventListener('click', function () { if (lastAddedId) enterSideMode(lastAddedId); });
+
+  function saveSidePhoto() {
+    var id = addTarget.frameId, entry = findEntry(id);
+    if (!entry || frameCalibPoints.length < 2 || !currentUser) return;
+    addToLibraryBtn.disabled = true;
+    var uid = currentUser.uid;
+    var out = shrinkToBudgetScaled(pendingProcessedCanvas, SIDE_BYTE_BUDGET, 'image/png');
+    var sc = function (p) { return { x: Math.round(p.x * out.sx * 10) / 10, y: Math.round(p.y * out.sy * 10) / 10 }; };
+    setDoc(doc(db, 'users', uid, 'framesSide', id), {
+      imageData: out.dataUrl, hinge: sc(frameCalibPoints[0]), tip: sc(frameCalibPoints[1]),
+      imgW: out.w, imgH: out.h, createdAt: serverTimestamp()
+    }).then(function () {
+      return updateDoc(doc(db, 'users', uid, 'frames', id), { hasSide: true });
+    }).then(function () {
+      entry.hasSide = true;
+      arForget(id);
+      discardPendingFrame();
+      exitSideMode();
+      addedMsgText.textContent = 'Temple photo saved \u2014 the 3D try-on now uses the real temple for this frame.';
+      addSideAfterBtn.style.display = 'none';
+      addedMsg.style.display = 'block';
+      track('temple_photo_added', {});
+    }).catch(function (e) {
+      console.error('Failed to save temple photo', e);
+      addToLibraryBtn.disabled = false;
+      frameCalibBanner.textContent = 'Something went wrong saving the temple photo \u2014 check the connection and try again.';
+    });
   }
 
   function updateFrameCalibBanner() {
     addToLibraryBtn.disabled = frameCalibPoints.length < 2 || aiRemovalLoading;
+    var side = addTarget.kind === 'side';
     if (aiRemovalLoading) { frameCalibBanner.textContent = 'Removing background with AI\u2026'; return; }
-    if (frameCalibPoints.length === 0) frameCalibBanner.textContent = 'Tap one lens center, then the other.';
-    else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = 'Now tap the other lens center.';
-    else frameCalibBanner.textContent = 'Ready \u2014 add it to your library.';
+    if (frameCalibPoints.length === 0) frameCalibBanner.textContent = side ? 'Tap the hinge (where the temple meets the front), then the far tip of the temple.' : 'Tap one lens center, then the other.';
+    else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = side ? 'Now tap the far tip of the temple.' : 'Now tap the other lens center.';
+    else frameCalibBanner.textContent = side ? 'Ready \u2014 check the 3D preview, then save.' : 'Ready \u2014 check the 3D preview, then add it to your library.';
   }
 
   bgTolerance.addEventListener('input', function () {
@@ -2147,6 +2704,7 @@ function track(eventName, params) {
 
   addToLibraryBtn.addEventListener('click', function () {
     if (frameCalibPoints.length < 2 || !currentUser) return;
+    if (addTarget.kind === 'side') { saveSidePhoto(); return; }
     addToLibraryBtn.disabled = true;
     var uid = currentUser.uid;
     var id = 'f' + Date.now() + '_' + Math.floor(Math.random() * 10000);
@@ -2157,21 +2715,25 @@ function track(eventName, params) {
     fullCanvas.getContext('2d').drawImage(pendingProcessedCanvas, 0, 0);
     var thumbCanvas = makeThumbCanvas(pendingProcessedCanvas, THUMB_DIM);
 
-    var fullData = shrinkToBudget(fullCanvas, FULL_BYTE_BUDGET, 'image/png');
+    var full = shrinkToBudgetScaled(fullCanvas, FULL_BYTE_BUDGET, 'image/png');
+    var fullData = full.dataUrl;
     var thumbData = shrinkToBudget(thumbCanvas, THUMB_BYTE_BUDGET, 'image/png');
 
-    var p1 = frameCalibPoints[0], p2 = frameCalibPoints[1];
+    // lens centres in the saved image's pixels (it may have been shrunk to fit)
+    var sc = function (p) { return { x: Math.round(p.x * full.sx * 10) / 10, y: Math.round(p.y * full.sy * 10) / 10 }; };
+    var p1 = sc(frameCalibPoints[0]), p2 = sc(frameCalibPoints[1]);
     var tags = { shape: pendingTags.shape, color: pendingTags.color, gender: pendingTags.gender, rim: pendingTags.rim, free: pendingTags.free.slice() };
+    var size = readSize(sizeEye, sizeBridge, sizeTemple);
 
     Promise.all([
-      setDoc(doc(db, 'users', uid, 'frames', id), { thumbData: thumbData, tags: tags, createdAt: serverTimestamp() }),
-      setDoc(doc(db, 'users', uid, 'framesFull', id), { imageData: fullData, p1: p1, p2: p2 })
+      setDoc(doc(db, 'users', uid, 'frames', id), { thumbData: thumbData, tags: tags, size: size, createdAt: serverTimestamp() }),
+      setDoc(doc(db, 'users', uid, 'framesFull', id), { imageData: fullData, p1: p1, p2: p2, imgW: full.w, imgH: full.h })
     ]).then(function () {
       var img = new Image();
       img.onload = function () { fullDataCache[id] = { img: img, p1: p1, p2: p2 }; };
       img.src = fullData;
 
-      catalogIndex.push({ id: id, thumbData: thumbData, tags: tags });
+      catalogIndex.push({ id: id, thumbData: thumbData, tags: tags, size: size, hasSide: false });
       renderLibrary();
       rebuildFilterBar();
       applyFilters();
@@ -2180,8 +2742,12 @@ function track(eventName, params) {
 
       pendingRawCanvas = null;
       pendingAiRemovedCanvas = null;
+      modelPreview.style.display = 'none';
       advanceForNextCapture();
       showFrameSourceChooser();
+      lastAddedId = id;
+      addedMsgText.textContent = 'Added to your catalog. Add another below, or head to Browse to try it on.';
+      addSideAfterBtn.style.display = 'block';
       addedMsg.style.display = 'block';
       selectFrame(id);
     }).catch(function (e) {
@@ -2192,15 +2758,8 @@ function track(eventName, params) {
   });
 
   cancelFrameBtn.addEventListener('click', function () {
-    pendingRawCanvas = null;
-    pendingAiRemovedCanvas = null;
-    aiRemovalLoading = false;
-    frameCalibPoints = [];
-    toolHistory = [];
-    setTool('none');
-    updateUndoState();
+    discardPendingFrame();
     advanceForNextCapture();
-    showFrameSourceChooser();
   });
 
   window.addEventListener('beforeunload', function () { stopStream(); stopFrameStream(); });

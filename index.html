@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=3">
+<link rel="stylesheet" href="styles.css?v=4">
 </head>
 <body>
   <div class="root">
@@ -95,6 +95,17 @@
             <input type="text" id="editFreeTagInput" placeholder="Type a tag, press Enter&hellip;" list="tagSuggestions">
           </div>
           <div class="tag-chip-list" id="editFreeTagList"></div>
+          <div class="label">Frame size (mm, optional)</div>
+          <div class="size-row">
+            <label>Eye <input type="number" id="editSizeEye" min="30" max="75" step="0.5" inputmode="decimal"></label>
+            <label>Bridge <input type="number" id="editSizeBridge" min="10" max="30" step="0.5" inputmode="decimal"></label>
+            <label>Temple <input type="number" id="editSizeTemple" min="100" max="170" step="1" inputmode="numeric"></label>
+          </div>
+          <div class="label">Temple photo (3D)</div>
+          <div class="row">
+            <span class="hint" id="editSideStatus" style="margin:0"></span>
+            <button class="btn ghost" id="editSideBtn" type="button">Add temple photo</button>
+          </div>
           <div class="row">
             <button class="btn primary" id="saveTagsBtn">Save changes</button>
             <button class="btn ghost" id="cancelEditTagsBtn" type="button">Cancel</button>
@@ -119,8 +130,9 @@
           <button class="btn" id="liveStopBtn" type="button" style="display:none">Stop camera</button>
           <button class="btn ghost" id="liveSwitchBtn" type="button" style="display:none">Switch camera</button>
           <button class="btn ghost" id="liveToggleBtn" type="button" style="display:none">Remove frame</button>
+          <button class="btn ghost" id="liveCatalogBtn" type="button" style="display:none">View in catalog</button>
         </div>
-        <div class="hint" id="liveTips">Face the camera in even, front-facing light, with your whole face in view. Nothing is recorded or uploaded &mdash; tracking runs on this device only.</div>
+        <div class="hint" id="liveTips">Face the camera at arm's length in even, front-facing light, with your whole face and both ears in view. Turn your head slowly to see the sides. Nothing is recorded or uploaded &mdash; tracking runs on this device only.</div>
         <div class="live-error" id="liveError" role="alert" style="display:none"></div>
         <div class="viewport live-viewport" id="liveViewport" style="display:none">
           <video id="liveVideo" autoplay playsinline muted></video>
@@ -130,6 +142,11 @@
         <div class="fit-row" id="liveFitRow">
           <div class="slider-label">Frame fit <span class="val" id="liveFitVal">100%</span></div>
           <input type="range" id="liveFit" min="70" max="130" value="100" aria-label="Frame fit">
+          <div class="pd-row">
+            <label for="livePd">Customer PD (mm)</label>
+            <input type="number" id="livePd" class="pd-input" min="50" max="80" step="0.5" placeholder="63" inputmode="decimal">
+          </div>
+          <div class="hint pd-hint">Optional: the customer's measured pupillary distance. With it, frames that have a recorded size are shown at their true size. Leave blank to use the adult average (63 mm).</div>
         </div>
         <div id="liveStripWrap" style="display:none">
           <div class="label">Choose a frame</div>
@@ -153,19 +170,25 @@
         <div class="viewport" id="viewport">
           <div class="placeholder" id="placeholder">No image yet.<br>Start your camera or upload a photo to begin.</div>
           <video id="video" autoplay playsinline muted style="display:none"></video>
-          <canvas id="canvas" style="display:none"></canvas>
+          <div class="photo-stage" id="photoStage"><canvas id="canvas" style="display:none"></canvas></div>
           <button class="btn primary capture-btn" id="captureBtn" style="display:none">Capture photo</button>
         </div>
         <div class="calib-banner" id="calibBanner">Tap one pupil in the photo to size the frame.</div>
         <div class="action-row">
           <button class="btn ghost" id="recalBtn" style="display:none">Recalibrate</button>
           <button class="btn ghost" id="retakeBtn" style="display:none">Retake photo</button>
+          <button class="btn ghost" id="photoToggleBtn" type="button" style="display:none">Remove frame</button>
+          <button class="btn ghost" id="photoCatalogBtn" type="button" style="display:none">View in catalog</button>
         </div>
 
         <div class="fit-row" id="fitRow">
           <div class="slider-label">Frame fit <span class="val" id="fitSizeVal">100%</span></div>
-          <input type="range" id="fitSize" min="70" max="130" value="100">
+          <input type="range" id="fitSize" min="70" max="130" value="100" aria-label="Frame fit">
           <div class="hint" style="margin:6px 0 0">If the frame looks too narrow or wide, adjust here.</div>
+          <div class="pd-row">
+            <label for="photoPd">Customer PD (mm)</label>
+            <input type="number" id="photoPd" class="pd-input" min="50" max="80" step="0.5" placeholder="63" inputmode="decimal">
+          </div>
         </div>
 
         <div class="no-selection-note" id="noSelectionNote">
@@ -179,7 +202,13 @@
 
       <!-- ================= ADD FRAMES ================= -->
       <div id="pageAdd" style="display:none">
-        <div class="label">Frame photo</div>
+        <div class="selected-banner side-target" id="sideTarget">
+          <span id="sideTargetThumb"></span>
+          <span class="sel-text" id="sideTargetText">Temple photo</span>
+          <button class="btn ghost" id="sideTargetCancel" type="button">Cancel</button>
+        </div>
+        <div class="hint" id="sideTargetHint" style="display:none">Photograph one temple (arm) from the side: open the frame, lay it on its side or hold it so the temple is flat and faces the camera straight-on, hinge on the left. The same background tips apply. This replaces the generated temple in the 3D try-on.</div>
+        <div class="label" id="framePhotoLabel">Frame photo</div>
         <div class="row" id="bgModeToggle">
           <button class="btn ghost active" id="bgModeSingleBtn" type="button">Single photo</button>
           <button class="btn ghost" id="bgModeTwoShotBtn" type="button">Two photos (more precise)</button>
@@ -202,7 +231,9 @@
             <video id="frameVideo" autoplay playsinline muted style="display:none"></video>
             <button class="btn primary capture-btn" id="frameCaptureBtn" style="display:none">Capture photo</button>
           </div>
-          <div class="added-msg" id="addedMsg">Added to your catalog. Add another below, or head to Browse to try it on.</div>
+          <div class="added-msg" id="addedMsg"><span id="addedMsgText">Added to your catalog. Add another below, or head to Browse to try it on.</span>
+            <button class="btn ghost" id="addSideAfterBtn" type="button">Add a temple photo (optional, for 3D)</button>
+          </div>
         </div>
 
         <div id="frameCalibSection" style="display:none">
@@ -226,6 +257,22 @@
           </div>
           <div class="calib-banner" id="frameCalibBanner" style="display:block">Tap one lens center, then the other.</div>
 
+          <div class="model-preview" id="modelPreview" style="display:none">
+            <div class="label">3D model preview</div>
+            <div class="model-preview-stage" id="modelPreviewStage"></div>
+            <input type="range" id="modelPreviewYaw" min="-75" max="75" value="30" aria-label="Turn the 3D preview">
+            <div class="hint" id="modelPreviewHint">Generated from this photo for the try-on. Slide to turn it.</div>
+          </div>
+
+          <div id="frontOnlySection">
+          <div class="label">Frame size <span style="text-transform:none">(optional &mdash; printed inside the temple, e.g. 52&#9633;18 140)</span></div>
+          <div class="size-row">
+            <label>Eye <input type="number" id="sizeEye" min="30" max="75" step="0.5" inputmode="decimal" placeholder="52"></label>
+            <label>Bridge <input type="number" id="sizeBridge" min="10" max="30" step="0.5" inputmode="decimal" placeholder="18"></label>
+            <label>Temple <input type="number" id="sizeTemple" min="100" max="170" step="1" inputmode="numeric" placeholder="140"></label>
+          </div>
+          <div class="hint">With eye + bridge the try-on shows this frame at its real size. Leave blank if unknown &mdash; nothing is guessed.</div>
+
           <div class="label">Shape <span style="text-transform:none">(optional)</span></div>
           <div class="chip-row" id="shapeChips"></div>
 
@@ -244,6 +291,7 @@
             <datalist id="tagSuggestions"></datalist>
           </div>
           <div class="tag-chip-list" id="freeTagList"></div>
+          </div>
 
           <div class="row">
             <button class="btn primary" id="addToLibraryBtn" disabled>Add to library</button>
@@ -254,6 +302,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=5"></script>
+  <script type="module" src="app.js?v=6"></script>
 </body>
 </html>
