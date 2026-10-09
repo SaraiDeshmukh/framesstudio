@@ -10,6 +10,8 @@ Images are stored directly inside Firestore documents rather than in Firebase St
 - `styles.css` — all styling
 - `firebase-config.js` — **the one file you edit** with your own Firebase project's keys
 - `app.js` — all the application logic
+- `tracking.js` — live try-on maths (smoothing, head pose, frame placement); no DOM, unit-tested
+- `tests/tracking.test.mjs` — unit tests for `tracking.js` (`node --test tests/tracking.test.mjs`, no dependencies)
 - `README.md` — this file
 
 ## 1. Create a Firebase project
@@ -77,6 +79,18 @@ users/{uid}/profile/face           — your saved photo: imageData, p1, p2
 ```
 
 `thumbData` and `imageData` are base64 PNG/JPEG strings, not URLs — the whole point of this setup is that no separate file storage is involved. Each is capped and, if a photo would still come out too large, automatically shrunk further until it comfortably fits inside Firestore's 1MB-per-document limit.
+
+## Live try-on (real-time face tracking)
+
+Try On tab → **Start live try-on** opens the front camera, tracks the face in real time and keeps the selected frame on the customer's eyes. Pick or search frames in the strip under the video to swap without restarting the camera. Controls: Stop camera, Switch camera (when more than one is available), Remove/Show frame, and a fit slider.
+
+How it works: MediaPipe Face Landmarker (the same model already used for photos, run in video mode) gives the two pupil positions each frame. A One Euro filter smooths them (steady when still, quick when moving). The frame's cut-out photo is placed so its two lens-centre calibration points land on the pupils, rotated with head roll and scaled to the pupil spacing. For head turns (yaw, estimated from where the nose sits between the cheeks) the frame's height is compensated, since only its width shrinks when the head turns. It is an affine 2D approximation, not 3D.
+
+Limits: a flat photo cannot show temples or depth, so beyond roughly 30-40 degrees of head turn, or with strong up/down tilt, it will look flat. Frames also don't hide behind the nose or ears. Fixing that properly needs a 3D model per frame. Quality depends on how cleanly each frame's background was removed and how precisely the lens centres were tapped when it was added.
+
+Privacy: video is processed in the browser tab only. Nothing is recorded, captured or uploaded. The camera stops when you press Stop, leave the Try On tab, hide the page or sign out. The model (about 4 MB) loads only when Start is pressed, from jsdelivr and storage.googleapis.com.
+
+Testing: `node --test tests/tracking.test.mjs` runs the maths tests. Real-camera behaviour (tracking accuracy, lighting, devices) can only be checked by hand on the deployed https site.
 
 ## Notes
 

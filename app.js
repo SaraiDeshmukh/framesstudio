@@ -9,6 +9,7 @@ import {
 } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
 import { getAnalytics, isSupported, logEvent } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
 import { FaceLandmarker, FilesetResolver } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision";
+import { PoseSmoother, poseFromLandmarks, frameTransform, drawFrame } from './tracking.js?v=1';
 
 // No Firebase Storage — images live directly inside Firestore documents, so this
 // app runs entirely on the free Spark plan. No billing account needed.
@@ -145,6 +146,7 @@ function track(eventName, params) {
       loadCatalog(user.uid);
       loadPhotoCount(user.uid);
     } else {
+      stopLive();
       appShell.style.display = 'none';
       authGate.style.display = 'block';
     }
@@ -167,6 +169,7 @@ function track(eventName, params) {
     tabTryOnBtn.classList.toggle('active', name === 'tryon');
     tabAddBtn.classList.toggle('active', name === 'add');
     if (name === 'tryon') updateTryOnHint();
+    if (name !== 'tryon') stopLive();   // never leave the camera running in the background
     if (name === 'browse') updateSelectedBanner();
   }
   tabBrowseBtn.addEventListener('click', function () { showTab('browse'); });
@@ -865,17 +868,18 @@ function track(eventName, params) {
     if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
   }
 
+  var MP_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm";
+  var MP_MODEL = "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task";
+
   // Loaded once, on first use, not eagerly on page load -- the model is a real
   // download and most visits to this app never touch the Try On tab at all.
   var faceLandmarkerPromise = null;
   function getFaceLandmarker() {
     if (!faceLandmarkerPromise) {
-      faceLandmarkerPromise = FilesetResolver.forVisionTasks(
-        "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision/wasm"
-      ).then(function (filesetResolver) {
+      faceLandmarkerPromise = FilesetResolver.forVisionTasks(MP_WASM).then(function (filesetResolver) {
         return FaceLandmarker.createFromOptions(filesetResolver, {
           baseOptions: {
-            modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task"
+            modelAssetPath: MP_MODEL
           },
           runningMode: "IMAGE",
           numFaces: 1
@@ -1004,8 +1008,8 @@ function track(eventName, params) {
     redrawFacePreview();
   });
 
-  cameraBtn.addEventListener('click', startCamera);
-  uploadBtn.addEventListener('click', function () { fileInput.click(); });
+  cameraBtn.addEventListener('click', function () { stopLive(); startCamera(); });
+  uploadBtn.addEventListener('click', function () { stopLive(); fileInput.click(); });
   fileInput.addEventListener('change', function (e) {
     if (e.target.files && e.target.files[0]) handleFaceUpload(e.target.files[0]);
   });
@@ -1013,6 +1017,300 @@ function track(eventName, params) {
   recalBtn.addEventListener('click', function () { facePoints = []; updateCalibBanner(); redrawFacePreview(); });
   retakeBtn.addEventListener('click', retakeFace);
   fitSize.addEventListener('input', function () { fitSizeVal.textContent = fitSize.value + '%'; redrawFacePreview(); });
+
+  // ---------- live try-on (real-time tracking; see tracking.js for the maths) ----------
+  // Camera frames are processed locally by MediaPipe in this tab. Nothing from the
+  // camera is stored, uploaded or captured; the stream is stopped whenever the
+  // customer leaves the Try On tab, hides the page, signs out or presses Stop.
+
+  var liveStartBtn = document.getElementById('liveStartBtn');
+  var liveStopBtn = document.getElementById('liveStopBtn');
+  var liveSwitchBtn = document.getElementById('liveSwitchBtn');
+  var liveToggleBtn = document.getElementById('liveToggleBtn');
+  var liveTips = document.getElementById('liveTips');
+  var liveError = document.getElementById('liveError');
+  var liveViewport = document.getElementById('liveViewport');
+  var liveVideo = document.getElementById('liveVideo');
+  var liveCanvas = document.getElementById('liveCanvas');
+  var liveStatus = document.getElementById('liveStatus');
+  var liveFitRow = document.getElementById('liveFitRow');
+  var liveFit = document.getElementById('liveFit');
+  var liveFitVal = document.getElementById('liveFitVal');
+  var liveStripWrap = document.getElementById('liveStripWrap');
+  var liveStrip = document.getElementById('liveStrip');
+  var liveSearch = document.getElementById('liveSearch');
+  var liveStripEmpty = document.getElementById('liveStripEmpty');
+
+  var CANCELLED = { cancelled: true };
+  var FACE_LOST_GRACE_MS = 500;   // keep the last frame on screen through brief detection dropouts
+
+  var live = {
+    token: 0, running: false, stream: null, landmarker: null, raf: 0,
+    mirrored: true, overlayOn: true, devices: [], currentDeviceId: null,
+    lastVideoTime: -1, lastTs: 0, lastSeen: 0, statusText: '',
+    smoother: new PoseSmoother(),
+    frame: null, frameId: null, loadingId: null, failedId: null
+  };
+
+  var liveLandmarkerPromise = null;
+  function getLiveLandmarker() {
+    if (!liveLandmarkerPromise) {
+      liveLandmarkerPromise = FilesetResolver.forVisionTasks(MP_WASM).then(function (fileset) {
+        function make(delegate) {
+          return FaceLandmarker.createFromOptions(fileset, {
+            baseOptions: { modelAssetPath: MP_MODEL, delegate: delegate },
+            runningMode: 'VIDEO',
+            numFaces: 1
+          });
+        }
+        return make('GPU').catch(function () { return make('CPU'); });
+      }).catch(function (e) { liveLandmarkerPromise = null; throw e; });
+    }
+    return liveLandmarkerPromise;
+  }
+
+  function setLiveStatus(text) {
+    text = text || '';
+    if (text === live.statusText) return;       // avoid touching the DOM 30x a second
+    live.statusText = text;
+    liveStatus.textContent = text;
+  }
+
+  function showLiveError(msg) {
+    liveError.textContent = msg || '';
+    liveError.style.display = msg ? 'block' : 'none';
+  }
+
+  function liveCameraErrorMessage(err) {
+    var name = err && err.name;
+    if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
+      return "Camera access was blocked. Tap the camera/padlock icon in your browser's address bar, allow the camera for this site, then press Start again. You can also upload a photo below.";
+    }
+    if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') {
+      return "No camera was found on this device. Connect one and try again, or upload a photo below.";
+    }
+    if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
+      return "The camera is busy or couldn't start. Close other apps or tabs that are using it, then try again.";
+    }
+    return "Couldn't start the camera. Try again, or upload a photo below.";
+  }
+
+  function syncLiveToggle() {
+    liveToggleBtn.textContent = live.overlayOn ? 'Remove frame' : 'Show frame';
+  }
+
+  function setLiveRunningUi(running) {
+    liveStartBtn.style.display = running ? 'none' : 'inline-block';
+    liveStartBtn.disabled = false;
+    liveStopBtn.style.display = running ? 'inline-block' : 'none';
+    liveToggleBtn.style.display = running ? 'inline-block' : 'none';
+    liveFitRow.style.display = running ? 'block' : 'none';
+    liveStripWrap.style.display = running ? 'block' : 'none';
+    if (!running) liveSwitchBtn.style.display = 'none';
+  }
+
+  function stopLive() {
+    live.token++;                       // cancels any start still in flight
+    live.running = false;
+    if (live.raf) { cancelAnimationFrame(live.raf); live.raf = 0; }
+    if (live.stream) { live.stream.getTracks().forEach(function (t) { t.stop(); }); live.stream = null; }
+    try { liveVideo.pause(); } catch (e) { /* ignore */ }
+    liveVideo.srcObject = null;
+    var g = liveCanvas.getContext('2d');
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+    liveViewport.style.display = 'none';
+    live.smoother.reset();
+    live.lastVideoTime = -1;
+    live.frame = null; live.frameId = null; live.loadingId = null; live.failedId = null;
+    setLiveStatus('');
+    setLiveRunningUi(false);
+  }
+
+  function startLive(deviceId) {
+    showLiveError('');
+    if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showLiveError("This browser can't open the camera on this page. Use a current version of Chrome, Edge, Safari or Firefox on the https:// address of the site. You can still upload a photo below.");
+      return;
+    }
+    stopLive();
+    stopStream();
+    retakeFace();                       // leave photo mode cleanly
+    var token = ++live.token;
+    var stage = 'camera';
+    liveStartBtn.disabled = true;
+    liveViewport.style.display = 'block';
+    setLiveStatus('Starting camera…');
+
+    var size = { width: { ideal: 1280 }, height: { ideal: 720 } };
+    var video = deviceId
+      ? Object.assign({ deviceId: { exact: deviceId } }, size)
+      : Object.assign({ facingMode: 'user' }, size);
+
+    navigator.mediaDevices.getUserMedia({ video: video, audio: false }).then(function (s) {
+      if (token !== live.token) { s.getTracks().forEach(function (t) { t.stop(); }); throw CANCELLED; }
+      live.stream = s;
+      var track0 = s.getVideoTracks()[0];
+      var settings = (track0 && track0.getSettings) ? track0.getSettings() : {};
+      live.mirrored = settings.facingMode !== 'environment';
+      live.currentDeviceId = settings.deviceId || deviceId || null;
+      liveViewport.classList.toggle('mirrored', live.mirrored);
+      liveVideo.srcObject = s;
+      return liveVideo.play();
+    }).then(function () {
+      if (token !== live.token) throw CANCELLED;
+      stage = 'model';
+      setLiveStatus('Loading face tracking…');
+      return getLiveLandmarker();
+    }).then(function (landmarker) {
+      if (token !== live.token) throw CANCELLED;
+      live.landmarker = landmarker;
+      live.running = true;
+      live.lastSeen = performance.now();
+      live.lastVideoTime = -1;
+      live.overlayOn = true;
+      syncLiveToggle();
+      setLiveRunningUi(true);
+      setLiveStatus('');
+      renderLiveStrip();
+      live.raf = requestAnimationFrame(liveTick);
+      track('customer_session_started', { source: 'live' });
+      return navigator.mediaDevices.enumerateDevices().then(function (list) {
+        if (token !== live.token) return;
+        live.devices = list.filter(function (d) { return d.kind === 'videoinput'; });
+        liveSwitchBtn.style.display = live.devices.length > 1 ? 'inline-block' : 'none';
+      }).catch(function () { /* switching just stays hidden */ });
+    }).catch(function (err) {
+      if (err === CANCELLED) return;
+      console.error('Live try-on failed to start (' + stage + ')', err);
+      stopLive();
+      showLiveError(stage === 'model'
+        ? "Couldn't load the face-tracking model. Check your internet connection and try again."
+        : liveCameraErrorMessage(err));
+    });
+  }
+
+  function loadLiveFrame(id) {
+    if (live.loadingId === id || live.failedId === id) return;
+    live.loadingId = id;
+    getFullFrameData(id).then(function (full) {
+      if (live.loadingId !== id) return;
+      live.frame = full; live.frameId = id; live.loadingId = null;
+    }).catch(function (e) {
+      console.error('Could not load frame for live try-on', e);
+      if (live.loadingId === id) { live.loadingId = null; live.failedId = id; }
+    });
+  }
+
+  function liveTick(now) {
+    if (!live.running) return;
+    live.raf = requestAnimationFrame(liveTick);
+    var v = liveVideo;
+    if (v.readyState < 2 || !v.videoWidth || v.currentTime === live.lastVideoTime) return;
+    live.lastVideoTime = v.currentTime;
+    if (liveCanvas.width !== v.videoWidth || liveCanvas.height !== v.videoHeight) {
+      liveCanvas.width = v.videoWidth; liveCanvas.height = v.videoHeight;
+    }
+    var ts = Math.max(now, live.lastTs + 1);    // MediaPipe needs strictly increasing timestamps
+    live.lastTs = ts;
+
+    var result;
+    try { result = live.landmarker.detectForVideo(v, ts); }
+    catch (e) { console.error('Face tracking error', e); return; }
+
+    var lm = result && result.faceLandmarks && result.faceLandmarks[0];
+    var raw = lm ? poseFromLandmarks(lm, v.videoWidth, v.videoHeight) : null;
+    var g = liveCanvas.getContext('2d');
+
+    if (!raw) {
+      if (now - live.lastSeen > FACE_LOST_GRACE_MS) {
+        live.smoother.reset();
+        g.setTransform(1, 0, 0, 1, 0, 0);
+        g.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+        setLiveStatus('No face found — move into view and look at the camera');
+      }
+      return;
+    }
+    live.lastSeen = now;
+
+    g.setTransform(1, 0, 0, 1, 0, 0);
+    g.clearRect(0, 0, liveCanvas.width, liveCanvas.height);
+
+    if (!activeFrameId) { setLiveStatus('Pick a frame below to try it on'); return; }
+    if (!live.overlayOn) { setLiveStatus('Frame removed — tap "Show frame" or pick another'); return; }
+    if (live.failedId === activeFrameId) { setLiveStatus("Couldn't load this frame — pick another"); return; }
+    if (live.frameId !== activeFrameId) { loadLiveFrame(activeFrameId); setLiveStatus('Loading frame…'); return; }
+
+    var pose = live.smoother.update(raw, now);
+    var tf = frameTransform(live.frame, pose, liveFit.value / 100);
+    if (!tf) { setLiveStatus("This frame has no usable lens points — re-add it"); return; }
+    setLiveStatus('');
+    drawFrame(g, live.frame.img, tf);
+  }
+
+  function renderLiveStrip() {
+    liveStrip.innerHTML = '';
+    var q = normalizeSearch(liveSearch.value);
+    var list = catalogIndex.filter(function (e) {
+      if (!q) return true;
+      var hay = normalizeSearch(describeTags(e.tags) + ' ' + ((e.tags && e.tags.free) || []).join(' '));
+      return q.split(/\s+/).every(function (word) { return hay.indexOf(word) !== -1; });
+    });
+    list.forEach(function (e) {
+      var item = document.createElement('button');
+      item.type = 'button';
+      item.className = 'similar-item' + (e.id === activeFrameId ? ' active' : '');
+      item.dataset.id = e.id;
+      item.setAttribute('aria-pressed', e.id === activeFrameId ? 'true' : 'false');
+      var img = document.createElement('img');
+      img.loading = 'lazy';
+      img.alt = '';
+      img.src = e.thumbData;
+      item.appendChild(img);
+      var cap = document.createElement('span');
+      cap.textContent = describeTags(e.tags);
+      item.appendChild(cap);
+      item.addEventListener('click', function () { selectFrame(e.id); });
+      liveStrip.appendChild(item);
+    });
+    liveStrip.style.display = list.length ? 'flex' : 'none';
+    if (!catalogIndex.length) {
+      liveStripEmpty.textContent = "There are no frames yet — add some on the Add Frames tab.";
+      liveStripEmpty.style.display = 'block';
+    } else if (!list.length) {
+      liveStripEmpty.textContent = 'No frames match that search.';
+      liveStripEmpty.style.display = 'block';
+    } else {
+      liveStripEmpty.style.display = 'none';
+    }
+  }
+
+  function updateLiveStripActive() {
+    var items = liveStrip.children;
+    for (var i = 0; i < items.length; i++) {
+      var on = items[i].dataset.id === activeFrameId;
+      items[i].classList.toggle('active', on);
+      items[i].setAttribute('aria-pressed', on ? 'true' : 'false');
+    }
+  }
+
+  liveStartBtn.addEventListener('click', function () { startLive(); });
+  liveStopBtn.addEventListener('click', stopLive);
+  liveToggleBtn.addEventListener('click', function () {
+    live.overlayOn = !live.overlayOn;
+    syncLiveToggle();
+  });
+  liveSwitchBtn.addEventListener('click', function () {
+    if (live.devices.length < 2) return;
+    var idx = -1;
+    live.devices.forEach(function (d, i) { if (d.deviceId === live.currentDeviceId) idx = i; });
+    startLive(live.devices[(idx + 1) % live.devices.length].deviceId);
+  });
+  liveFit.addEventListener('input', function () { liveFitVal.textContent = liveFit.value + '%'; });
+  liveSearch.addEventListener('input', renderLiveStrip);
+  // Privacy: never keep the camera open while the page is hidden or being closed.
+  document.addEventListener('visibilitychange', function () { if (document.hidden) stopLive(); });
+  window.addEventListener('pagehide', stopLive);
 
   // ---------- add-frame tags ----------
 
@@ -1433,6 +1731,9 @@ function track(eventName, params) {
 
   function selectFrame(id) {
     activeFrameId = id;
+    live.overlayOn = true;
+    syncLiveToggle();
+    updateLiveStripActive();
     var cards = libraryRow.querySelectorAll('.frame-card');
     for (var i = 0; i < cards.length; i++) cards[i].classList.toggle('active', cards[i].dataset.id === id);
     updateSelectedBanner();
@@ -1483,6 +1784,7 @@ function track(eventName, params) {
       updateCatalogNote();
       updateTryOnHint();
       updateSimilarCarousel();
+      renderLiveStrip();
     }).catch(function (e) {
       console.error('Failed to load catalog', e);
       catalogIndex = [];

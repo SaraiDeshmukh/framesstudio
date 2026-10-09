@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=2">
+<link rel="stylesheet" href="styles.css?v=3">
 </head>
 <body>
   <div class="root">
@@ -112,6 +112,35 @@
 
       <!-- ================= TRY ON ================= -->
       <div id="pageTryOn" style="display:none">
+        <!-- ---------- live try-on (real-time face tracking, front camera) ---------- -->
+        <div class="label">Live try-on</div>
+        <div class="row" id="liveControls">
+          <button class="btn primary" id="liveStartBtn" type="button">Start live try-on</button>
+          <button class="btn" id="liveStopBtn" type="button" style="display:none">Stop camera</button>
+          <button class="btn ghost" id="liveSwitchBtn" type="button" style="display:none">Switch camera</button>
+          <button class="btn ghost" id="liveToggleBtn" type="button" style="display:none">Remove frame</button>
+        </div>
+        <div class="hint" id="liveTips">Face the camera in even, front-facing light, with your whole face in view. Nothing is recorded or uploaded &mdash; tracking runs on this device only.</div>
+        <div class="live-error" id="liveError" role="alert" style="display:none"></div>
+        <div class="viewport live-viewport" id="liveViewport" style="display:none">
+          <video id="liveVideo" autoplay playsinline muted></video>
+          <canvas id="liveCanvas"></canvas>
+          <div class="live-status" id="liveStatus" role="status" aria-live="polite"></div>
+        </div>
+        <div class="fit-row" id="liveFitRow">
+          <div class="slider-label">Frame fit <span class="val" id="liveFitVal">100%</span></div>
+          <input type="range" id="liveFit" min="70" max="130" value="100" aria-label="Frame fit">
+        </div>
+        <div id="liveStripWrap" style="display:none">
+          <div class="label">Choose a frame</div>
+          <div class="free-tag-row" style="margin-bottom:10px">
+            <input type="search" id="liveSearch" placeholder="Search frames (e.g. round, gold, mens)&hellip;" aria-label="Search frames">
+          </div>
+          <div class="similar-row live-strip" id="liveStrip" aria-label="Frames"></div>
+          <div class="hint" id="liveStripEmpty" style="display:none">No frames match that search.</div>
+        </div>
+
+        <div class="label" style="margin-top:8px">Or use a photo</div>
         <div class="label" style="display:flex;justify-content:space-between;align-items:center">
           <span>Customer's photo</span>
           <span class="hint" id="photoCountDisplay" style="margin:0"></span>
@@ -225,6 +254,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=4"></script>
+  <script type="module" src="app.js?v=5"></script>
 </body>
 </html>
