@@ -15,6 +15,7 @@ import { PoseSmoother, poseFromLandmarks, frameTransform, drawFrame } from './tr
 import { estimateHeadPose, HeadPoseFilter, eulerFromMatrix } from './headpose.js';
 import { createTryOnRenderer, DEFAULT_PD_MM } from './ar-renderer.js';
 import { cleanSize, sizeLabel } from './glasses-model.js';
+import { extractFrame } from './frame-extract.js';
 
 // No Firebase Storage — images live directly inside Firestore documents, so this
 // app runs entirely on the free Spark plan. No billing account needed.
@@ -52,7 +53,9 @@ function track(eventName, params) {
 
 (function () {
   var MAX_FACE_DIM = 800;
-  var MAX_FRAME_DIM = 700;
+  var MAX_FRAME_DIM = 1000;        // working size for frame photos (the saved cut-out is cropped to the frame)
+  var SOURCE_MAX_DIM = 1600;       // the original photo is kept at up to this size for re-processing
+  var SOURCE_BYTE_BUDGET = 900000;
   var THUMB_DIM = 260;
   var FULL_BYTE_BUDGET = 750000;
   var THUMB_BYTE_BUDGET = 150000;
@@ -175,6 +178,7 @@ function track(eventName, params) {
     tabAddBtn.classList.toggle('active', name === 'add');
     if (name === 'tryon') updateTryOnHint();
     if (name !== 'tryon') stopLive();   // never leave the camera running in the background
+    if (name !== 'tryon' && draftEntry) endDraftPreview(false);
     if (name === 'browse') updateSelectedBanner();
   }
   tabBrowseBtn.addEventListener('click', function () { showTab('browse'); });
@@ -205,6 +209,8 @@ function track(eventName, params) {
   var similarLabel = document.getElementById('similarLabel');
   var similarRow = document.getElementById('similarRow');
   var photoStage = document.getElementById('photoStage');
+  var draftBanner = document.getElementById('draftBanner');
+  var draftBackBtn = document.getElementById('draftBackBtn');
   var livePd = document.getElementById('livePd');
   var photoPd = document.getElementById('photoPd');
 
@@ -253,6 +259,25 @@ function track(eventName, params) {
   var addedMsg = document.getElementById('addedMsg');
 
   var toleranceRow = document.getElementById('toleranceRow');
+  var bgModeAutoBtn = document.getElementById('bgModeAutoBtn');
+  var bgModeAutoHint = document.getElementById('bgModeAutoHint');
+  var autoReview = document.getElementById('autoReview');
+  var autoStatus = document.getElementById('autoStatus');
+  var autoWarnings = document.getElementById('autoWarnings');
+  var autoRimChips = document.getElementById('autoRimChips');
+  var autoMaterialChips = document.getElementById('autoMaterialChips');
+  var autoLevelChips = document.getElementById('autoLevelChips');
+  var autoSens = document.getElementById('autoSens');
+  var autoSensVal = document.getElementById('autoSensVal');
+  var autoGuides = document.getElementById('autoGuides');
+  var autoLevel = document.getElementById('autoLevel');
+  var autoControls = document.getElementById('autoControls');
+  var autoPreviewBtn = document.getElementById('autoPreviewBtn');
+  var autoFallbackBtn = document.getElementById('autoFallbackBtn');
+  var moveLensHint = document.getElementById('moveLensHint');
+  var replaceTargetHint = document.getElementById('replaceTargetHint');
+  var replaceTargetRow = document.getElementById('replaceTargetRow');
+  var reprocessBtn = document.getElementById('reprocessBtn');
   var bgModeSingleBtn = document.getElementById('bgModeSingleBtn');
   var bgModeTwoShotBtn = document.getElementById('bgModeTwoShotBtn');
   var bgModeAiBtn = document.getElementById('bgModeAiBtn');
@@ -322,7 +347,12 @@ function track(eventName, params) {
   var pendingAiRemovedCanvas = null; // the remove.bg result, only used in AI mode
   var aiRemovalLoading = false;
   var REMOVEBG_WORKER_URL = 'https://removebg-proxy.thesaraideshmukh.workers.dev/';
-  var bgRemovalMode = 'single'; // 'single' | 'twoShot' | 'ai'
+  var bgRemovalMode = 'auto'; // 'auto' | 'single' | 'twoShot' | 'ai'
+  // Automatic extraction (frame-extract.js) of the photo being added: its result
+  // is cached per set of options, so brush strokes don't re-run it.
+  var auto = { result: null, key: '', busy: false, rim: 'auto', trans: 'auto', level: null, calibManual: false, token: 0 };
+  var pendingSourceCanvas = null;   // the original photo (up to SOURCE_MAX_DIM), kept with the frame
+  var pendingSourceIsNew = true;    // false while re-processing the stored original (no need to save it again)
   var twoShotStep = 1; // 1 = capturing the empty surface, 2 = capturing the frame on it
   var pendingProcessedCanvas = document.createElement('canvas');
   var frameCalibPoints = [];
@@ -348,6 +378,8 @@ function track(eventName, params) {
   var editSizeBridge = document.getElementById('editSizeBridge');
   var editSizeTemple = document.getElementById('editSizeTemple');
   var editSideStatus = document.getElementById('editSideStatus');
+  var editPhotoStatus = document.getElementById('editPhotoStatus');
+  var editPhotoBtn = document.getElementById('editPhotoBtn');
   var editSideBtn = document.getElementById('editSideBtn');
 
   // What the Add Frames page is photographing: a new frame's front, or the temple
@@ -416,6 +448,7 @@ function track(eventName, params) {
   }
 
   function findEntry(id) {
+    if (id === DRAFT_ID) return draftEntry;
     for (var i = 0; i < catalogIndex.length; i++) { if (catalogIndex[i].id === id) return catalogIndex[i]; }
     return null;
   }
@@ -800,7 +833,7 @@ function track(eventName, params) {
       return new Promise(function (resolve, reject) {
         var img = new Image();
         img.onload = function () {
-          var result = { img: img, p1: scalePoint(data.p1, data, img), p2: scalePoint(data.p2, data, img) };
+          var result = { img: img, p1: scalePoint(data.p1, data, img), p2: scalePoint(data.p2, data, img), fit: fitForImage(data, img) };
           fullDataCache[id] = result;
           resolve(result);
         };
@@ -1198,11 +1231,12 @@ function track(eventName, params) {
   // Frames saved before imgW/imgH were recorded: if the photo had to be shrunk
   // (by 0.82 per step) to fit in Firestore, its lens points were left in the
   // original 700 px coordinates. Such images have a tell-tale long side.
+  var LEGACY_FRAME_DIM = 700;   // working size of frame photos before imgW/imgH were stored
   function legacyShrinkFactor(img) {
     var long = Math.max(img.naturalWidth, img.naturalHeight), s = 1;
     for (var n = 1; n <= 7; n++) {
       s *= 0.82;
-      if (Math.abs(long - Math.max(80, Math.round(MAX_FRAME_DIM * s))) <= 1) return long / MAX_FRAME_DIM;
+      if (Math.abs(long - Math.max(80, Math.round(LEGACY_FRAME_DIM * s))) <= 1) return long / LEGACY_FRAME_DIM;
     }
     return 1;
   }
@@ -1229,15 +1263,31 @@ function track(eventName, params) {
   function getTryOnFrame(id) {
     var entry = findEntry(id);
     return Promise.all([getFullFrameData(id), getSideData(id)]).then(function (r) {
-      return { img: r[0].img, p1: r[0].p1, p2: r[0].p2, tags: (entry && entry.tags) || {}, size: entry ? entry.size : null, side: r[1] };
+      return { img: r[0].img, p1: r[0].p1, p2: r[0].p2, fit: r[0].fit || null, tags: (entry && entry.tags) || {}, size: entry ? entry.size : null, side: r[1] };
     });
+  }
+
+  // Fitting metadata is stored in the saved image's pixels; if the image on
+  // hand has another size, scale it to match.
+  function fitForImage(data, img) {
+    var fit = data.fit;
+    if (!fit || !fit.v) return null;
+    var w = data.imgW, h = data.imgH;
+    if (!w || !h || (w === img.naturalWidth && h === img.naturalHeight)) return fit;
+    var sx = img.naturalWidth / w, sy = img.naturalHeight / h;
+    function mp(p) { return p && { x: p.x * sx, y: p.y * sy }; }
+    var out = JSON.parse(JSON.stringify(fit));
+    out.lenses.forEach(function (ln) { ln.poly = ln.poly.map(mp); ln.centre = mp(ln.centre); });
+    Object.keys(out.landmarks).forEach(function (k) { if (out.landmarks[k] && out.landmarks[k].x != null) out.landmarks[k] = mp(out.landmarks[k]); });
+    return out;
   }
 
   // Makes the renderer show frame `id`; resolves true when it's ready, false if it
   // can't be shown in 3D (then the caller uses the 2D overlay for this frame).
   function arUseFrame(id) {
-    var r = ar.renderer;
+    var r = ar.renderer, entry = findEntry(id);
     if (!r || !id) return Promise.resolve(false);
+    if (entry && entry.level === '2d') return Promise.resolve(false);   // prepared as a flat overlay
     if (ar.failedKey === id) return Promise.resolve(false);
     if (ar.frameKey === id && r.current) return Promise.resolve(true);
     if (ar.loadingKey === id && ar.loadingPromise) return ar.loadingPromise;
@@ -1400,7 +1450,7 @@ function track(eventName, params) {
     liveStartBtn.disabled = false;
     liveStopBtn.style.display = running ? 'inline-block' : 'none';
     liveToggleBtn.style.display = running ? 'inline-block' : 'none';
-    liveCatalogBtn.style.display = running && activeFrameId ? 'inline-block' : 'none';
+    liveCatalogBtn.style.display = running && activeFrameId && activeFrameId !== DRAFT_ID ? 'inline-block' : 'none';
     liveFitRow.style.display = running ? 'block' : 'none';
     liveStripWrap.style.display = running ? 'block' : 'none';
     if (!running) liveSwitchBtn.style.display = 'none';
@@ -1762,6 +1812,9 @@ function track(eventName, params) {
     editFreeTagInput.value = '';
     fillSize(entry.size, editSizeEye, editSizeBridge, editSizeTemple);
     editSideStatus.textContent = entry.hasSide ? 'Uses its own temple photo.' : 'Uses a temple generated from the front photo.';
+    editPhotoStatus.textContent = entry.prepared === 'auto'
+      ? 'Prepared automatically: ' + [RIM_LABEL[entry.rimType] || '', entry.translucent ? 'translucent' : 'solid', entry.level === '2d' ? 'flat overlay' : 'approximate 3D'].filter(Boolean).join(', ') + '.' + (entry.hasSource ? ' Original photo kept.' : '')
+      : 'Prepared by hand' + (entry.hasSource ? ' (original photo kept).' : '.');
     editSideBtn.textContent = entry.hasSide ? 'Replace temple photo' : 'Add temple photo';
 
     editTagsPanel.style.display = 'block';
@@ -1788,6 +1841,11 @@ function track(eventName, params) {
   });
 
   cancelEditTagsBtn.addEventListener('click', closeEditTags);
+  editPhotoBtn.addEventListener('click', function () {
+    var id = editingFrameId;
+    closeEditTags();
+    if (id) enterReplaceMode(id);
+  });
   editSideBtn.addEventListener('click', function () {
     var id = editingFrameId;
     closeEditTags();
@@ -2026,6 +2084,13 @@ function track(eventName, params) {
         sz.textContent = sizeText;
         tagsWrap.appendChild(sz);
       }
+      if (entry.level === '2d') {
+        var flat = document.createElement('span');
+        flat.className = 'tag-chip';
+        flat.textContent = 'Flat try-on';
+        flat.title = 'This photo is used as a flat overlay (not 3D). Update the photo for 3D.';
+        tagsWrap.appendChild(flat);
+      }
       if (!parts.length && !sizeText) {
         var span = document.createElement('span');
         span.className = 'tag-chip';
@@ -2103,8 +2168,10 @@ function track(eventName, params) {
     deleteDoc(doc(db, 'users', uid, 'frames', id)).catch(function (e) { console.error('Failed to delete frame doc', e); });
     deleteDoc(doc(db, 'users', uid, 'framesFull', id)).catch(function (e) { console.error('Failed to delete frame data', e); });
     deleteDoc(doc(db, 'users', uid, 'framesSide', id)).catch(function (e) { console.error('Failed to delete temple photo', e); });
+    deleteDoc(doc(db, 'users', uid, 'framesSource', id)).catch(function (e) { console.error('Failed to delete original photo', e); });
     arForget(id);
     if (addTarget.kind === 'side' && addTarget.frameId === id) { discardPendingFrame(); exitSideMode(); }
+    if (addTarget.kind === 'replace' && addTarget.frameId === id) { discardPendingFrame(); exitReplaceMode(); }
   }
 
   // "Return to the product": the frame's card in the catalog (Browse tab).
@@ -2127,9 +2194,10 @@ function track(eventName, params) {
   }
 
   function updateCatalogButtons() {
-    liveCatalogBtn.style.display = live.running && activeFrameId ? 'inline-block' : 'none';
+    var inCatalog = activeFrameId && activeFrameId !== DRAFT_ID;
+    liveCatalogBtn.style.display = live.running && inCatalog ? 'inline-block' : 'none';
     var photoReady = faceHasImage && activeFrameId && facePoints.length >= 2;
-    photoCatalogBtn.style.display = photoReady ? 'inline-block' : 'none';
+    photoCatalogBtn.style.display = photoReady && inCatalog ? 'inline-block' : 'none';
     photoToggleBtn.style.display = photoReady ? 'inline-block' : 'none';
     photoToggleBtn.textContent = photoOverlayOn ? 'Remove frame' : 'Show frame';
   }
@@ -2148,7 +2216,7 @@ function track(eventName, params) {
     updateSimilarCarousel();
     redrawFacePreview();
     var entry = findEntry(id);
-    if (entry) {
+    if (entry && !entry.draft) {
       track('frame_tried_on', {
         shape: entry.tags.shape || 'untagged',
         color: entry.tags.color || 'untagged',
@@ -2183,7 +2251,11 @@ function track(eventName, params) {
       snap.forEach(function (d) {
         var data = d.data();
         if (data.tags && data.tags.free) data.tags.free.forEach(function (t) { allFreeTags.add(t); });
-        catalogIndex.push({ id: d.id, thumbData: data.thumbData, tags: data.tags || {}, size: cleanSize(data.size), hasSide: !!data.hasSide });
+        catalogIndex.push({
+          id: d.id, thumbData: data.thumbData, tags: data.tags || {}, size: cleanSize(data.size), hasSide: !!data.hasSide,
+          hasSource: !!data.hasSource, level: data.level || '3d', rimType: data.rimType || null,
+          translucent: data.translucent == null ? null : !!data.translucent, prepared: data.prepared || 'manual'
+        });
       });
       refreshTagSuggestions();
       renderLibrary();
@@ -2258,6 +2330,8 @@ function track(eventName, params) {
 
   function setBgMode(mode) {
     bgRemovalMode = mode;
+    bgModeAutoBtn.classList.toggle('active', mode === 'auto');
+    bgModeAutoHint.style.display = mode === 'auto' ? 'block' : 'none';
     bgModeSingleBtn.classList.toggle('active', mode === 'single');
     bgModeTwoShotBtn.classList.toggle('active', mode === 'twoShot');
     bgModeAiBtn.classList.toggle('active', mode === 'ai');
@@ -2265,10 +2339,24 @@ function track(eventName, params) {
     bgModeAiHint.style.display = (mode === 'ai') ? 'block' : 'none';
     clearBackgroundReference();
   }
-  bgModeSingleBtn.addEventListener('click', function () { setBgMode('single'); });
+  bgModeAutoBtn.addEventListener('click', function () { setBgMode('auto'); reprocessIfPending(); });
+  bgModeSingleBtn.addEventListener('click', function () { setBgMode('single'); reprocessIfPending(); });
   bgModeTwoShotBtn.addEventListener('click', function () { setBgMode('twoShot'); });
   bgModeAiBtn.addEventListener('click', function () { setBgMode('ai'); });
   retakeBgBtn.addEventListener('click', clearBackgroundReference);
+
+  // Temple (side) photos have no lenses to find, so they use the simple removal.
+  function effectiveMode() {
+    return bgRemovalMode === 'auto' && addTarget.kind === 'side' ? 'single' : bgRemovalMode;
+  }
+
+  // Switching between the automatic and simple modes re-processes the photo
+  // already loaded (the two-photo and AI modes need a new photo).
+  function reprocessIfPending() {
+    if (!pendingRawCanvas || bgRemovalMode === 'twoShot' || bgRemovalMode === 'ai') return;
+    toleranceRow.style.display = effectiveMode() === 'single' ? 'block' : 'none';
+    processPendingFrame();
+  }
 
   function beginAddFrameFromSource(source, naturalW, naturalH) {
     var canvas = document.createElement('canvas');
@@ -2302,11 +2390,21 @@ function track(eventName, params) {
     pendingRawCanvas = canvas;
     pendingAiRemovedCanvas = null;
     frameCalibPoints = [];
-    toleranceRow.style.display = (bgRemovalMode === 'ai') ? 'none' : 'block';
+    // keep the original photo (larger than the working copy) to store with the frame
+    var cs = capDimensions(naturalW, naturalH, SOURCE_MAX_DIM);
+    pendingSourceCanvas = document.createElement('canvas');
+    pendingSourceCanvas.width = cs.w; pendingSourceCanvas.height = cs.h;
+    pendingSourceCanvas.getContext('2d').drawImage(source, 0, 0, cs.w, cs.h);
+    auto.result = null; auto.key = ''; auto.calibManual = false; auto.rim = 'auto'; auto.trans = 'auto'; auto.level = null;
+    autoSens.value = 100; autoSensVal.textContent = '100%';
+    var mode = effectiveMode();
+    toleranceRow.style.display = (mode === 'single' || mode === 'twoShot') ? 'block' : 'none';
+    autoReview.style.display = mode === 'auto' ? 'block' : 'none';
     toolHistory = [];
     setTool('none');
     updateUndoState();
     resetTagInputs();
+    if (addTarget.kind === 'replace') prefillFromEntry(findEntry(addTarget.frameId));
     showFrameCalibSection();
 
     if (bgRemovalMode === 'ai') {
@@ -2343,8 +2441,14 @@ function track(eventName, params) {
     var img = new Image();
     var url = URL.createObjectURL(file);
     img.onload = function () {
+      pendingSourceIsNew = true;
       beginAddFrameFromSource(img, img.naturalWidth, img.naturalHeight);
       URL.revokeObjectURL(url);
+    };
+    img.onerror = function () {
+      URL.revokeObjectURL(url);
+      frameSourcePlaceholder.textContent = "That file couldn't be opened as an image. Try a JPEG or PNG photo.";
+      frameSourcePlaceholder.style.display = 'block';
     };
     img.src = url;
   }
@@ -2379,6 +2483,7 @@ function track(eventName, params) {
     stopFrameStream();
     frameVideo.style.display = 'none';
     frameCaptureBtn.style.display = 'none';
+    pendingSourceIsNew = true;
     beginAddFrameFromSource(tmp, w, h);
   }
 
@@ -2395,29 +2500,154 @@ function track(eventName, params) {
 
   // ---------- add-frame: processing + calibration + tags ----------
 
+  function autoKey() { return [autoSens.value, auto.rim, auto.trans].join('|'); }
+
+  // Runs the automatic extraction (about a second; longer on phones) after
+  // letting the page show that it is working.
+  function runAuto() {
+    var token = ++auto.token, key = autoKey(), raw = pendingRawCanvas;
+    auto.busy = true;
+    renderAutoReview();
+    updateFrameCalibBanner();
+    setTimeout(function () {
+      if (token !== auto.token || raw !== pendingRawCanvas) return;
+      var res;
+      try {
+        var img = raw.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, raw.width, raw.height);
+        res = extractFrame(img, {
+          sensitivity: autoSens.value / 100,
+          rimType: auto.rim,
+          translucent: auto.trans === 'auto' ? 'auto' : auto.trans === '1'
+        });
+      } catch (e) {
+        console.error('Automatic extraction failed', e);
+        res = { ok: false, reason: 'Something went wrong while finding the frame.' };
+      }
+      auto.busy = false;
+      auto.result = res; auto.key = key;
+      if (res.ok && !auto.calibManual) {
+        frameCalibPoints = [res.landmarks.lensL, res.landmarks.lensR].map(function (p) { return { x: Math.round(p.x), y: Math.round(p.y) }; });
+      }
+      // fill the catalogue's rim tag from the detected rim type, unless chosen already
+      if (res.ok && !pendingTags.rim && addTarget.kind !== 'replace') {
+        pendingTags.rim = { full: 'fullrim', semi: 'semirimless', rimless: 'rimless' }[res.rimType] || null;
+        renderAddChips();
+      }
+      if (!res.ok && !auto.calibManual) frameCalibPoints = [];
+      renderAutoReview();
+      processPendingFrame();
+    }, 40);
+  }
+
+  function chipsActive(container, attr, value) {
+    container.querySelectorAll('.tag-chip').forEach(function (c) { c.classList.toggle('active', c.getAttribute(attr) === value); });
+  }
+
+  var RIM_LABEL = { full: 'Full-rim', semi: 'Semi-rimless', rimless: 'Rimless' };
+
+  function renderAutoReview() {
+    var r = auto.result;
+    autoWarnings.innerHTML = '';
+    if (auto.busy) {
+      autoStatus.innerHTML = 'Finding the frame\u2026';
+      autoControls.style.display = 'none'; autoLevel.textContent = ''; autoLevelChips.style.display = 'none';
+      autoPreviewBtn.style.display = 'none'; autoFallbackBtn.style.display = 'none';
+      return;
+    }
+    if (!r) return;
+    if (!r.ok) {
+      autoStatus.textContent = "Couldn't find the frame in this photo.";
+      var li = document.createElement('li'); li.className = 'error';
+      li.textContent = r.reason + ' Try a photo where the glasses fill more of the picture, straight on, against a plain wall or table.';
+      autoWarnings.appendChild(li);
+      autoControls.style.display = 'block'; autoLevelChips.style.display = 'none'; autoLevel.textContent = '';
+      autoPreviewBtn.style.display = 'none'; autoFallbackBtn.style.display = 'inline-block';
+      return;
+    }
+    var level = currentLevel();
+    var bits = [RIM_LABEL[r.rimType] || r.rimType, r.translucent ? 'translucent' : 'solid', level === '3d' ? 'approximate 3D' : 'flat overlay'];
+    var q = r.quality >= 0.85 ? 'looks good' : r.quality >= 0.6 ? 'check the notes below' : 'needs attention';
+    autoStatus.innerHTML = '';
+    var strong = document.createElement('span'); strong.textContent = 'Frame found \u2014 ' + bits.join(' \u00b7 ');
+    var muted = document.createElement('span'); muted.className = 'muted'; muted.textContent = ' (' + q + ')';
+    autoStatus.appendChild(strong); autoStatus.appendChild(muted);
+    r.warnings.forEach(function (wn) {
+      var item = document.createElement('li');
+      item.className = wn.severity;
+      item.textContent = wn.message;
+      autoWarnings.appendChild(item);
+    });
+    chipsActive(autoRimChips, 'data-rim', r.rimType);
+    chipsActive(autoMaterialChips, 'data-trans', r.translucent ? '1' : '0');
+    chipsActive(autoLevelChips, 'data-level', level);
+    autoControls.style.display = 'block'; autoLevelChips.style.display = 'flex';
+    autoLevel.textContent = level === r.representation.level ? r.representation.label
+      : level === '3d' ? 'Approximate 3D chosen by hand: the front is built from this photo and the temples are generated. It is not a scanned 3D model.'
+      : 'Flat overlay chosen by hand: the frame follows the face without depth.';
+    autoPreviewBtn.style.display = 'inline-block'; autoFallbackBtn.style.display = 'none';
+  }
+
+  function currentLevel() {
+    return auto.level || (auto.result && auto.result.ok ? auto.result.representation.level : '3d');
+  }
+
+  autoRimChips.addEventListener('click', function (e) {
+    var v = e.target.getAttribute('data-rim'); if (!v) return;
+    auto.rim = v; processPendingFrame();
+  });
+  autoMaterialChips.addEventListener('click', function (e) {
+    var v = e.target.getAttribute('data-trans'); if (!v) return;
+    auto.trans = v; processPendingFrame();
+  });
+  autoLevelChips.addEventListener('click', function (e) {
+    var v = e.target.getAttribute('data-level'); if (!v) return;
+    auto.level = v; renderAutoReview(); schedulePreview();
+  });
+  autoSens.addEventListener('input', function () { autoSensVal.textContent = autoSens.value + '%'; });
+  autoSens.addEventListener('change', function () { processPendingFrame(); });
+  autoGuides.addEventListener('change', function () { drawFrameCalibView(); });
+  autoFallbackBtn.addEventListener('click', function () { setBgMode('single'); reprocessIfPending(); });
+  autoPreviewBtn.addEventListener('click', function () { startDraftPreview(); });
+
   function processPendingFrame() {
     if (!pendingRawCanvas) return;
     var w = pendingRawCanvas.width, h = pendingRawCanvas.height;
+    var mode = effectiveMode();
+    autoReview.style.display = mode === 'auto' ? 'block' : 'none';
+    if (mode === 'auto' && (!auto.result || auto.key !== autoKey())) {
+      if (!auto.busy || auto.key !== autoKey()) runAuto();
+      // show the photo itself while it works
+      pendingProcessedCanvas.width = w; pendingProcessedCanvas.height = h;
+      pendingProcessedCanvas.getContext('2d').drawImage(pendingRawCanvas, 0, 0);
+      frameCalibCanvas.width = w; frameCalibCanvas.height = h;
+      drawFrameCalibView();
+      return;
+    }
     pendingProcessedCanvas.width = w;
     pendingProcessedCanvas.height = h;
     var pctx = pendingProcessedCanvas.getContext('2d', { willReadFrequently: true });
-    var useAi = (bgRemovalMode === 'ai' && pendingAiRemovedCanvas &&
+    var useAi = (mode === 'ai' && pendingAiRemovedCanvas &&
       pendingAiRemovedCanvas.width === w && pendingAiRemovedCanvas.height === h);
-    var useTwoShot = !useAi && bgRemovalMode === 'twoShot' && pendingBgOnlyCanvas &&
+    var useTwoShot = !useAi && mode === 'twoShot' && pendingBgOnlyCanvas &&
       pendingBgOnlyCanvas.width === w && pendingBgOnlyCanvas.height === h;
+    var useAuto = mode === 'auto' && auto.result && auto.result.ok;
 
     pctx.clearRect(0, 0, w, h);
     pctx.drawImage(useAi ? pendingAiRemovedCanvas : pendingRawCanvas, 0, 0, w, h);
     var imgData = pctx.getImageData(0, 0, w, h);
 
-    if (useAi) {
+    if (useAuto) {
+      imgData.data.set(auto.result.cutout.data);
+    } else if (mode === 'auto') {
+      // extraction failed: show the photo so the problem is visible
+    } else if (useAi) {
       // Already cleanly cut out by remove.bg -- the local cleanup passes below exist
       // to compensate for the weaker color-based methods, and could only hurt an
       // already-good result, so they're skipped here.
     } else if (useTwoShot) {
       var bgOnlyData = pendingBgOnlyCanvas.getContext('2d').getImageData(0, 0, w, h);
       removeBackgroundDiff(imgData, bgOnlyData, parseInt(bgTolerance.value, 10));
-    } else {
+    } else if (mode === 'single' || mode === 'ai' || mode === 'twoShot') {
       removeBackground(imgData, parseInt(bgTolerance.value, 10));
     }
 
@@ -2449,16 +2679,46 @@ function track(eventName, params) {
     fctx.clearRect(0, 0, w, h);
     drawCheckerboard(fctx, w, h, Math.max(6, Math.round(w / 60)));
     fctx.drawImage(pendingProcessedCanvas, 0, 0);
+    if (effectiveMode() === 'auto' && auto.result && auto.result.ok && autoGuides.checked && !auto.busy) drawAutoGuides(fctx, auto.result, w);
     frameCalibPoints.forEach(function (p) { drawMarkerOn(fctx, p.x, p.y); });
     updateFrameCalibBanner();
     schedulePreview();
+  }
+
+  // Lens outlines (teal), bridge (blue), hinges (brass) and the areas a note
+  // refers to (dashed red) over the cut-out.
+  function drawAutoGuides(g, r, w) {
+    var lw = Math.max(1.5, w / 500);
+    g.save();
+    g.lineWidth = lw;
+    g.strokeStyle = 'rgba(46,122,114,0.95)';
+    g.setLineDash([lw * 3, lw * 2]);
+    r.lenses.forEach(function (ln) {
+      g.beginPath();
+      ln.poly.forEach(function (p, i) { if (i) g.lineTo(p.x, p.y); else g.moveTo(p.x, p.y); });
+      g.closePath(); g.stroke();
+    });
+    g.setLineDash([]);
+    function dot(p, col, rad) { g.beginPath(); g.arc(p.x, p.y, rad, 0, Math.PI * 2); g.fillStyle = col; g.fill(); g.lineWidth = lw * 0.8; g.strokeStyle = '#fff'; g.stroke(); }
+    dot(r.landmarks.bridge, '#2D5DA8', lw * 3);
+    dot(r.landmarks.hingeL, '#8A6D45', lw * 2.6);
+    dot(r.landmarks.hingeR, '#8A6D45', lw * 2.6);
+    g.setLineDash([lw * 4, lw * 3]);
+    g.strokeStyle = 'rgba(194,77,40,0.95)';
+    g.lineWidth = lw * 1.2;
+    r.warnings.forEach(function (wn) {
+      if (!wn.box || wn.severity === 'info') return;
+      var b = wn.box, pad = lw * 3;
+      g.strokeRect(b.minX - pad, b.minY - pad, b.maxX - b.minX + 2 * pad, b.maxY - b.minY + 2 * pad);
+    });
+    g.restore();
   }
 
   // ---------- add-frame: 3D preview of the generated model ----------
 
   function schedulePreview() {
     clearTimeout(preview.timer);
-    if (!pendingRawCanvas || frameCalibPoints.length < 2 || aiRemovalLoading) {
+    if (!pendingRawCanvas || frameCalibPoints.length < 2 || aiRemovalLoading || auto.busy) {
       modelPreview.style.display = 'none';
       return;
     }
@@ -2483,7 +2743,10 @@ function track(eventName, params) {
           var entry = findEntry(target.frameId) || {};
           return { img: full.img, p1: full.p1, p2: full.p2, tags: entry.tags || {}, size: entry.size || null, side: { img: snap, hinge: pts[0], tip: pts[1] } };
         })
-      : Promise.resolve({ img: snap, p1: pts[0], p2: pts[1], tags: pendingTags, size: readSize(sizeEye, sizeBridge, sizeTemple), side: null });
+      : Promise.resolve({
+          img: snap, p1: pts[0], p2: pts[1], tags: pendingTags, size: readSize(sizeEye, sizeBridge, sizeTemple), side: null,
+          fit: effectiveMode() === 'auto' ? buildFit(auto.result, 0, 0, 1, 1, pts) : null
+        });
     Promise.all([preview.promise, dataPromise]).then(function (res) {
       var r = res[0], data = res[1];
       if (seq !== preview.seq || !r) { if (!r) modelPreview.style.display = 'none'; return; }
@@ -2502,7 +2765,9 @@ function track(eventName, params) {
       var a = out.analysis;
       modelPreviewHint.textContent = target.kind === 'side'
         ? 'The 3D try-on will use this temple. Slide to turn it.'
-        : 'Generated from this photo' + (a.lensFound[0] || a.lensFound[1] ? ', with glass lenses' : '') + (a.metal ? ', metal finish' : '') + '. Slide to turn it.';
+        : (effectiveMode() === 'auto' && currentLevel() === '2d')
+          ? 'This frame is set to the flat overlay, so the try-on will not use this 3D model. (Shown for reference.)'
+          : 'Generated from this photo' + (a.lensFound[0] || a.lensFound[1] ? ', with glass lenses' : '') + (a.metal ? ', metal finish' : '') + (a.translucent ? ', translucent' : '') + '. Slide to turn it.';
       renderPreviewNow();
     }).catch(function (e) { console.error('Preview failed', e); });
   }
@@ -2518,6 +2783,106 @@ function track(eventName, params) {
   modelPreviewYaw.addEventListener('input', renderPreviewNow);
   [sizeEye, sizeBridge, sizeTemple].forEach(function (el) { el.addEventListener('change', schedulePreview); });
 
+  // ---------- add-frame: update the photo of an existing frame ----------
+  // Re-process the stored original with the current settings (or take a better
+  // photo). The frame keeps its id, tags, size and temple photo.
+
+  function prefillFromEntry(entry) {
+    if (!entry) return;
+    var t = entry.tags || {};
+    pendingTags = { shape: t.shape || null, color: t.color || null, gender: t.gender || null, rim: t.rim || null, free: (t.free || []).slice() };
+    renderAddChips(); renderFreeTagList();
+    fillSize(entry.size, sizeEye, sizeBridge, sizeTemple);
+  }
+
+  function enterReplaceMode(id) {
+    var entry = findEntry(id);
+    if (!entry) return;
+    showTab('add');
+    discardPendingFrame();
+    if (addTarget.kind === 'side') exitSideMode();
+    addTarget = { kind: 'replace', frameId: id };
+    sideTargetThumb.innerHTML = '';
+    var img = document.createElement('img');
+    img.src = entry.thumbData; img.alt = '';
+    sideTargetThumb.appendChild(img);
+    sideTargetText.textContent = 'Updating the photo of: ' + describeFrame(entry);
+    sideTarget.style.display = 'flex';
+    replaceTargetHint.style.display = 'block';
+    replaceTargetRow.style.display = entry.hasSource ? 'flex' : 'none';
+    addToLibraryBtn.textContent = 'Save updated frame';
+    addedMsg.style.display = 'none';
+    if (bgRemovalMode !== 'auto') setBgMode('auto');
+    advanceForNextCapture();
+  }
+
+  function exitReplaceMode() {
+    addTarget = { kind: 'front', frameId: null };
+    sideTarget.style.display = 'none';
+    replaceTargetHint.style.display = 'none';
+    replaceTargetRow.style.display = 'none';
+    addToLibraryBtn.textContent = 'Add to library';
+    updateFrameSourceUI();
+  }
+
+  reprocessBtn.addEventListener('click', function () {
+    if (addTarget.kind !== 'replace' || !currentUser) return;
+    var id = addTarget.frameId;
+    reprocessBtn.disabled = true;
+    getDoc(doc(db, 'users', currentUser.uid, 'framesSource', id)).then(function (snap) {
+      if (!snap.exists()) throw new Error('No original photo saved for this frame');
+      return loadImage(snap.data().imageData);
+    }).then(function (img) {
+      if (addTarget.kind !== 'replace' || addTarget.frameId !== id) return;
+      pendingSourceIsNew = false;
+      beginAddFrameFromSource(img, img.naturalWidth, img.naturalHeight);
+    }).catch(function (e) {
+      console.error('Could not load the original photo', e);
+      frameSourcePlaceholder.textContent = "Couldn't load the saved original photo. Take or upload a new photo instead.";
+      frameSourcePlaceholder.style.display = 'block';
+    }).then(function () { reprocessBtn.disabled = false; });
+  });
+
+  // ---------- add-frame: preview the unsaved frame in the real try-on ----------
+
+  var DRAFT_ID = '__draft__', draftEntry = null, draftPrevActive = null;
+
+  function startDraftPreview() {
+    if (!pendingRawCanvas || frameCalibPoints.length < 2) return;
+    endDraftPreview(false);
+    var c = document.createElement('canvas');
+    c.width = pendingProcessedCanvas.width; c.height = pendingProcessedCanvas.height;
+    c.getContext('2d').drawImage(pendingProcessedCanvas, 0, 0);
+    var fit = effectiveMode() === 'auto' ? buildFit(auto.result, 0, 0, 1, 1, frameCalibPoints) : null;
+    fullDataCache[DRAFT_ID] = { img: c, p1: frameCalibPoints[0], p2: frameCalibPoints[1], fit: fit };
+    draftEntry = {
+      id: DRAFT_ID, draft: true, thumbData: makeThumbCanvas(c, THUMB_DIM).toDataURL('image/png'),
+      tags: { shape: pendingTags.shape, color: pendingTags.color, gender: pendingTags.gender, rim: pendingTags.rim, free: pendingTags.free.slice() },
+      size: readSize(sizeEye, sizeBridge, sizeTemple), hasSide: false, level: fit ? fit.level : '3d'
+    };
+    draftPrevActive = activeFrameId;
+    draftBanner.style.display = 'flex';
+    showTab('tryon');
+    selectFrame(DRAFT_ID);
+    draftBanner.scrollIntoView({ block: 'nearest' });
+  }
+
+  function endDraftPreview(goBack) {
+    if (!draftEntry) { if (goBack) showTab('add'); return; }
+    draftEntry = null;
+    draftBanner.style.display = 'none';
+    arForget(DRAFT_ID);
+    delete fullDataCache[DRAFT_ID];
+    if (live.frameId === DRAFT_ID) { live.frame = null; live.frameId = null; }
+    if (activeFrameId === DRAFT_ID) {
+      activeFrameId = null;
+      if (draftPrevActive && findEntry(draftPrevActive)) selectFrame(draftPrevActive);
+      else { updateSelectedBanner(); updateTryOnHint(); updateSimilarCarousel(); updateCatalogButtons(); redrawFacePreview(); }
+    }
+    if (goBack) showTab('add');
+  }
+  draftBackBtn.addEventListener('click', function () { endDraftPreview(true); });
+
   // ---------- add-frame: temple (side) photo for an existing frame ----------
 
   function enterSideMode(id) {
@@ -2525,6 +2890,7 @@ function track(eventName, params) {
     if (!entry) return;
     showTab('add');
     discardPendingFrame();
+    if (addTarget.kind === 'replace') exitReplaceMode();
     addTarget = { kind: 'side', frameId: id };
     sideTargetThumb.innerHTML = '';
     var img = document.createElement('img');
@@ -2551,6 +2917,9 @@ function track(eventName, params) {
   }
 
   function discardPendingFrame() {
+    auto.token++; auto.busy = false; auto.result = null; auto.key = ''; auto.calibManual = false;
+    autoReview.style.display = 'none';
+    pendingSourceCanvas = null;
     pendingRawCanvas = null;
     pendingAiRemovedCanvas = null;
     aiRemovalLoading = false;
@@ -2567,7 +2936,7 @@ function track(eventName, params) {
 
   sideTargetCancel.addEventListener('click', function () {
     discardPendingFrame();
-    exitSideMode();
+    if (addTarget.kind === 'replace') exitReplaceMode(); else exitSideMode();
   });
   addSideAfterBtn.addEventListener('click', function () { if (lastAddedId) enterSideMode(lastAddedId); });
 
@@ -2600,9 +2969,16 @@ function track(eventName, params) {
   }
 
   function updateFrameCalibBanner() {
-    addToLibraryBtn.disabled = frameCalibPoints.length < 2 || aiRemovalLoading;
+    addToLibraryBtn.disabled = frameCalibPoints.length < 2 || aiRemovalLoading || auto.busy;
     var side = addTarget.kind === 'side';
+    var autoOk = effectiveMode() === 'auto' && auto.result && auto.result.ok;
+    moveLensHint.style.display = frameCalibPoints.length === 2 && !eraseModeActive && !restoreModeActive ? 'block' : 'none';
     if (aiRemovalLoading) { frameCalibBanner.textContent = 'Removing background with AI\u2026'; return; }
+    if (auto.busy && effectiveMode() === 'auto') { frameCalibBanner.textContent = 'Finding the frame, lens openings and fitting points\u2026'; return; }
+    if (autoOk && frameCalibPoints.length === 2 && !auto.calibManual) {
+      frameCalibBanner.textContent = 'Lens centres found automatically. Check the outlines, then save.';
+      return;
+    }
     if (frameCalibPoints.length === 0) frameCalibBanner.textContent = side ? 'Tap the hinge (where the temple meets the front), then the far tip of the temple.' : 'Tap one lens center, then the other.';
     else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = side ? 'Now tap the far tip of the temple.' : 'Now tap the other lens center.';
     else frameCalibBanner.textContent = side ? 'Ready \u2014 check the 3D preview, then save.' : 'Ready \u2014 check the 3D preview, then add it to your library.';
@@ -2652,8 +3028,31 @@ function track(eventName, params) {
     if (frameCalibPoints.length >= 2) return;
     var pos = imagePosFromEvent(e);
     frameCalibPoints.push({ x: Math.round(pos.x), y: Math.round(pos.y) });
+    auto.calibManual = true;
     drawFrameCalibView();
   });
+
+  // Dragging a lens-centre marker moves it (when no brush is active).
+  var dragMarker = -1;
+  frameCalibCanvas.addEventListener('pointerdown', function (e) {
+    if (!pendingRawCanvas || eraseModeActive || restoreModeActive || frameCalibPoints.length < 2) return;
+    var pos = imagePosFromEvent(e), rect = frameCalibCanvas.getBoundingClientRect();
+    var grab = 24 * frameCalibCanvas.width / Math.max(1, rect.width);
+    for (var k = 0; k < frameCalibPoints.length; k++) {
+      if (Math.hypot(pos.x - frameCalibPoints[k].x, pos.y - frameCalibPoints[k].y) <= grab) {
+        dragMarker = k; frameCalibCanvas.setPointerCapture(e.pointerId); e.preventDefault(); return;
+      }
+    }
+  });
+  frameCalibCanvas.addEventListener('pointermove', function (e) {
+    if (dragMarker < 0) return;
+    var pos = imagePosFromEvent(e);
+    frameCalibPoints[dragMarker] = { x: Math.round(pos.x), y: Math.round(pos.y) };
+    auto.calibManual = true;
+    drawFrameCalibView();
+  });
+  frameCalibCanvas.addEventListener('pointerup', function () { dragMarker = -1; });
+  frameCalibCanvas.addEventListener('pointercancel', function () { dragMarker = -1; });
 
   frameCalibCanvas.addEventListener('pointerdown', function (e) {
     if (!pendingRawCanvas || (!eraseModeActive && !restoreModeActive)) return;
@@ -2702,58 +3101,130 @@ function track(eventName, params) {
     return c;
   }
 
+  // Fitting metadata for the try-on, in the saved image's pixels (cropped by
+  // x0, y0 and scaled by sx, sy). Only for frames prepared automatically.
+  function buildFit(r, x0, y0, sx, sy, lensPts) {
+    if (!r || !r.ok) return null;
+    x0 = x0 || 0; y0 = y0 || 0; sx = sx || 1; sy = sy || 1;
+    function mp(p) { return { x: Math.round((p.x - x0) * sx * 10) / 10, y: Math.round((p.y - y0) * sy * 10) / 10 }; }
+    function mb(b) { return { minX: Math.round((b.minX - x0) * sx), minY: Math.round((b.minY - y0) * sy), maxX: Math.round((b.maxX - x0) * sx), maxY: Math.round((b.maxY - y0) * sy) }; }
+    var lm = r.landmarks, m = r.measurements, L = lensPts ? lensPts[0] : lm.lensL, R = lensPts ? lensPts[1] : lm.lensR;
+    if (L.x > R.x) { var t = L; L = R; R = t; }
+    return {
+      v: 1, source: 'auto', unmixed: true,
+      rimType: r.rimType, translucent: r.translucent, level: currentLevel(), quality: Math.round(r.quality * 100) / 100,
+      lenses: r.lenses.map(function (ln) { return { side: ln.side, poly: ln.poly.map(mp), centre: mp(ln.centre) }; }),
+      landmarks: { lensL: mp(L), lensR: mp(R), bridge: mp(lm.bridge), bridgeTop: mp(lm.bridgeTop), hingeL: mp(lm.hingeL), hingeR: mp(lm.hingeR), angle: Math.round(lm.angle * 1e4) / 1e4 },
+      measurements: {
+        frameWidthPx: Math.round(m.frameWidthPx * sx), frameHeightPx: Math.round(m.frameHeightPx * sy),
+        lensWidthPx: Math.round(m.lensWidthPx * sx), lensHeightPx: Math.round(m.lensHeightPx * sy),
+        bridgePx: Math.round(m.bridgePx * sx), lensDistPx: Math.round(m.lensDistPx * sx), aspect: Math.round(m.aspect * 100) / 100
+      },
+      warnings: r.warnings.map(function (wn) { return wn.code; }),
+      repaired: r.repaired.map(mb)
+    };
+  }
+
+  // Bounding box of the cut-out's visible pixels, with a margin.
+  function alphaBox(c) {
+    var w = c.width, h = c.height, d = c.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h).data;
+    var x0 = w, y0 = h, x1 = -1, y1 = -1;
+    for (var y = 0; y < h; y++) for (var x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 8) {
+      if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    if (x1 < 0) return { x: 0, y: 0, w: w, h: h };
+    var pad = Math.max(6, Math.round((x1 - x0) * 0.03));
+    x0 = Math.max(0, x0 - pad); y0 = Math.max(0, y0 - pad); x1 = Math.min(w - 1, x1 + pad); y1 = Math.min(h - 1, y1 + pad);
+    return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
+  }
+
+  function sourceJpeg() {
+    if (!pendingSourceCanvas) return null;
+    var q = 0.88, url = pendingSourceCanvas.toDataURL('image/jpeg', q);
+    while (url.length > SOURCE_BYTE_BUDGET && q > 0.5) { q -= 0.08; url = pendingSourceCanvas.toDataURL('image/jpeg', q); }
+    return url.length > SOURCE_BYTE_BUDGET ? shrinkToBudget(pendingSourceCanvas, SOURCE_BYTE_BUDGET, 'image/jpeg', 0.7) : url;
+  }
+
   addToLibraryBtn.addEventListener('click', function () {
     if (frameCalibPoints.length < 2 || !currentUser) return;
     if (addTarget.kind === 'side') { saveSidePhoto(); return; }
+    var replacing = addTarget.kind === 'replace' ? findEntry(addTarget.frameId) : null;
+    if (addTarget.kind === 'replace' && !replacing) return;
+    // an extraction with serious problems is never saved without a deliberate yes
+    if (effectiveMode() === 'auto' && auto.result && auto.result.ok) {
+      var bad = auto.result.warnings.filter(function (wn) { return wn.severity === 'error'; });
+      if ((bad.length || auto.result.quality < 0.6) && !window.confirm('The automatic extraction needs attention:\n\n' +
+        (bad.length ? bad.map(function (wn) { return '• ' + wn.message; }).join('\n') : '• Several parts of the photo were uncertain.') +
+        '\n\nCheck the cut-out and the outlines (or use “Preview on a face”), fix what you can, or retake the photo. Save it anyway?')) return;
+    }
     addToLibraryBtn.disabled = true;
     var uid = currentUser.uid;
-    var id = 'f' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+    var id = replacing ? replacing.id : 'f' + Date.now() + '_' + Math.floor(Math.random() * 10000);
 
+    // crop to the frame (smaller documents, more detail per byte)
+    var box = alphaBox(pendingProcessedCanvas);
     var fullCanvas = document.createElement('canvas');
-    fullCanvas.width = pendingProcessedCanvas.width;
-    fullCanvas.height = pendingProcessedCanvas.height;
-    fullCanvas.getContext('2d').drawImage(pendingProcessedCanvas, 0, 0);
-    var thumbCanvas = makeThumbCanvas(pendingProcessedCanvas, THUMB_DIM);
+    fullCanvas.width = box.w; fullCanvas.height = box.h;
+    fullCanvas.getContext('2d').drawImage(pendingProcessedCanvas, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+    var thumbCanvas = makeThumbCanvas(fullCanvas, THUMB_DIM);
 
     var full = shrinkToBudgetScaled(fullCanvas, FULL_BYTE_BUDGET, 'image/png');
     var fullData = full.dataUrl;
     var thumbData = shrinkToBudget(thumbCanvas, THUMB_BYTE_BUDGET, 'image/png');
 
-    // lens centres in the saved image's pixels (it may have been shrunk to fit)
-    var sc = function (p) { return { x: Math.round(p.x * full.sx * 10) / 10, y: Math.round(p.y * full.sy * 10) / 10 }; };
+    // lens centres and fitting metadata in the saved image's pixels
+    var sc = function (p) { return { x: Math.round((p.x - box.x) * full.sx * 10) / 10, y: Math.round((p.y - box.y) * full.sy * 10) / 10 }; };
     var p1 = sc(frameCalibPoints[0]), p2 = sc(frameCalibPoints[1]);
+    var fit = effectiveMode() === 'auto' ? buildFit(auto.result, box.x, box.y, full.sx, full.sy, frameCalibPoints) : null;
+    var level = fit ? fit.level : '3d';
     var tags = { shape: pendingTags.shape, color: pendingTags.color, gender: pendingTags.gender, rim: pendingTags.rim, free: pendingTags.free.slice() };
     var size = readSize(sizeEye, sizeBridge, sizeTemple);
+    var source = replacing && !pendingSourceIsNew ? null : sourceJpeg();
+    var light = { thumbData: thumbData, tags: tags, size: size, level: level, rimType: fit ? fit.rimType : null, translucent: fit ? fit.translucent : null, prepared: fit ? 'auto' : 'manual' };
+    if (source) light.hasSource = true;
+    if (!replacing) light.createdAt = serverTimestamp();
 
-    Promise.all([
-      setDoc(doc(db, 'users', uid, 'frames', id), { thumbData: thumbData, tags: tags, size: size, createdAt: serverTimestamp() }),
-      setDoc(doc(db, 'users', uid, 'framesFull', id), { imageData: fullData, p1: p1, p2: p2, imgW: full.w, imgH: full.h })
-    ]).then(function () {
+    var writes = [
+      replacing ? updateDoc(doc(db, 'users', uid, 'frames', id), light) : setDoc(doc(db, 'users', uid, 'frames', id), light),
+      setDoc(doc(db, 'users', uid, 'framesFull', id), { imageData: fullData, p1: p1, p2: p2, imgW: full.w, imgH: full.h, fit: fit })
+    ];
+    if (source) writes.push(setDoc(doc(db, 'users', uid, 'framesSource', id), { imageData: source, w: pendingSourceCanvas.width, h: pendingSourceCanvas.height, createdAt: serverTimestamp() }));
+
+    Promise.all(writes).then(function () {
+      delete fullDataCache[id];
+      arForget(id);
       var img = new Image();
-      img.onload = function () { fullDataCache[id] = { img: img, p1: p1, p2: p2 }; };
+      img.onload = function () { fullDataCache[id] = { img: img, p1: p1, p2: p2, fit: fit }; };
       img.src = fullData;
 
-      catalogIndex.push({ id: id, thumbData: thumbData, tags: tags, size: size, hasSide: false });
+      var entry = replacing || { id: id, hasSide: false };
+      entry.thumbData = thumbData; entry.tags = tags; entry.size = size; entry.level = level;
+      entry.rimType = light.rimType; entry.translucent = light.translucent; entry.prepared = light.prepared;
+      if (source) entry.hasSource = true;
+      if (!replacing) catalogIndex.push(entry);
       renderLibrary();
       rebuildFilterBar();
       applyFilters();
       updateCatalogNote();
-      track('frame_added', { shape: tags.shape || 'untagged', color: tags.color || 'untagged', rim: tags.rim || 'untagged' });
+      renderLiveStrip();
+      track(replacing ? 'frame_photo_updated' : 'frame_added', { shape: tags.shape || 'untagged', color: tags.color || 'untagged', rim: tags.rim || 'untagged', prepared: light.prepared });
 
+      endDraftPreview(false);
       pendingRawCanvas = null;
       pendingAiRemovedCanvas = null;
       modelPreview.style.display = 'none';
+      if (replacing) exitReplaceMode();
       advanceForNextCapture();
       showFrameSourceChooser();
       lastAddedId = id;
-      addedMsgText.textContent = 'Added to your catalog. Add another below, or head to Browse to try it on.';
+      addedMsgText.textContent = replacing ? 'Frame photo updated.' : 'Added to your catalog. Add another below, or head to Browse to try it on.';
       addSideAfterBtn.style.display = 'block';
       addedMsg.style.display = 'block';
       selectFrame(id);
     }).catch(function (e) {
-      console.error('Failed to add frame', e);
+      console.error('Failed to save frame', e);
       addToLibraryBtn.disabled = false;
-      frameCalibBanner.textContent = 'Something went wrong saving this frame \u2014 check the console and try again.';
+      frameCalibBanner.textContent = 'Something went wrong saving this frame — check the connection and try again.';
     });
   });
 

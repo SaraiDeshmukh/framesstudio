@@ -16,8 +16,16 @@
 // Coordinates: "axis space" is photo pixels rotated so the lens-centre line is
 // horizontal, origin at the midpoint between the lens centres, u to the right,
 // v down.
+//
+// Frames prepared with the automatic extraction (frame-extract.js) carry their
+// fitting metadata ("fit": lens outlines, rim type, translucency, chosen
+// representation). When it is passed in, the lens openings come from it
+// instead of being re-detected, and translucent material counts as frame.
 
-var OPAQUE = 128;       // alpha at or above this counts as frame material
+import { rasterPolygon } from './frame-extract.js';
+
+var OPAQUE_SOLID = 128;        // alpha at or above this counts as frame material
+var OPAQUE_TRANSLUCENT = 45;   // ... for frames whose material is see-through
 var CLEAR = 100;        // alpha below this counts as see-through
 
 export var SIZE_LIMITS = { eye: [30, 75], bridge: [10, 30], temple: [100, 170] };
@@ -55,10 +63,12 @@ function median(arr) {
   return s[s.length >> 1];
 }
 
-// img: { data: RGBA bytes, width, height }. p1, p2: tapped lens centres.
-// opts: { tags, size }.
+// img: { data: RGBA bytes, width, height }. p1, p2: lens centres.
+// opts: { tags, size, fit }.
 export function analyseFrame(img, p1, p2, opts) {
   opts = opts || {};
+  var fit = opts.fit && opts.fit.v ? opts.fit : null;
+  var OPAQUE = fit && fit.translucent ? OPAQUE_TRANSLUCENT : OPAQUE_SOLID;
   var W = img.width, H = img.height, D = img.data;
   if (!p1 || !p2 || !(W > 2) || !(H > 2)) return { ok: false, reason: 'missing image or lens points' };
   var L = p1.x <= p2.x ? p1 : p2, R = p1.x <= p2.x ? p2 : p1;
@@ -115,6 +125,9 @@ export function analyseFrame(img, p1, p2, opts) {
   var hinges = { left: hingeFor(-1), right: hingeFor(1) };
 
   // ---- lens openings: see-through areas not connected to the image border ----
+  // (skipped when the outlines were stored with the frame)
+  var label = null, sizes = [];
+  if (!fit) {
   var outside = new Uint8Array(n), stack = new Int32Array(n), sp = 0;
   function seed(i) { if (!outside[i] && D[i * 4 + 3] < CLEAR) { outside[i] = 1; stack[sp++] = i; } }
   for (x = 0; x < W; x++) { seed(x); seed((H - 1) * W + x); }
@@ -126,7 +139,7 @@ export function analyseFrame(img, p1, p2, opts) {
     if (iy > 0) seed(i0 - W);
     if (iy < H - 1) seed(i0 + W);
   }
-  var label = new Int32Array(n).fill(-1), sizes = [];
+  label = new Int32Array(n).fill(-1);
   for (var j = 0; j < n; j++) {
     if (label[j] !== -1 || outside[j] || D[j * 4 + 3] >= CLEAR) continue;
     var id = sizes.length, cnt = 0;
@@ -141,6 +154,7 @@ export function analyseFrame(img, p1, p2, opts) {
       }
     }
     sizes.push(cnt);
+  }
   }
   var minHole = lensDistPx * lensDistPx * 0.01;
   function holeNear(pt) {
@@ -157,11 +171,19 @@ export function analyseFrame(img, p1, p2, opts) {
     }
     return best;
   }
-  var holeL = holeNear(L), holeR = holeNear(R);
+  var holeL = fit ? -1 : holeNear(L), holeR = fit ? -1 : holeNear(R);
   var lensMask = new Uint8Array(n), lensPixels = 0;
-  if (holeL >= 0 || holeR >= 0) {
-    for (j = 0; j < n; j++) {
-      if (label[j] >= 0 && (label[j] === holeL || label[j] === holeR)) { lensMask[j] = 1; lensPixels++; }
+  if (fit && fit.lenses && fit.lenses.length === 2) {
+    // the lens outlines found when the frame was prepared (also right for
+    // semi-rimless lenses, whose openings are not closed by a rim)
+    fit.lenses.forEach(function (ln) {
+      var m = rasterPolygon(ln.poly, W, H);
+      for (var q = 0; q < n; q++) if (m[q] && D[q * 4 + 3] < 200) { lensMask[q] = 1; lensPixels++; }
+    });
+    holeL = holeR = 0;
+  } else if (holeL >= 0 || holeR >= 0) {
+    for (var j2 = 0; j2 < n; j2++) {
+      if (label[j2] >= 0 && (label[j2] === holeL || label[j2] === holeR)) { lensMask[j2] = 1; lensPixels++; }
     }
   }
 
@@ -222,6 +244,8 @@ export function analyseFrame(img, p1, p2, opts) {
     colour: [sumR / count, sumG / count, sumB / count],
     metal: metal,
     size: size,
+    rimType: fit ? fit.rimType : null,
+    translucent: !!(fit && fit.translucent),
     lensDistMm: lensDistMm,
     // real-world millimetres per photo pixel, when the frame's size is known
     mmPerPx: lensDistMm ? lensDistMm / lensDistPx : null
@@ -231,7 +255,7 @@ export function analyseFrame(img, p1, p2, opts) {
 // Side photo of a temple. hinge, tip: tapped points (hinge end, far end).
 // templeMm: the temple length if known (else the caller's default).
 export function analyseSide(img, hinge, tip, templeMm) {
-  var W = img.width, H = img.height, D = img.data;
+  var W = img.width, H = img.height, D = img.data, OPAQUE = OPAQUE_SOLID;
   if (!hinge || !tip) return { ok: false, reason: 'missing points' };
   var Lpx = Math.hypot(tip.x - hinge.x, tip.y - hinge.y);
   if (!(Lpx > 10)) return { ok: false, reason: 'points too close' };

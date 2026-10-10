@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=4">
+<link rel="stylesheet" href="styles.css?v=5">
 </head>
 <body>
   <div class="root">
@@ -101,6 +101,11 @@
             <label>Bridge <input type="number" id="editSizeBridge" min="10" max="30" step="0.5" inputmode="decimal"></label>
             <label>Temple <input type="number" id="editSizeTemple" min="100" max="170" step="1" inputmode="numeric"></label>
           </div>
+          <div class="label">Frame photo</div>
+          <div class="row">
+            <span class="hint" id="editPhotoStatus" style="margin:0"></span>
+            <button class="btn ghost" id="editPhotoBtn" type="button">Update photo</button>
+          </div>
           <div class="label">Temple photo (3D)</div>
           <div class="row">
             <span class="hint" id="editSideStatus" style="margin:0"></span>
@@ -123,6 +128,10 @@
 
       <!-- ================= TRY ON ================= -->
       <div id="pageTryOn" style="display:none">
+        <div class="draft-banner" id="draftBanner" style="display:none">
+          <span>Previewing the frame you are adding &mdash; it is not saved yet.</span>
+          <button class="btn primary" id="draftBackBtn" type="button">Back to Add Frames</button>
+        </div>
         <!-- ---------- live try-on (real-time face tracking, front camera) ---------- -->
         <div class="label">Live try-on</div>
         <div class="row" id="liveControls">
@@ -207,13 +216,19 @@
           <span class="sel-text" id="sideTargetText">Temple photo</span>
           <button class="btn ghost" id="sideTargetCancel" type="button">Cancel</button>
         </div>
+        <div class="hint" id="replaceTargetHint" style="display:none">Re-process the saved original photo with the current settings, or take/upload a better photo of the same frame. Tags and size stay as they are.</div>
+        <div class="row" id="replaceTargetRow" style="display:none">
+          <button class="btn primary" id="reprocessBtn" type="button">Re-process the original photo</button>
+        </div>
         <div class="hint" id="sideTargetHint" style="display:none">Photograph one temple (arm) from the side: open the frame, lay it on its side or hold it so the temple is flat and faces the camera straight-on, hinge on the left. The same background tips apply. This replaces the generated temple in the 3D try-on.</div>
         <div class="label" id="framePhotoLabel">Frame photo</div>
         <div class="row" id="bgModeToggle">
-          <button class="btn ghost active" id="bgModeSingleBtn" type="button">Single photo</button>
+          <button class="btn ghost active" id="bgModeAutoBtn" type="button">Automatic (recommended)</button>
+          <button class="btn ghost" id="bgModeSingleBtn" type="button">Simple removal</button>
           <button class="btn ghost" id="bgModeTwoShotBtn" type="button">Two photos (more precise)</button>
           <button class="btn ghost" id="bgModeAiBtn" type="button">AI removal (remove.bg)</button>
         </div>
+        <div class="hint" id="bgModeAutoHint">Photograph the glasses straight on, filling most of the picture &mdash; lying on a table or on a display stand is fine, no special background needed. The frame, lens openings and fitting points are found automatically; you check them before saving.</div>
         <div class="hint" id="bgModeHint" style="display:none">First photograph the empty surface alone, then place the frame and photograph again without moving the camera. The saved surface photo carries over for the next frame too, so you only need to retake it if the camera moves. Comparing the two gives a much cleaner cutout than guessing from one photo.</div>
         <div class="hint" id="bgModeAiHint" style="display:none">Sends the photo to remove.bg for background removal. Usually the cleanest result, but it needs an internet connection and counts against your remove.bg usage.</div>
         <div class="row" id="twoShotStepRow" style="display:none;align-items:center;justify-content:space-between">
@@ -250,12 +265,46 @@
             <button class="btn ghost" id="undoToolBtn" type="button" disabled>Undo</button>
           </div>
           <div class="hint" id="eraseSpotHint" style="display:none">Tap a small leftover bit to remove it, or drag over a bigger area — an arm showing through the lens, a hand, a shadow. Tap "Erase" again to stop.</div>
+          <div class="hint" id="moveLensHint" style="display:none">Drag a red marker to move a lens centre.</div>
           <div class="hint" id="restoreSpotHint" style="display:none">Tap or drag to bring back part of the frame that got removed by mistake — common on very clear or light-colored frames. Tap "Restore" again to stop.</div>
 
           <div class="frame-calib-viewport">
             <canvas id="frameCalibCanvas"></canvas>
           </div>
           <div class="calib-banner" id="frameCalibBanner" style="display:block">Tap one lens center, then the other.</div>
+
+          <div class="auto-review" id="autoReview" style="display:none">
+            <div class="auto-status" id="autoStatus" role="status" aria-live="polite"></div>
+            <ul class="auto-warnings" id="autoWarnings"></ul>
+            <div class="auto-controls" id="autoControls">
+              <div class="label">Rim type</div>
+              <div class="chip-row" id="autoRimChips">
+                <button type="button" class="tag-chip" data-rim="full">Full-rim</button>
+                <button type="button" class="tag-chip" data-rim="semi">Semi-rimless</button>
+                <button type="button" class="tag-chip" data-rim="rimless">Rimless</button>
+              </div>
+              <div class="label">Material</div>
+              <div class="chip-row" id="autoMaterialChips">
+                <button type="button" class="tag-chip" data-trans="1">Translucent</button>
+                <button type="button" class="tag-chip" data-trans="0">Solid</button>
+              </div>
+              <div class="slider-label">Sensitivity <span class="val" id="autoSensVal">100%</span></div>
+              <input type="range" id="autoSens" min="50" max="200" value="100" aria-label="Detection sensitivity">
+              <div class="hint" style="margin:6px 0 0">Raise it if thin or light parts of the frame are missing; lower it if shadows or bits of background are included.</div>
+              <label class="check-row" style="margin-top:12px"><input type="checkbox" id="autoGuides" checked> Show lens outlines and fitting points</label>
+            </div>
+            <div class="label" style="margin-top:12px">Try-on style</div>
+            <div class="chip-row" id="autoLevelChips">
+              <button type="button" class="tag-chip" data-level="3d">Approximate 3D</button>
+              <button type="button" class="tag-chip" data-level="2d">Flat overlay</button>
+            </div>
+            <div class="auto-level" id="autoLevel"></div>
+            <div class="row" style="margin-top:12px">
+              <button class="btn" id="autoPreviewBtn" type="button">Preview on a face</button>
+              <button class="btn ghost" id="autoFallbackBtn" type="button" style="display:none">Use simple removal instead</button>
+            </div>
+          </div>
+
 
           <div class="model-preview" id="modelPreview" style="display:none">
             <div class="label">3D model preview</div>
@@ -302,6 +351,6 @@
     </div>
   </div>
 
-  <script type="module" src="app.js?v=6"></script>
+  <script type="module" src="app.js?v=7"></script>
 </body>
 </html>

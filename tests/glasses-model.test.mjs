@@ -138,3 +138,22 @@ test('analyseSide: finds the straight part of the temple despite the ear bend', 
   assert.ok(f.ok && f.flip === -1);
   assert.ok(f.crop.maxV > 60, 'the ear bend still points down (+v)');
 });
+
+test('analyseFrame uses stored fitting metadata (semi-rimless lens outlines, translucency)', async () => {
+  const { readPNG } = await import('./png.mjs');
+  const { extractFrame } = await import('../frame-extract.js');
+  const r = extractFrame(readPNG(new URL('./fixtures/semirimless-stand.png', import.meta.url)));
+  const fit = { v: 1, lenses: r.lenses, rimType: r.rimType, translucent: r.translucent };
+  const m = analyseFrame(r.cutout, r.landmarks.lensL, r.landmarks.lensR, { fit });
+  assert.ok(m.ok);
+  assert.deepEqual(m.lensFound, [true, true], 'open-bottom lenses still get glass from the stored outlines');
+  assert.ok(m.lensPixels > 0.8 * (r.lenses[0].width * r.lenses[0].height * 2) * 0.8, 'lens area covers the outlines');
+  assert.equal(m.rimType, 'semi');
+  const noFit = analyseFrame(r.cutout, r.landmarks.lensL, r.landmarks.lensR, {});
+  assert.ok(noFit.lensPixels < m.lensPixels * 0.5, 'without metadata the open lenses are not detected');
+
+  const g = extractFrame(readPNG(new URL('./fixtures/translucent-fullrim.png', import.meta.url)));
+  const solidView = analyseFrame(g.cutout, g.landmarks.lensL, g.landmarks.lensR, { fit: { v: 1, lenses: g.lenses, translucent: false } });
+  const transView = analyseFrame(g.cutout, g.landmarks.lensL, g.landmarks.lensR, { fit: { v: 1, lenses: g.lenses, translucent: true } });
+  assert.ok(transView.rim.thicknessPx > solidView.rim.thicknessPx, 'translucent material counts as frame');
+});

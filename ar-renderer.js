@@ -409,7 +409,8 @@ export class TryOnRenderer {
   }
 
   // Analyses a catalogue frame and builds its textures (cached per key).
-  // frame: { img, p1, p2, tags, size, side: { img, hinge, tip } | null }
+  // frame: { img, p1, p2, tags, size, fit, side: { img, hinge, tip } | null }
+  // fit: fitting metadata stored when the frame was prepared (see frame-extract.js)
   prepare(key, frame) {
     if (this.cache.has(key)) {
       var hit = this.cache.get(key);
@@ -422,13 +423,15 @@ export class TryOnRenderer {
       if (self.cache.size >= MAX_CACHED_FRAMES && (!self.current || self.current.key !== k)) self.forget(k);
     });
     var px = readPixels(frame.img);
-    var a = analyseFrame(px, frame.p1, frame.p2, { tags: frame.tags, size: frame.size });
+    var a = analyseFrame(px, frame.p1, frame.p2, { tags: frame.tags, size: frame.size, fit: frame.fit });
     if (!a.ok) { var bad = { ok: false, reason: a.reason }; return bad; }
     var pad = 6;
     var rect = { u0: Math.floor(a.bbox.minU - pad), v0: Math.floor(a.bbox.minV - pad) };
     rect.cw = Math.ceil(a.bbox.maxU + pad) - rect.u0;
     rect.ch = Math.ceil(a.bbox.maxV + pad) - rect.v0;
-    var front = defringe(axisCanvas(frame.img, a.centre, a.angle, rect.u0, rect.v0, rect.cw, rect.ch));
+    // auto-extracted frames already had the background un-mixed from their edges
+    var front = axisCanvas(frame.img, a.centre, a.angle, rect.u0, rect.v0, rect.cw, rect.ch);
+    if (!(frame.fit && frame.fit.unmixed)) defringe(front);
     var lens = a.lensPixels ? axisCanvas(maskCanvas(a.lensMask, a.width, a.height), a.centre, a.angle, rect.u0, rect.v0, rect.cw, rect.ch, true) : null;
     var shadowSrc = alphaAsWhite(front);
     var prepared = {
