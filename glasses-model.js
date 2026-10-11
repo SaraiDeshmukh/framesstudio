@@ -28,28 +28,9 @@ var OPAQUE_SOLID = 128;        // alpha at or above this counts as frame materia
 var OPAQUE_TRANSLUCENT = 45;   // ... for frames whose material is see-through
 var CLEAR = 100;        // alpha below this counts as see-through
 
-export var SIZE_LIMITS = { eye: [30, 75], bridge: [10, 30], temple: [100, 170] };
-
-// Returns {eye, bridge, temple} with only the plausible numbers kept, or null.
-export function cleanSize(size) {
-  if (!size) return null;
-  var out = {}, any = false;
-  ['eye', 'bridge', 'temple'].forEach(function (k) {
-    var v = Number(size[k]);
-    var lim = SIZE_LIMITS[k];
-    if (isFinite(v) && v >= lim[0] && v <= lim[1]) { out[k] = Math.round(v * 10) / 10; any = true; }
-    else out[k] = null;
-  });
-  return any ? out : null;
-}
-
-// "52-18-140" style label for whatever is known.
-export function sizeLabel(size) {
-  var s = cleanSize(size);
-  if (!s) return '';
-  if (s.eye && s.bridge) return s.eye + '□' + s.bridge + (s.temple ? ' ' + s.temple : '');
-  return [s.eye ? 'eye ' + s.eye : '', s.bridge ? 'bridge ' + s.bridge : '', s.temple ? 'temple ' + s.temple : ''].filter(Boolean).join(' · ');
-}
+// size helpers live in frame-size.js (re-exported here for existing callers)
+import { SIZE_LIMITS, cleanSize, sizeLabel } from './frame-size.js';
+export { SIZE_LIMITS, cleanSize, sizeLabel };
 
 function percentile(sorted, p) {
   if (!sorted.length) return 0;
