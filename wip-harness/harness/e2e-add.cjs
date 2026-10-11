@@ -6,7 +6,7 @@ async function tapOnCanvas(page, sel, pts, srcW) {
   for (const p of pts) { await page.mouse.click(b.x + p[0] * k * b.w / b.cw, b.y + p[1] * k * b.h / b.ch); await sleep(250); }
 }
 module.exports = async function (browser) {
-  const { page, errors } = await newPage(browser);
+  const { page, errors } = await newPage(browser, { staff: true });
   await page.goto('https://app.test/');
   await page.waitForSelector('.frame-card', { timeout: 20000 });
   await page.click('#tabAddBtn');
@@ -52,29 +52,36 @@ module.exports = async function (browser) {
   await page.waitForFunction(() => /Temple photo saved/.test(document.getElementById('addedMsgText').textContent), null, { timeout: 15000 });
   const side = await page.evaluate(id => ({ side: window.__store.get('users/kiosk/framesSide/' + id), light: window.__store.get('users/kiosk/frames/' + id) }), saved.id);
   check('temple photo saved and linked to the frame', side.side && side.side.hinge && side.side.imgW && side.light.hasSide === true);
-  check('Add page returns to normal frame mode', await page.$eval('#addToLibraryBtn', e => e.textContent === 'Add to library'));
+  check('Add page returns to normal frame mode', await page.$eval('#addToLibraryBtn', e => e.textContent === 'Add to catalogue'));
 
-  // edit an existing frame's size from Browse
-  await page.click('#tabBrowseBtn');
-  await page.click('.frame-card[data-id="f2"] .frame-card-edit');
+  // edit an existing frame's size from its page (staff tools)
+  await page.goto('https://app.test/#/frame/f2');
+  await page.waitForSelector('.staff-tools');
+  await page.click('.staff-tools >> text=Edit details');
   await page.fill('#editSizeEye', '47'); await page.fill('#editSizeBridge', '22'); await page.fill('#editSizeTemple', '140');
   await page.click('#saveTagsBtn');
   await sleep(500);
   const f2 = await page.evaluate(() => window.__store.get('users/kiosk/frames/f2').size);
   check('editing saves the size', f2 && f2.eye === 47 && f2.bridge === 22, JSON.stringify(f2));
+  check('frame page shows the edited size', (await page.$eval('.size-mark-code', e => e.textContent)).includes('47□22 140'));
+  await page.click('#tabBrowseBtn');
   check('card shows the edited size', (await page.$eval('.frame-card[data-id="f2"]', e => e.textContent)).includes('47□22 140'));
-  await page.click('.frame-card[data-id="f2"] .frame-card-edit');
+  await page.goto('https://app.test/#/frame/f2');
+  await page.waitForSelector('.staff-tools');
+  await page.click('.staff-tools >> text=Edit details');
   const sideBtn = await page.$eval('#editSideBtn', e => e.textContent);
   check('edit panel offers a temple photo', sideBtn === 'Add temple photo');
   await page.click('#editSideBtn');
   check('it opens temple photo mode for that frame', await page.$eval('#sideTargetText', e => e.textContent.includes('Temple photo for')));
   await page.click('#sideTargetCancel');
 
-  // deleting a frame removes its temple photo too
-  await page.click('#tabBrowseBtn');
-  page.once('dialog', d => d.accept());
-  await page.click('.frame-card[data-id="f1"] .frame-card-remove');
-  await sleep(400);
+  // deleting a frame (from its page, after confirming) removes its temple photo too
+  await page.goto('https://app.test/#/frame/f1');
+  await page.waitForSelector('.staff-tools');
+  await page.click('.staff-tools .btn.danger');
+  await page.waitForSelector('#confirmDialog[open]');
+  await page.click('#confirmOk');
+  await sleep(600);
   const gone = await page.evaluate(() => !window.__store.has('users/kiosk/framesSide/f1') && !window.__store.has('users/kiosk/frames/f1'));
   check('removing a frame also removes its temple photo', gone);
   check('no console errors (add/edit flow)', errors.length === 0, errors.slice(0, 3).join(' | '));

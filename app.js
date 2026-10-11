@@ -499,6 +499,7 @@ function track(eventName, params) {
   var selectedText = document.getElementById('selectedText');
   var selectedDetailsLink = document.getElementById('selectedDetailsLink');
   var stageStart = document.getElementById('stageStart');
+  var photoLiveBtn = document.getElementById('photoLiveBtn');
   var photoViewport = document.getElementById('viewport');
   var photoError = document.getElementById('photoError');
   var adjustBox = document.getElementById('adjustBox');
@@ -727,6 +728,7 @@ function track(eventName, params) {
     var photoOn = !liveOn && (faceHasImage || !!stream);
     photoViewport.style.display = photoOn ? 'block' : 'none';
     stageStart.hidden = liveOn || photoOn;
+    photoLiveBtn.style.display = photoOn && faceHasImage ? 'inline-flex' : 'none';
     liveTips.hidden = !liveOn;
     var adjustable = liveFitRow.style.display !== 'none' || fitRow.style.display !== 'none';
     adjustBox.hidden = !adjustable;
@@ -2102,6 +2104,7 @@ function track(eventName, params) {
   }
 
   liveStartBtn.addEventListener('click', function () { startLive(); });
+  photoLiveBtn.addEventListener('click', function () { startLive(); });   // from a photo straight to the live camera
   liveStopBtn.addEventListener('click', stopLive);
   liveToggleBtn.addEventListener('click', function () {
     live.overlayOn = !live.overlayOn;

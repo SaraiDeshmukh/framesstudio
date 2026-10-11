@@ -15,7 +15,7 @@ async function chip(page, container, label) {
   await page.click(`${container} .tag-chip >> text="${label}"`);
 }
 module.exports = async function (browser) {
-  const { page, errors } = await newPage(browser, { grant: true });
+  const { page, errors } = await newPage(browser, { grant: true, staff: true });
   await page.goto('https://app.test/');
   await page.waitForSelector('.frame-card', { timeout: 20000 });
   const autoActive = await page.$eval('#bgModeAutoBtn', e => e.classList.contains('active'));
@@ -35,7 +35,7 @@ module.exports = async function (browser) {
     check(ph.name + ': approximate 3D chosen', status.includes('approximate 3D'));
     const notes = await page.$$eval('#autoWarnings li', els => els.map(e => e.className + ': ' + e.textContent.slice(0, 60)));
     const rimTag = await page.$eval('#rimChips .tag-chip.active', e => e.textContent).catch(() => '');
-    check(ph.name + ': rim tag filled from the detection', rimTag === { 'Full-rim': 'Full-Rim', 'Semi-rimless': 'Semi-Rimless' }[ph.rim], rimTag);
+    check(ph.name + ': rim tag filled from the detection', rimTag === ph.rim, rimTag);
     if (ph.repaired) check(ph.name + ': rebuilt bridge flagged for review', notes.some(n => /^warn: The display clip hid/.test(n)), notes.join(' | '));
     const ready = await page.$eval('#addToLibraryBtn', e => !e.disabled);
     check(ph.name + ': lens centres placed automatically (ready to save)', ready);
@@ -51,7 +51,8 @@ module.exports = async function (browser) {
     // preview on a face in the real try-on (unsaved)
     await page.click('#autoPreviewBtn');
     await page.waitForSelector('#draftBanner', { state: 'visible' });
-    await upload(page, '#uploadBtn', path.join(H.S, 'assets/business-person.png'));
+    // the customer photo stays loaded between previews; upload it the first time only
+    if (await page.isVisible('#uploadBtn')) await upload(page, '#uploadBtn', path.join(H.S, 'assets/business-person.png'));
     await page.waitForFunction(() => document.querySelector('#photoStage .ar-canvas'), null, { timeout: 60000 });
     await sleep(1500);
     const px = await arPixels(page, '#photoStage');
@@ -93,20 +94,19 @@ module.exports = async function (browser) {
 
   // try each saved product on the same face from the catalog
   await page.click('#tabTryOnBtn');
-  await upload(page, '#uploadBtn', path.join(H.S, 'assets/business-person.png'));
+  if (await page.isVisible('#uploadBtn')) await upload(page, '#uploadBtn', path.join(H.S, 'assets/business-person.png'));
   await page.waitForFunction(() => getComputedStyle(document.getElementById('recalBtn')).display !== 'none', null, { timeout: 60000 });
   for (const ph of PHOTOS) {
     await page.click('#tabBrowseBtn');
     await page.click(`.frame-card[data-id="${saved[ph.name].id}"] .frame-card-tryon`);
-    await page.click('#goTryOnBtn');
     await sleep(1800);
     const px = await arPixels(page, '#photoStage');
     check(ph.name + ': saved frame tries on from the catalog', px > 1500, px + ' px');
     const vp = await page.$('#viewport'); const b = await vp.boundingBox();
     await page.screenshot({ path: path.join(OUT, 'auto-saved-' + ph.name + '.png'), clip: { x: b.x + b.width * 0.22, y: b.y + b.height * 0.08, width: b.width * 0.56, height: b.height * 0.26 } });
   }
-  // live camera with a saved auto frame
-  await page.click('#liveStartBtn');
+  // live camera with a saved auto frame (from the photo: "Use live camera")
+  await page.click('#photoLiveBtn');
   await page.waitForFunction(() => getComputedStyle(document.getElementById('liveStripWrap')).display !== 'none', null, { timeout: 60000 });
   await page.click(`#liveStrip .similar-item[data-id="${saved.greygreen.id}"]`);
   await page.waitForFunction(() => document.getElementById('liveStatus').textContent === '', null, { timeout: 30000 });
@@ -117,9 +117,12 @@ module.exports = async function (browser) {
   await page.click('#liveStopBtn');
 
   // re-process from the stored original (Edit -> Update photo)
-  await page.click('#tabBrowseBtn');
   const rid = saved.redcherry.id;
-  await page.click(`.frame-card[data-id="${rid}"] .frame-card-edit`);
+  await page.goto('https://app.test/#/frame/' + rid);
+  await page.waitForSelector('.staff-tools');
+  const prepShown = await page.$eval('.staff-prepared', e => e.textContent);
+  check('frame page (staff) shows how the frame was prepared', /Prepared automatically/.test(prepShown), prepShown);
+  await page.click('.staff-tools >> text=Edit details');
   const photoStatus = await page.$eval('#editPhotoStatus', e => e.textContent);
   check('edit panel shows how the frame was prepared', /Prepared automatically: Full-rim, solid, approximate 3D\. Original photo kept\./.test(photoStatus), photoStatus);
   await page.click('#editPhotoBtn');
@@ -149,14 +152,17 @@ module.exports = async function (browser) {
   const flatId = await page.evaluate(() => { const ids = [...window.__store.keys()].filter(k => /\/frames\/f\d{8,}/.test(k)).map(k => k.split('/').pop()).sort(); return ids[ids.length - 1]; });
   const flatLevel = await page.evaluate(id => window.__store.get('users/kiosk/frames/' + id).level, flatId);
   check('flat-overlay choice is saved per product', flatLevel === '2d');
+  await page.goto('https://app.test/#/frame/' + flatId);
+  await page.waitForSelector('.staff-tools');
+  const flatShown = await page.$eval('.staff-prepared', e => e.textContent.includes('flat overlay'));
+  check('staff can see which frames are flat-only', flatShown);
   await page.click('#tabBrowseBtn');
-  const chipShown = await page.$eval(`.frame-card[data-id="${flatId}"]`, e => e.textContent.includes('Flat try-on'));
-  check('catalog marks flat-only frames', chipShown);
-  await page.click(`.frame-card[data-id="${flatId}"] .frame-card-tryon`);
-  await page.click('#goTryOnBtn');
-  await sleep(1500);
-  const noAr = await page.evaluate(() => !document.querySelector('#photoStage .ar-canvas'));
-  check('flat-overlay product uses the flat try-on', noAr);
+  await page.click(`.frame-card[data-id="${flatId}"] .frame-card-tryon`);   // camera allowed: starts live
+  await page.waitForFunction(() => document.getElementById('liveViewport').style.display !== 'none' && document.getElementById('liveStatus').textContent === '', null, { timeout: 60000 });
+  await sleep(1800);
+  const flatAr = await arPixels(page, '#liveViewport');
+  check('flat-overlay product uses the flat try-on (no 3D layer drawn)', flatAr < 50, flatAr + ' px in the 3D layer');
+  await page.click('#liveStopBtn');
 
   // a photo with the frame cut off: flagged, flat only, and never saved without a deliberate yes
   await page.click('#tabAddBtn');
@@ -168,14 +174,16 @@ module.exports = async function (browser) {
   check('cropped photo: falls back to a flat overlay', /flat overlay/.test(cStatus) && /needs attention|check the notes/.test(cStatus), cStatus);
   check('cropped photo: the problem is named', cNotes.some(n => /^error: .*cut off/i.test(n)), cNotes.join(' | '));
   const nC = await page.evaluate(() => [...window.__store.keys()].filter(k => /\/frames\//.test(k)).length);
-  let dlg = '';
-  page.once('dialog', d => { dlg = d.message(); d.dismiss(); });
   await page.click('#addToLibraryBtn');
-  await sleep(800);
+  await page.waitForSelector('#confirmDialog[open]', { timeout: 5000 }).catch(() => {});
+  const dlg = await page.evaluate(() => document.getElementById('confirmDialog').open ? document.getElementById('confirmTitle').textContent + ' / ' + document.getElementById('confirmBody').textContent : '');
+  await page.click('#confirmCancel').catch(() => {});
+  await sleep(600);
   const nC2 = await page.evaluate(() => [...window.__store.keys()].filter(k => /\/frames\//.test(k)).length);
-  check('cropped photo: saving asks first, and "no" saves nothing', /needs attention/.test(dlg) && nC2 === nC, JSON.stringify({ dlg: dlg.slice(0, 80), nC, nC2 }));
-  page.once('dialog', d => d.accept());
+  check('cropped photo: saving asks first, and "no" saves nothing', /needs attention/.test(dlg) && /cut off/.test(dlg) && nC2 === nC, JSON.stringify({ dlg: dlg.slice(0, 120), nC, nC2 }));
   await page.click('#addToLibraryBtn');
+  await page.waitForSelector('#confirmDialog[open]');
+  await page.click('#confirmOk');
   await page.waitForFunction(n => [...window.__store.keys()].filter(k => /\/frames\//.test(k)).length > n, nC, { timeout: 20000 });
   check('cropped photo: "yes" saves it (as a flat overlay)', true);
   check('no console errors (asset workflow)', errors.length === 0, errors.slice(0, 3).join(' | '));

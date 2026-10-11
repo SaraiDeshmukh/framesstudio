@@ -12,7 +12,7 @@ module.exports = async function (browser) {
   await page.goto('https://app.test/');
   await page.waitForSelector('.frame-card', { timeout: 20000 });
   await page.click('.frame-card[data-id="f2"] .frame-card-tryon');
-  await page.click('#goTryOnBtn');
+  await page.waitForSelector('#pageTryOn', { state: 'visible' });
   await page.setInputFiles('#fileInput', path.join(H.S, 'assets/business-person.png'));
   await page.waitForFunction(() => getComputedStyle(document.getElementById('recalBtn')).display !== 'none', null, { timeout: 60000 });
   await sleep(1500);
@@ -20,7 +20,7 @@ module.exports = async function (browser) {
   const warned = await page.evaluate(() => window.__warns.some(w => /3D try-on unavailable/.test(w)));
   check('no WebGL: photo mode falls back to the flat overlay', noAr && warned);
   await (await page.$('#viewport')).screenshot({ path: path.join(OUT, 'e2e-fallback-photo.png') });
-  await page.click('#liveStartBtn');
+  await page.click('#photoLiveBtn');      // from the photo straight to the live camera
   await page.waitForFunction(() => getComputedStyle(document.getElementById('liveStripWrap')).display !== 'none', null, { timeout: 60000 });
   await page.click('#liveStrip .similar-item[data-id="f2"]');
   await page.waitForFunction(() => document.getElementById('liveStatus').textContent === '', null, { timeout: 30000 });
