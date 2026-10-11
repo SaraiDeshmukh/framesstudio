@@ -403,15 +403,17 @@ async function arBox(page, sel) {
   return n ? { w: x1 - x0 + 1, h: y1 - y0 + 1, n } : null;
 }
 // visible English words left on a customer page (when another language is chosen)
-async function englishLeft(page) {
-  return page.evaluate(() => {
-    const allow = /^(Frame|Try-On|Studio|English|PD|IPD|JPEG|PNG|WebP|MB|mm|Red|Cherry|Classic|Rectangle|acetate|metal|translucent|bold|light|pilot|half-rim|Chrome|Edge|Safari|Firefox|https|iPhone|Settings|Camera|Formats|Most|Compatible|Google|Analytics|Pilot)$/;
+async function englishLeft(page, staffToo) {
+  return page.evaluate((staffToo) => {
+    const allow = /^(Frame|Try-On|Studio|English|PD|IPD|JPEG|PNG|WebP|MB|mm|Red|Cherry|Classic|Rectangle|acetate|metal|translucent|bold|light|pilot|half-rim|Chrome|Edge|Safari|Firefox|https|iPhone|Settings|Camera|Formats|Most|Compatible|Google|Analytics|Pilot|Enter)$/;
+    const skip = staffToo ? '[hidden], script, style, .lang-bar, #bgModeAiBtn, #setupNotice, dialog:not([open])'
+      : '[hidden], script, style, .lang-bar, .staff-only, #pageAdd, #editTagsPanel, #bulkBar, .staff-tools, .staff-menu, dialog:not([open])';
     const out = new Set();
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
     let node;
     while ((node = walk.nextNode())) {
       const el = node.parentElement;
-      if (!el || el.closest('[hidden], script, style, .lang-bar, .staff-only, #pageAdd, #editTagsPanel, #bulkBar, .staff-tools, .staff-menu, dialog:not([open])')) continue;
+      if (!el || el.closest(skip)) continue;
       const r = el.getBoundingClientRect(), st = getComputedStyle(el);
       if (!r.width || !r.height || st.visibility === 'hidden' || st.display === 'none' || el.closest('.visually-hidden') && false) continue;
       let hidden = false; for (let e = el; e; e = e.parentElement) { if (getComputedStyle(e).display === 'none') { hidden = true; break; } }
@@ -419,7 +421,7 @@ async function englishLeft(page) {
       (node.textContent.match(/[A-Za-z][A-Za-z'-]{2,}/g) || []).forEach(w => { if (!allow.test(w)) out.add(w); });
     }
     return [...out];
-  });
+  }, !!staffToo);
 }
 
 async function langJourney(browser, vp) {
@@ -636,6 +638,69 @@ async function pdJourney(browser, vp) {
   await l.ctx.close();
 }
 
+// The staff screens follow the language too: catalogue tagging, frame editor,
+// Add frames (incl. the automatic extraction review) and the save messages.
+async function staffLangJourney(browser, vp) {
+  const P = `StaffLang/${vp}: `;
+  const { page, errors } = await newPage(browser, { vp, lang: 'hi' });
+  await ready(page);
+  await page.click('#staffBtn');
+  await page.waitForSelector('#staffDialog[open]');
+  await page.fill('#staffPassword', 'kiosk-pass');
+  await page.click('#staffUnlockBtn');
+  await page.waitForFunction(() => document.body.classList.contains('staff'));
+  await sleep(300);
+  check(P + 'Hindi: catalogue with staff tools, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await page.click('#selectModeBtn');
+  await page.waitForSelector('#bulkBar', { state: 'visible' });
+  check(P + 'Hindi: bulk tagging panel', /चुने गए/.test(await page.textContent('#bulkCountLabel')) && (await page.textContent('#bulkShapeChips .tag-chip')).trim() === 'गोल');
+  check(P + 'Hindi: bulk tagging, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await page.click('#exitSelectModeBtn');
+  // frame editor, then switch to Marathi while it is open
+  await page.goto('https://app.test/#/frame/f3');
+  await page.waitForSelector('.staff-tools');
+  check(P + 'Hindi: staff tools on the frame page, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await page.click('text=जानकारी बदलें');
+  await page.waitForSelector('#editTagsPanel', { state: 'visible' });
+  check(P + 'Hindi: frame editor', (await page.textContent('#editTagsPanel .panel-title')).trim() === 'फ्रेम की जानकारी बदलें' && /डंडी/.test(await page.textContent('#editSideStatus')));
+  check(P + 'Hindi: frame editor, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await page.click('.lang-btn[data-lang="mr"]');
+  await sleep(300);
+  check(P + 'switching to Marathi redraws the open editor', (await page.textContent('#editTagsPanel .panel-title')).trim() === 'फ्रेमची माहिती बदला' && /दांडी/.test(await page.textContent('#editSideStatus')) && (await page.textContent('#editShapeChips .tag-chip')).trim() === 'गोल');
+  check(P + 'Marathi: frame editor, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await page.click('#cancelEditTagsBtn');
+  // Add frames, in Marathi
+  await page.goto('https://app.test/#/add');
+  await page.waitForSelector('#frameUploadBtn', { state: 'visible' });
+  await sleep(300);
+  check(P + 'Marathi: Add frames page', (await page.textContent('#frameUploadBtn')).trim() === 'फोटो अपलोड करा' && /अजून फ्रेमचा फोटो नाही/.test(await page.textContent('#frameSourcePlaceholder')));
+  check(P + 'Marathi: Add frames, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await upload(page, '#frameUploadBtn', path.join(S, 'photos', 'redcherry.png'));
+  await page.waitForFunction(() => /फ्रेम सापडली|सापडली नाही/.test(document.getElementById('autoStatus').textContent), null, { timeout: 60000 });
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('modelPreview')).display !== 'none', null, { timeout: 30000 }).catch(() => {});
+  await sleep(800);
+  const st = await page.textContent('#autoStatus');
+  check(P + 'Marathi: extraction result in Marathi', /^फ्रेम सापडली — फुल-रिम · अपारदर्शक · अंदाजे 3D/.test(st.trim()), st);
+  const notes = await page.$$eval('#autoWarnings li', els => els.map(e => e.textContent));
+  check(P + 'Marathi: extraction notes in Marathi', notes.length > 0 && notes.every(n => /[ऀ-ॿ]/.test(n)) && notes.some(n => /डिस्प्ले क्लिप/.test(n)), notes.join(' | ').slice(0, 200));
+  check(P + 'Marathi: review panel, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await shot(page, `${TAG}-mr-add-review-${vp}`, true);
+  await page.click('.lang-btn[data-lang="hi"]');
+  await sleep(300);
+  check(P + 'switching to Hindi redraws the review', /^फ्रेम मिल गया/.test((await page.textContent('#autoStatus')).trim()) && (await page.$$eval('#autoWarnings li', els => els.some(e => /डिस्प्ले क्लिप ने/.test(e.textContent)))) && /लेंस/.test(await page.textContent('#frameCalibBanner')));
+  check(P + 'Hindi: review panel, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  await page.fill('#freeTagInput', 'demo');
+  await page.press('#freeTagInput', 'Enter');
+  check(P + 'tag remove button is a labelled button', (await page.getAttribute('#freeTagList .tag-remove', 'aria-label')) === 'टैग demo हटाएँ');
+  await page.click('#freeTagList .tag-remove');
+  await page.click('#addToLibraryBtn');
+  await page.waitForSelector('#addedMsg', { state: 'visible', timeout: 20000 });
+  check(P + 'Hindi: saved message', /कैटलॉग में जोड़ दिया गया/.test(await page.textContent('#addedMsgText')) && /डंडी/.test(await page.textContent('#addSideAfterBtn')));
+  check(P + 'Hindi: after saving, no English left', (await englishLeft(page, true)).length === 0, (await englishLeft(page, true)).join(' '));
+  check(P + 'no console errors', errors.length === 0, errors.slice(0, 3).join(' | '));
+  await page.context().close();
+}
+
 (async () => {
   const browser = await launch();
   const run = async (name, fn) => { if (ONLY === 'all' || ONLY === name) { try { await fn(); } catch (e) { check(name + ' crashed', false, String(e && e.message).slice(0, 300)); } } };
@@ -650,6 +715,7 @@ async function pdJourney(browser, vp) {
   await run('lang', async () => { await langJourney(browser, 'laptop'); await langJourney(browser, 'phone'); });
   await run('shortlist', async () => { await shortlistJourney(browser, 'laptop'); await shortlistJourney(browser, 'phone'); });
   await run('pd', async () => { await pdJourney(browser, 'laptop'); await pdJourney(browser, 'phone'); });
+  await run('staffLang', async () => { await staffLangJourney(browser, 'laptop'); await staffLangJourney(browser, 'phone'); });
   await browser.close();
   fs.writeFileSync(path.join(OUT, `results-${TAG}-${ONLY}.json`), JSON.stringify(results, null, 1));
   const failed = results.filter(r => !r.ok);

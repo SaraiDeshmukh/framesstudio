@@ -75,14 +75,6 @@ function track(eventName, params) {
     rim: { options: ['fullrim', 'semirimless', 'rimless'] }
   };
 
-  function labelize(v) {
-    var map = {
-      catseye: 'Cat-eye', womens: "Women's", mens: "Men's", kids: "Kids'",
-      fullrim: 'Full-rim', semirimless: 'Semi-rimless'
-    };
-    return map[v] || (v ? (v.charAt(0).toUpperCase() + v.slice(1)) : '');
-  }
-
   // Renders a facet's chip buttons fresh into `container`, marking `currentValue`
   // active. Reusable for the Add-frame form, the single-frame editor, and the
   // bulk-edit bar -- all three just point it at a different container/state.
@@ -93,7 +85,7 @@ function track(eventName, params) {
       chip.type = 'button';
       chip.className = 'tag-chip' + (currentValue === val ? ' active' : '');
       chip.setAttribute('aria-pressed', currentValue === val ? 'true' : 'false');
-      chip.textContent = labelize(val);
+      chip.textContent = tagLabel(val);
       chip.addEventListener('click', function () {
         var wasActive = chip.classList.contains('active');
         container.querySelectorAll('.tag-chip').forEach(function (c) { c.classList.remove('active'); c.setAttribute('aria-pressed', 'false'); });
@@ -818,12 +810,6 @@ function track(eventName, params) {
 
   function normalizeSearch(s) {
     return (s || '').toLowerCase().replace(/[\u2018\u2019'".,]/g, '').replace(/[-_]/g, ' ');
-  }
-
-  function describeTags(tags) {
-    var t = tags || {};
-    var parts = [t.shape, t.color, t.gender, t.rim].filter(Boolean).map(labelize);
-    return parts.length ? parts.join(', ') : 'Untagged frame';
   }
 
   // What customers call a frame: its name if staff gave it one, else colour and
@@ -2515,14 +2501,17 @@ function track(eventName, params) {
 
   function renderFreeTagList() {
     freeTagList.innerHTML = '';
-    pendingTags.free.forEach(function (t) {
+    pendingTags.free.forEach(function (tag) {
       var chip = document.createElement('span');
       chip.className = 'tag-chip removable';
-      chip.appendChild(document.createTextNode(t + ' '));
-      var x = document.createElement('span');
+      chip.appendChild(document.createTextNode(tag + ' '));
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'tag-remove';
       x.textContent = '\u00d7';
+      x.setAttribute('aria-label', t('add.removeTag', { tag: tag }));
       x.addEventListener('click', function () {
-        pendingTags.free = pendingTags.free.filter(function (f) { return f !== t; });
+        pendingTags.free = pendingTags.free.filter(function (f) { return f !== tag; });
         renderFreeTagList();
       });
       chip.appendChild(x);
@@ -2556,14 +2545,17 @@ function track(eventName, params) {
 
   function renderEditFreeTagList() {
     editFreeTagList.innerHTML = '';
-    editPendingTags.free.forEach(function (t) {
+    editPendingTags.free.forEach(function (tag) {
       var chip = document.createElement('span');
       chip.className = 'tag-chip removable';
-      chip.appendChild(document.createTextNode(t + ' '));
-      var x = document.createElement('span');
+      chip.appendChild(document.createTextNode(tag + ' '));
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'tag-remove';
       x.textContent = '\u00d7';
+      x.setAttribute('aria-label', t('add.removeTag', { tag: tag }));
       x.addEventListener('click', function () {
-        editPendingTags.free = editPendingTags.free.filter(function (f) { return f !== t; });
+        editPendingTags.free = editPendingTags.free.filter(function (f) { return f !== tag; });
         renderEditFreeTagList();
       });
       chip.appendChild(x);
@@ -2575,8 +2567,8 @@ function track(eventName, params) {
     var entry = findEntry(id);
     if (!entry) return;
     editingFrameId = id;
-    var t = entry.tags || {};
-    editPendingTags = { shape: t.shape || null, color: t.color || null, gender: t.gender || null, rim: t.rim || null, free: (t.free || []).slice() };
+    var tg = entry.tags || {};
+    editPendingTags = { shape: tg.shape || null, color: tg.color || null, gender: tg.gender || null, rim: tg.rim || null, free: (tg.free || []).slice() };
 
     editThumbWrap.innerHTML = '';
     var img = document.createElement('img');
@@ -2584,24 +2576,34 @@ function track(eventName, params) {
     img.alt = '';
     editThumbWrap.appendChild(img);
     editNameInput.value = entry.name || '';
-    editNameInput.placeholder = frameName(Object.assign({}, entry, { name: null }));
     editError.classList.remove('show');
 
-    renderChipGroup(editShapeChips, 'shape', editPendingTags.shape, function (v) { editPendingTags.shape = v; });
-    renderChipGroup(editColorChips, 'color', editPendingTags.color, function (v) { editPendingTags.color = v; });
-    renderChipGroup(editGenderChips, 'gender', editPendingTags.gender, function (v) { editPendingTags.gender = v; });
-    renderChipGroup(editRimChips, 'rim', editPendingTags.rim, function (v) { editPendingTags.rim = v; });
+    renderEditChips();
     renderEditFreeTagList();
     editFreeTagInput.value = '';
     fillSize(entry.size, editSizeEye, editSizeBridge, editSizeTemple);
-    editSideStatus.textContent = entry.hasSide ? 'Uses its own temple photo.' : 'Uses a temple generated from the front photo.';
-    editPhotoStatus.textContent = preparedText(entry);
-    editSideBtn.textContent = entry.hasSide ? 'Replace temple photo' : 'Add temple photo';
+    syncEditPanelText();
 
     editTagsPanel.style.display = 'block';
     var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     editTagsPanel.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
     editNameInput.focus({ preventScroll: true });
+  }
+
+  function renderEditChips() {
+    renderChipGroup(editShapeChips, 'shape', editPendingTags.shape, function (v) { editPendingTags.shape = v; });
+    renderChipGroup(editColorChips, 'color', editPendingTags.color, function (v) { editPendingTags.color = v; });
+    renderChipGroup(editGenderChips, 'gender', editPendingTags.gender, function (v) { editPendingTags.gender = v; });
+    renderChipGroup(editRimChips, 'rim', editPendingTags.rim, function (v) { editPendingTags.rim = v; });
+  }
+  // The editor's code-drawn text (also redrawn when the language changes).
+  function syncEditPanelText() {
+    var entry = editingFrameId && findEntry(editingFrameId);
+    if (!entry) return;
+    editNameInput.placeholder = frameName(Object.assign({}, entry, { name: null }));
+    editSideStatus.textContent = entry.hasSide ? t('edit.side.own') : t('edit.side.generated');
+    editPhotoStatus.textContent = preparedText(entry);
+    editSideBtn.textContent = entry.hasSide ? t('staffTools.replaceTemple') : t('staffTools.addTemple');
   }
 
   function closeEditTags() {
@@ -2664,7 +2666,7 @@ function track(eventName, params) {
     }).catch(function (e) {
       console.error('Failed to save tags', e);
       saveTagsBtn.disabled = false;
-      editError.textContent = "Couldn't save the changes. Check the connection and try again.";
+      editError.textContent = t('edit.err');
       editError.classList.add('show');
     });
   });
@@ -2679,7 +2681,7 @@ function track(eventName, params) {
   }
 
   function updateBulkCountLabel() {
-    bulkCountLabel.textContent = selectedIds.size + ' selected';
+    bulkCountLabel.textContent = tn('bulk.count', selectedIds.size);
   }
 
   function updateApplyBulkState() {
@@ -2738,11 +2740,11 @@ function track(eventName, params) {
     Promise.all(writes).then(function () {
       rebuildFilterBar();
       exitSelectMode();
-      toast('Tags updated on ' + ids.length + ' frame' + (ids.length === 1 ? '' : 's') + '.');
+      toast(tn('bulk.done', ids.length));
     }).catch(function (e) {
       console.error('Bulk tag update failed', e);
       renderLibrary(); rebuildFilterBar();
-      bulkError.textContent = "Some frames couldn't be updated. Check the connection and try again.";
+      bulkError.textContent = t('bulk.err');
       bulkError.classList.add('show');
       applyBulkBtn.disabled = false;
     });
@@ -3125,9 +3127,12 @@ function track(eventName, params) {
 
   // How the try-on asset was made (for staff).
   function preparedText(entry) {
-    return entry.prepared === 'auto'
-      ? 'Prepared automatically: ' + [RIM_LABEL[entry.rimType] || '', entry.translucent ? 'translucent' : 'solid', entry.level === '2d' ? 'flat overlay' : 'approximate 3D'].filter(Boolean).join(', ') + '.' + (entry.hasSource ? ' Original photo kept.' : '')
-      : 'Prepared by hand' + (entry.level === '2d' ? ', flat overlay' : '') + (entry.hasSource ? ' (original photo kept).' : '.');
+    if (entry.prepared === 'auto') {
+      var details = [rimLabel(entry.rimType), t(entry.translucent ? 'prep.translucent' : 'prep.solid'), t(entry.level === '2d' ? 'prep.2d' : 'prep.3d')].filter(Boolean).join(', ');
+      return t('prep.auto', { details: details }) + (entry.hasSource ? ' ' + t('prep.kept') : '');
+    }
+    var flat = entry.level === '2d';
+    return t(entry.hasSource ? (flat ? 'prep.handFlatKept' : 'prep.handKept') : (flat ? 'prep.handFlat' : 'prep.hand'));
   }
 
   function renderDetail(id) {
@@ -3461,10 +3466,21 @@ function track(eventName, params) {
     frameCalibSectionEl.style.display = 'none';
   }
 
+  // The add page's placeholder text for the current mode (or the last error).
+  var addSourceErrorKey = null;
+  function addSourceText() {
+    if (addSourceErrorKey) return t(addSourceErrorKey);
+    if (bgRemovalMode === 'twoShot' && addTarget.kind !== 'side') return t(twoShotStep === 1 ? 'add.two.ph1' : 'add.two.ph2');
+    return t(addTarget.kind === 'side' ? 'add.ph.side' : 'add.ph.front');
+  }
+  function showAddSourceError(key) {
+    addSourceErrorKey = key;
+    frameSourcePlaceholder.textContent = t(key);
+    frameSourcePlaceholder.style.display = 'block';
+  }
   function updateFrameSourceUI() {
-    var none = addTarget.kind === 'side'
-      ? 'No temple photo yet.\nUse your camera or upload a side view of the frame.'
-      : 'No frame photo yet.\nUse your camera or upload a photo of a frame.';
+    addSourceErrorKey = null;
+    var none = t(addTarget.kind === 'side' ? 'add.ph.side' : 'add.ph.front');
     if (bgRemovalMode === 'ai') {
       twoShotStepRow.style.display = 'none';
       frameSourcePlaceholder.textContent = none;
@@ -3479,13 +3495,8 @@ function track(eventName, params) {
     }
     twoShotStepRow.style.display = 'flex';
     retakeBgBtn.style.display = pendingBgOnlyCanvas ? 'inline-block' : 'none';
-    if (twoShotStep === 1) {
-      twoShotStepLabel.textContent = 'Step 1 of 2: the empty surface';
-      frameSourcePlaceholder.textContent = 'No photo yet. Photograph the empty surface first, with nothing on it.';
-    } else {
-      twoShotStepLabel.textContent = 'Step 2 of 2: place the frame, same spot, same camera position';
-      frameSourcePlaceholder.textContent = 'Place the frame on the same surface and photograph it \u2014 keep the camera in the same spot.';
-    }
+    twoShotStepLabel.textContent = t(twoShotStep === 1 ? 'add.two.step1' : 'add.two.step2');
+    frameSourcePlaceholder.textContent = t(twoShotStep === 1 ? 'add.two.ph1' : 'add.two.ph2');
     frameSourcePlaceholder.style.display = 'block';
   }
 
@@ -3628,8 +3639,7 @@ function track(eventName, params) {
     };
     img.onerror = function () {
       URL.revokeObjectURL(url);
-      frameSourcePlaceholder.textContent = "That file couldn't be opened as an image. Try a JPEG or PNG photo.";
-      frameSourcePlaceholder.style.display = 'block';
+      showAddSourceError('add.err.file');
     };
     img.src = url;
   }
@@ -3646,8 +3656,7 @@ function track(eventName, params) {
       frameVideo.style.display = 'block';
       frameCaptureBtn.style.display = 'inline-block';
     }).catch(function () {
-      frameSourcePlaceholder.textContent = "Couldn't access the camera (permission denied or unavailable). Try uploading a photo instead.";
-      frameSourcePlaceholder.style.display = 'block';
+      showAddSourceError('add.err.camera');
       frameVideo.style.display = 'none';
     });
   }
@@ -3726,47 +3735,54 @@ function track(eventName, params) {
     container.querySelectorAll('.tag-chip').forEach(function (c) { c.classList.toggle('active', c.getAttribute(attr) === value); });
   }
 
-  var RIM_LABEL = { full: 'Full-rim', semi: 'Semi-rimless', rimless: 'Rimless' };
+  var RIM_TAG = { full: 'fullrim', semi: 'semirimless', rimless: 'rimless' };
+  function rimLabel(rimType) { return rimType ? tagLabel(RIM_TAG[rimType] || rimType) : ''; }
+  // The extraction's notes, in the current language (English text as the fallback).
+  function fxWarning(wn) { var k = 'fx.w.' + wn.code; return t(k, wn.vars || null) === k ? wn.message : t(k, wn.vars || null); }
+  function fxLevelLabel(rep) {
+    if (rep.level === '3d') return t('fx.level.3d');
+    var reasons = (rep.reasons || []).map(function (c) { return t('fx.reason.' + c); });
+    return t('fx.level.2d', { reasons: reasons.length ? reasons.join('; ') : t('fx.reason.default') });
+  }
 
   function renderAutoReview() {
     var r = auto.result;
     autoWarnings.innerHTML = '';
     if (auto.busy) {
-      autoStatus.innerHTML = 'Finding the frame\u2026';
+      autoStatus.textContent = t('add.auto.finding');
       autoControls.style.display = 'none'; autoLevel.textContent = ''; autoLevelChips.style.display = 'none';
       autoPreviewBtn.style.display = 'none'; autoFallbackBtn.style.display = 'none';
       return;
     }
     if (!r) return;
     if (!r.ok) {
-      autoStatus.textContent = "Couldn't find the frame in this photo.";
+      autoStatus.textContent = t('add.auto.notFound');
       var li = document.createElement('li'); li.className = 'error';
-      li.textContent = r.reason + ' Try a photo where the glasses fill more of the picture, straight on, against a plain wall or table.';
+      li.textContent = (r.code ? t('fx.fail.' + r.code) : r.reason) + ' ' + t('add.auto.notFoundTip');
       autoWarnings.appendChild(li);
       autoControls.style.display = 'block'; autoLevelChips.style.display = 'none'; autoLevel.textContent = '';
       autoPreviewBtn.style.display = 'none'; autoFallbackBtn.style.display = 'inline-block';
       return;
     }
     var level = currentLevel();
-    var bits = [RIM_LABEL[r.rimType] || r.rimType, r.translucent ? 'translucent' : 'solid', level === '3d' ? 'approximate 3D' : 'flat overlay'];
-    var q = r.quality >= 0.85 ? 'looks good' : r.quality >= 0.6 ? 'check the notes below' : 'needs attention';
+    var bits = [rimLabel(r.rimType), t(r.translucent ? 'prep.translucent' : 'prep.solid'), t(level === '3d' ? 'prep.3d' : 'prep.2d')];
+    var q = t(r.quality >= 0.85 ? 'add.auto.q.good' : r.quality >= 0.6 ? 'add.auto.q.check' : 'add.auto.q.bad');
     autoStatus.innerHTML = '';
-    var strong = document.createElement('span'); strong.textContent = 'Frame found \u2014 ' + bits.join(' \u00b7 ');
+    var strong = document.createElement('span'); strong.textContent = t('add.auto.found', { details: bits.join(' \u00b7 ') });
     var muted = document.createElement('span'); muted.className = 'muted'; muted.textContent = ' (' + q + ')';
     autoStatus.appendChild(strong); autoStatus.appendChild(muted);
     r.warnings.forEach(function (wn) {
       var item = document.createElement('li');
       item.className = wn.severity;
-      item.textContent = wn.message;
+      item.textContent = fxWarning(wn);
       autoWarnings.appendChild(item);
     });
     chipsActive(autoRimChips, 'data-rim', r.rimType);
     chipsActive(autoMaterialChips, 'data-trans', r.translucent ? '1' : '0');
     chipsActive(autoLevelChips, 'data-level', level);
     autoControls.style.display = 'block'; autoLevelChips.style.display = 'flex';
-    autoLevel.textContent = level === r.representation.level ? r.representation.label
-      : level === '3d' ? 'Approximate 3D chosen by hand: the front is built from this photo and the temples are generated. It is not a scanned 3D model.'
-      : 'Flat overlay chosen by hand: the frame follows the face without depth.';
+    autoLevel.textContent = level === r.representation.level ? fxLevelLabel(r.representation)
+      : t(level === '3d' ? 'add.auto.hand3d' : 'add.auto.hand2d');
     autoPreviewBtn.style.display = 'inline-block'; autoFallbackBtn.style.display = 'none';
   }
 
@@ -3940,20 +3956,26 @@ function track(eventName, params) {
       r.attach(modelPreviewStage);
       if (!out.ok) {
         r.clear();
-        modelPreviewHint.textContent = target.kind === 'side'
-          ? "Couldn't find the temple between the two points \u2014 check the cut-out and tap again."
-          : "This cut-out can't be turned into 3D (" + out.reason + "). The flat overlay will be used for it.";
+        modelHint = function () {
+          return target.kind === 'side' ? t('add.model.sideFail') : t('add.model.no3d', { reason: GM_REASON[out.reason] ? t(GM_REASON[out.reason]) : out.reason });
+        };
+        modelPreviewHint.textContent = modelHint();
         return;
       }
       var a = out.analysis;
-      modelPreviewHint.textContent = target.kind === 'side'
-        ? 'The 3D try-on will use this temple. Slide to turn it.'
-        : (effectiveMode() === 'auto' && currentLevel() === '2d')
-          ? 'This frame is set to the flat overlay, so the try-on will not use this 3D model. (Shown for reference.)'
-          : 'Generated from this photo' + (a.lensFound[0] || a.lensFound[1] ? ', with glass lenses' : '') + (a.metal ? ', metal finish' : '') + (a.translucent ? ', translucent' : '') + '. Slide to turn it.';
+      modelHint = function () {
+        if (target.kind === 'side') return t('add.model.side');
+        if (effectiveMode() === 'auto' && currentLevel() === '2d') return t('add.model.flat');
+        var extras = (a.lensFound[0] || a.lensFound[1] ? t('add.model.glass') : '') + (a.metal ? t('add.model.metal') : '') + (a.translucent ? t('add.model.trans') : '');
+        return t('add.model.generated', { extras: extras });
+      };
+      modelPreviewHint.textContent = modelHint();
       renderPreviewNow();
     }).catch(function (e) { console.error('Preview failed', e); });
   }
+
+  var modelHint = null;
+  var GM_REASON = { 'missing image or lens points': 'gm.missingPoints', 'lens points are on top of each other': 'gm.samePoint', 'the cut-out has almost no frame pixels': 'gm.noPixels' };
 
   function renderPreviewNow() {
     var r = preview.renderer;
@@ -3990,11 +4012,10 @@ function track(eventName, params) {
     var img = document.createElement('img');
     img.src = entry.thumbData; img.alt = '';
     sideTargetThumb.appendChild(img);
-    sideTargetText.textContent = 'Updating the photo of: ' + describeFrame(entry);
     sideTarget.style.display = 'flex';
     replaceTargetHint.style.display = 'block';
     replaceTargetRow.style.display = entry.hasSource ? 'flex' : 'none';
-    addToLibraryBtn.textContent = 'Save updated frame';
+    syncAddTargetText();
     addedMsg.style.display = 'none';
     if (bgRemovalMode !== 'auto') setBgMode('auto');
     advanceForNextCapture();
@@ -4005,7 +4026,7 @@ function track(eventName, params) {
     sideTarget.style.display = 'none';
     replaceTargetHint.style.display = 'none';
     replaceTargetRow.style.display = 'none';
-    addToLibraryBtn.textContent = 'Add to catalogue';
+    syncAddTargetText();
     updateFrameSourceUI();
   }
 
@@ -4022,8 +4043,7 @@ function track(eventName, params) {
       beginAddFrameFromSource(img, img.naturalWidth, img.naturalHeight);
     }).catch(function (e) {
       console.error('Could not load the original photo', e);
-      frameSourcePlaceholder.textContent = "Couldn't load the saved original photo. Take or upload a new photo instead.";
-      frameSourcePlaceholder.style.display = 'block';
+      showAddSourceError('add.err.original');
     }).then(function () { reprocessBtn.disabled = false; });
   });
 
@@ -4081,12 +4101,11 @@ function track(eventName, params) {
     var img = document.createElement('img');
     img.src = entry.thumbData; img.alt = '';
     sideTargetThumb.appendChild(img);
-    sideTargetText.textContent = (entry.hasSide ? 'Replace the temple photo for: ' : 'Temple photo for: ') + describeFrame(entry);
+    addTarget.replacingSide = !!entry.hasSide;
     sideTarget.style.display = 'flex';
     sideTargetHint.style.display = 'block';
-    framePhotoLabel.textContent = 'Temple photo';
     frontOnlySection.style.display = 'none';
-    addToLibraryBtn.textContent = 'Save temple photo';
+    syncAddTargetText();
     addedMsg.style.display = 'none';
     advanceForNextCapture();
   }
@@ -4095,10 +4114,17 @@ function track(eventName, params) {
     addTarget = { kind: 'front', frameId: null };
     sideTarget.style.display = 'none';
     sideTargetHint.style.display = 'none';
-    framePhotoLabel.textContent = 'Frame photo';
     frontOnlySection.style.display = 'block';
-    addToLibraryBtn.textContent = 'Add to catalogue';
+    syncAddTargetText();
     updateFrameSourceUI();
+  }
+
+  // Labels that depend on what the add page is doing (new frame, new photo, temple photo).
+  function syncAddTargetText() {
+    var kind = addTarget.kind, entry = addTarget.frameId ? findEntry(addTarget.frameId) : null;
+    framePhotoLabel.textContent = t(kind === 'side' ? 'add.templePhoto' : 'add.framePhoto');
+    addToLibraryBtn.textContent = t(kind === 'side' ? 'add.saveTemple' : kind === 'replace' ? 'add.saveUpdated' : 'add.save');
+    if (entry) sideTargetText.textContent = t(kind === 'replace' ? 'add.target.replace' : addTarget.replacingSide ? 'add.target.sideReplace' : 'add.target.side', { name: describeFrame(entry) });
   }
 
   function discardPendingFrame() {
@@ -4125,6 +4151,9 @@ function track(eventName, params) {
   });
   addSideAfterBtn.addEventListener('click', function () { if (lastAddedId) enterSideMode(lastAddedId); });
 
+  var addedMsgKey = null;
+  function setAddedMsg(key) { addedMsgKey = key; addedMsgText.textContent = t(key); }
+
   function saveSidePhoto() {
     var id = addTarget.frameId, entry = findEntry(id);
     if (!entry || frameCalibPoints.length < 2 || !currentUser) return;
@@ -4142,14 +4171,14 @@ function track(eventName, params) {
       arForget(id);
       discardPendingFrame();
       exitSideMode();
-      addedMsgText.textContent = 'Temple photo saved \u2014 the 3D try-on now uses the real temple for this frame.';
+      setAddedMsg('add.templeSaved');
       addSideAfterBtn.style.display = 'none';
       addedMsg.style.display = 'block';
       track('temple_photo_added', {});
     }).catch(function (e) {
       console.error('Failed to save temple photo', e);
       addToLibraryBtn.disabled = false;
-      frameCalibBanner.textContent = 'Something went wrong saving the temple photo \u2014 check the connection and try again.';
+      frameCalibBanner.textContent = t('add.templeFail');
     });
   }
 
@@ -4158,15 +4187,15 @@ function track(eventName, params) {
     var side = addTarget.kind === 'side';
     var autoOk = effectiveMode() === 'auto' && auto.result && auto.result.ok;
     moveLensHint.style.display = frameCalibPoints.length === 2 && !eraseModeActive && !restoreModeActive ? 'block' : 'none';
-    if (aiRemovalLoading) { frameCalibBanner.textContent = 'Removing background with AI\u2026'; return; }
-    if (auto.busy && effectiveMode() === 'auto') { frameCalibBanner.textContent = 'Finding the frame, lens openings and fitting points\u2026'; return; }
+    if (aiRemovalLoading) { frameCalibBanner.textContent = t('add.calib.ai'); return; }
+    if (auto.busy && effectiveMode() === 'auto') { frameCalibBanner.textContent = t('add.calib.finding'); return; }
     if (autoOk && frameCalibPoints.length === 2 && !auto.calibManual) {
-      frameCalibBanner.textContent = 'Lens centres found automatically. Check the outlines, then save.';
+      frameCalibBanner.textContent = t('add.calib.auto');
       return;
     }
-    if (frameCalibPoints.length === 0) frameCalibBanner.textContent = side ? 'Tap the hinge (where the temple meets the front), then the far tip of the temple.' : 'Tap one lens center, then the other.';
-    else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = side ? 'Now tap the far tip of the temple.' : 'Now tap the other lens center.';
-    else frameCalibBanner.textContent = side ? 'Ready \u2014 check the 3D preview, then save.' : 'Ready \u2014 check the 3D preview, then add it to your library.';
+    if (frameCalibPoints.length === 0) frameCalibBanner.textContent = t(side ? 'add.calib.tap0side' : 'add.calib.tap0');
+    else if (frameCalibPoints.length === 1) frameCalibBanner.textContent = t(side ? 'add.calib.tap1side' : 'add.calib.tap1');
+    else frameCalibBanner.textContent = t(side ? 'add.calib.readySide' : 'add.calib.ready');
   }
 
   bgTolerance.addEventListener('input', function () {
@@ -4342,10 +4371,9 @@ function track(eventName, params) {
       var bad = auto.result.warnings.filter(function (wn) { return wn.severity === 'error'; });
       if (bad.length || auto.result.quality < 0.6) {
         confirmAction({
-          title: 'The automatic extraction needs attention',
-          body: (bad.length ? bad.map(function (wn) { return wn.message; }) : ['Several parts of the photo were uncertain.'])
-            .concat(['Check the cut-out and the outlines (or use Preview on a face), fix what you can, or retake the photo.']),
-          ok: 'Save anyway', cancel: 'Go back and check'
+          title: t('add.attn.title'),
+          body: (bad.length ? bad.map(fxWarning) : [t('add.attn.some')]).concat([t('add.attn.check')]),
+          ok: t('add.attn.ok'), cancel: t('add.attn.cancel')
         }).then(function (yes) { if (yes) saveFrame(replacing); });
         return;
       }
@@ -4415,16 +4443,16 @@ function track(eventName, params) {
       advanceForNextCapture();
       showFrameSourceChooser();
       lastAddedId = id;
-      addedMsgText.textContent = replacing ? 'Frame photo updated.' : 'Added to the catalogue. Add another, or open Frames to see it.';
+      setAddedMsg(replacing ? 'add.updated' : 'add.added');
       addSideAfterBtn.style.display = 'flex';
       addedMsg.style.display = 'block';
-      toast(replacing ? 'Frame photo updated.' : 'Frame added to the catalogue.');
+      toast(t(replacing ? 'add.updated' : 'add.toastAdded'));
       selectFrame(id);
     }).catch(function (e) {
       console.error('Failed to save frame', e);
       addToLibraryBtn.disabled = false;
-      frameCalibBanner.textContent = "Couldn't save this frame. Check the connection and try again.";
-      toast("Couldn't save this frame. Check the connection and try again.", 'error');
+      frameCalibBanner.textContent = t('add.saveFail');
+      toast(t('add.saveFail'), 'error');
     });
   }
 
@@ -4485,6 +4513,17 @@ function track(eventName, params) {
     syncPdStatus();
     syncShortlistUi();
     live.statusText = null;          // the live loop writes its status again in the new language
+    // staff screens
+    if (selectMode) { renderBulkChips(); updateBulkCountLabel(); }
+    if (editingFrameId && editPendingTags) { renderEditChips(); renderEditFreeTagList(); syncEditPanelText(); }
+    if (pendingTags) { renderAddChips(); renderFreeTagList(); }
+    syncAddTargetText();
+    frameSourcePlaceholder.textContent = addSourceText();
+    if (bgRemovalMode === 'twoShot') twoShotStepLabel.textContent = t(twoShotStep === 1 ? 'add.two.step1' : 'add.two.step2');
+    if (addedMsgKey) addedMsgText.textContent = t(addedMsgKey);
+    if (frameCalibSectionEl.style.display !== 'none') updateFrameCalibBanner();
+    if (autoReview.style.display !== 'none') renderAutoReview();
+    if (modelHint && modelPreview.style.display !== 'none') modelPreviewHint.textContent = modelHint();
   }
   langBar.addEventListener('click', function (e) {
     var b = e.target.closest('.lang-btn');

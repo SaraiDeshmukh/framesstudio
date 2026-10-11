@@ -234,11 +234,11 @@ input[type="range"] { width: 100%; height: 32px; accent-color: var(--select); }
   transform: rotate(-45deg) translate(1px, -1px);
 }
 .tag-chip.removable { cursor: default; background: var(--select-tint); border-color: transparent; padding-right: 4px; }
-.tag-chip.removable span, .tag-chip .chip-x {
+.tag-chip.removable span, .tag-chip .chip-x, .tag-chip .tag-remove {
   display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%;
   border: 0; background: none; cursor: pointer; color: var(--ink-2); font-size: 18px; line-height: 1;
 }
-.tag-chip .chip-x:hover, .tag-chip.removable span:hover { background: rgba(28, 31, 35, 0.08); color: var(--ink); }
+.tag-chip .chip-x:hover, .tag-chip.removable span:hover, .tag-chip .tag-remove:hover { background: rgba(28, 31, 35, 0.08); color: var(--ink); }
 .tag-chip-list { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 0 16px; }
 .tag-chip-list:empty { margin: 0; }
 
@@ -423,6 +423,7 @@ input[type="range"] { width: 100%; height: 32px; accent-color: var(--select); }
 .photo-stage .ar-canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .capture-btn { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); z-index: 3; }
 .placeholder { color: var(--muted); text-align: center; padding: 56px 20px; }
+#frameSourcePlaceholder { white-space: pre-line; }
 .calib-banner { display: none; margin: 12px 0 0; padding: 10px 14px; border-radius: var(--r-s); background: var(--select-tint); color: var(--ink); font-size: var(--text-s); text-align: center; }
 .stage-controls { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
 .stage-controls:empty { display: none; }
@@ -551,7 +552,6 @@ input[type="range"] { width: 100%; height: 32px; accent-color: var(--select); }
 .compare-hint { margin-bottom: 8px; }
 
 /* ---------- add frames (staff) ---------- */
-.lang-note:empty { display: none; }
 .staff-locked { padding: 32px; border: 1px dashed var(--line-strong); border-radius: var(--r-l); text-align: center; }
 .staff-locked p { margin-bottom: 16px; color: var(--ink-2); }
 .segmented { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 4px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; margin-bottom: 10px; }
