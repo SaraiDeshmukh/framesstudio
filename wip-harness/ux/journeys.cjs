@@ -334,6 +334,21 @@ async function a11yScan(browser) {
   out.tryon = await axe(page, TAG + '-tryon');
   await page.click('#staffBtn'); await page.waitForSelector('#staffDialog[open]');
   out.staffDialog = await axe(page, TAG + '-staff-dialog');
+  await page.keyboard.press('Escape');
+  // shortlist page, and the main pages in Hindi and Marathi
+  await page.goto('https://app.test/#/'); await page.waitForSelector('#libraryRow .frame-card');
+  for (const id of ['f1', 'f3', 'f1791600000002']) await page.click(`.frame-card[data-id="${id}"] .card-heart`);
+  await page.goto('https://app.test/#/shortlist'); await page.waitForSelector('.compare-table'); await sleep(300);
+  out.shortlist = await axe(page, TAG + '-shortlist');
+  await page.click('.lang-btn[data-lang="hi"]'); await sleep(300);
+  out.shortlistHi = await axe(page, TAG + '-shortlist-hi');
+  await page.goto('https://app.test/#/'); await page.waitForSelector('#libraryRow .frame-card'); await sleep(300);
+  out.catalogueHi = await axe(page, TAG + '-catalogue-hi');
+  await page.click('.lang-btn[data-lang="mr"]');
+  await page.goto('https://app.test/#/try-on/f3'); await page.waitForSelector('#liveStrip .similar-item'); await sleep(300);
+  out.tryonMr = await axe(page, TAG + '-tryon-mr');
+  await page.goto('https://app.test/#/frame/f3'); await page.waitForSelector('#detailTitle'); await sleep(300);
+  out.detailMr = await axe(page, TAG + '-detail-mr');
   await page.context().close();
   for (const [k, v] of Object.entries(out)) {
     const serious = v.filter(x => x.impact === 'serious' || x.impact === 'critical');

@@ -58,10 +58,10 @@ module.exports = async function (browser) {
   check('Show frame brings it back', (await arPixels(page, '#liveViewport')) > 1000);
 
   // fit slider + PD
-  await page.$eval('#livePd', e => { e.value = '58'; e.dispatchEvent(new Event('input')); });
+  await page.fill('#pdInput', '58');
   await sleep(600);
-  const pdSynced = await page.$eval('#photoPd', e => e.value);
-  check('PD entered once applies to both modes', pdSynced === '58');
+  const pdStatusText = await page.$eval('#pdStatus', e => e.textContent);
+  check('PD from the eye test is used for the frame', /58 mm/.test(pdStatusText), pdStatusText);
 
   // switch camera button: only shown with more than one camera
   const nCams = await page.evaluate(async () => (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'videoinput').length);
