@@ -537,7 +537,7 @@ function polyBox(poly) {
 export function extractFrame(img, opts) {
   opts = opts || {};
   var w = img.width, h = img.height, D = img.data, n = w * h, i, x, y;
-  if (!(w >= 64 && h >= 32)) return { ok: false, reason: 'The photo is too small.' };
+  if (!(w >= 64 && h >= 32)) return { ok: false, code: 'tooSmall', reason: 'The photo is too small.' };
   var scale = Math.max(w, h) / 1000;
   var sens = clamp(opts.sensitivity || 1, 0.4, 2.5);
   var rgb = new Float32Array(n * 3);
@@ -557,7 +557,7 @@ export function extractFrame(img, opts) {
   for (i = 0; i < n; i++) { strong[i] = S[i] > Thi ? 1 : 0; weak[i] = S[i] > Tlo ? 1 : 0; }
   var grown = hysteresis(strong, weak, w, h, Math.max(2, Math.round(3 * scale)));
   var comp = components(grown, w, h);
-  if (!comp.count) return { ok: false, reason: 'No frame found — the glasses don\'t stand out from the background.' };
+  if (!comp.count) return { ok: false, code: 'noFrame', reason: 'No frame found — the glasses don\'t stand out from the background.' };
   var big = 0;
   for (i = 1; i < comp.count; i++) if (comp.sizes[i] > comp.sizes[big]) big = i;
   var mb = comp.boxes[big], mw = mb.maxX - mb.minX, mh = mb.maxY - mb.minY;
@@ -1053,15 +1053,15 @@ function finish(r) {
   var lensDist = Math.hypot(lensR.centre.x - lensL.centre.x, lensR.centre.y - lensL.centre.y);
 
   // checks
-  var warnings = [], level = '3d', reasons = [];
+  var warnings = [], level = '3d', reasons = [], reasonCodes = [];
   function warn(code, severity, box, vars) {
     var msg = MESSAGES[code];
     if (vars) Object.keys(vars).forEach(function (k) { msg = msg.replace('{' + k + '}', vars[k]); });
-    warnings.push({ code: code, severity: severity, message: msg, box: box || null });
+    warnings.push({ code: code, severity: severity, message: msg, box: box || null, vars: vars || null });
   }
   var margin = 2;
   if (mb.minX <= margin || mb.minY <= margin || mb.maxX >= w - 1 - margin || mb.maxY >= h - 1 - margin) {
-    warn('cropped', 'error'); level = '2d'; reasons.push('the frame is cut off by the photo edge');
+    warn('cropped', 'error'); level = '2d'; reasons.push('the frame is cut off by the photo edge'); reasonCodes.push('cropped');
   }
   var strongVals = [];
   for (i = 0; i < w * h; i += 3) if (r.keepF[i]) strongVals.push(r.S[i]);
@@ -1073,7 +1073,7 @@ function finish(r) {
     var both = { minX: Math.min(lensL.box.minX, lensR.box.minX), minY: Math.min(lensL.box.minY, lensR.box.minY), maxX: Math.max(lensL.box.maxX, lensR.box.maxX), maxY: Math.max(lensL.box.maxY, lensR.box.maxY) };
     var strongAsym = asym > 0.18;
     warn(strongAsym ? 'asymmetricStrong' : 'asymmetric', strongAsym ? 'error' : 'warn', both, { pct: Math.round(asym * 100) });
-    if (strongAsym) { level = '2d'; reasons.push('the photo is taken at too much of an angle'); }
+    if (strongAsym) { level = '2d'; reasons.push('the photo is taken at too much of an angle'); reasonCodes.push('angle'); }
   }
   if (Math.abs(angle) > 5 * Math.PI / 180) warn('tilted', 'info');
   var inside = 0, shadow = 0;
@@ -1092,7 +1092,7 @@ function finish(r) {
   if (fw < 0.45 * w) warn('small', 'info');
   var lensSpan = lensR.box.maxX - lensL.box.minX;
   if (fw > lensSpan * 1.35) warn('wide', 'warn');
-  if (L.closedFrac < 0.3 && R.closedFrac < 0.3 && r.rimType === 'rimless') { level = '2d'; reasons.push('no rim was found to build the 3D front from'); }
+  if (L.closedFrac < 0.3 && R.closedFrac < 0.3 && r.rimType === 'rimless') { level = '2d'; reasons.push('no rim was found to build the 3D front from'); reasonCodes.push('noRim'); }
 
   var penalty = 0;
   warnings.forEach(function (wn) { penalty += wn.severity === 'error' ? 0.35 : wn.severity === 'warn' ? 0.12 : 0; });
@@ -1117,7 +1117,7 @@ function finish(r) {
     opacity: r.alphaMean,
     repaired: r.repaired,
     warnings: warnings,
-    representation: { level: level, label: labels[level] },
+    representation: { level: level, label: labels[level], reasons: reasonCodes },
     quality: quality,
     debug: r.debug
   };
