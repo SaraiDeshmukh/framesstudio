@@ -12,6 +12,7 @@ Images are stored directly inside Firestore documents rather than in Firebase St
 - `app.js` — all the application logic
 - `headpose.js` — 3D head pose from the face landmarks (fits a 3D face model, smoothing); no DOM, unit-tested
 - `frame-extract.js` — turns an ordinary phone photo of a frame into a transparent cut-out plus fitting metadata (lens outlines, bridge, hinges, rim type, translucency, warnings); no DOM, unit-tested
+- `frame-size.js` — frame size helpers (52□18 140), shared by the catalogue and the 3D model; no DOM
 - `glasses-model.js` — turns a frame's cut-out photo into a 3D model description (hinges, lens openings, rim material, real size); no DOM, unit-tested
 - `ar-renderer.js` — draws the 3D frame on the face with WebGL (three.js)
 - `face-geometry.js` — MediaPipe's canonical 3D face model (data, Apache 2.0)
@@ -79,7 +80,8 @@ Firebase blocks sign-in from domains it doesn't recognize. In the console: **Aut
 A few collections per user, split so browsing the catalog stays fast without pulling every full-size image at once:
 
 ```
-users/{uid}/frames/{frameId}       — light doc, loaded upfront for Browse: thumbData, tags,
+users/{uid}/frames/{frameId}       — light doc, loaded upfront for the catalogue: thumbData, tags,
+                                     name (optional, shown to customers),
                                      size {eye, bridge, temple} (mm, optional), hasSide,
                                      level ('3d' | '2d'), rimType, translucent,
                                      prepared ('auto' | 'manual'), hasSource
@@ -109,6 +111,26 @@ users/{uid}/stats/customerPhotos   — a plain counter, no images
 
 Measurements are relative (pixels of the photo). Real millimetres only ever come from the size printed on the frame, typed in by staff; nothing is estimated in mm.
 
+## Using the site
+
+The same address serves customers at the shop screen and staff.
+
+**Customers** see three things, each with its own address so Refresh and Back work:
+
+- **Frames** (`#/`) — the catalogue. Search by name, shape, colour or size; filter by the tags your frames actually have (shape, colour, who it's for, rim type — side panel on a computer, a Filters button on a phone); sort by newest, oldest or lens width.
+- **A frame's page** (`#/frame/<id>`) — big photo, name, **Try on with the camera** / **Try on with a photo**, the size drawn as an optician would (52□18 140), its details, and similar frames. A frame with no usable try-on picture says so instead of offering a button that wouldn't work.
+- **Try on** (`#/try-on/<id>`) — opens with that frame already chosen. A short start panel explains what happens and that the browser will ask for the camera; or upload / take a photo (JPEG, PNG or WebP). Frames can be switched without stopping the camera. **Back to <frame>** returns to the frame's page; the camera always stops when leaving the page. On a phone the camera view comes first, its controls in one row under it, and the frame picker right after.
+
+Every page carries the reminder that try-on is a visual preview, not a fitting, and a short note on how camera and photos are used.
+
+**Staff tools** — adding, editing and deleting frames — are hidden from customers. Tap **Staff** (padlock, top right) and enter the shop account's password. On a shared shop screen leave "Keep staff tools unlocked on this device" off: the tools lock again after 15 minutes without use (or straight away with **Lock staff tools**). On your own phone you can keep them unlocked. Once unlocked:
+
+- **Add frames** appears in the header (and in the Staff menu).
+- Each frame's page gets **Staff tools**: Edit details (name, tags, size), Update photo, Add/replace temple photo, Delete frame (asks first), plus a line saying how its try-on asset was prepared.
+- **Tag several frames** on the catalogue applies the same tags to many frames at once.
+
+This lock keeps the customer screen tidy and stops accidental deletes; it isn't a security boundary against someone who has the account password (Firebase rules still protect the data from everyone else).
+
 ## Preparing frames from ordinary photos
 
 Add Frames → **Automatic (recommended)** takes an ordinary phone photo of a frame — on a table or a display stand, against a wall, with shadows, reflections and things visible through the lenses — and prepares the try-on asset from it. No studio photo, no manual background removal.
@@ -121,7 +143,7 @@ Add Frames → **Automatic (recommended)** takes an ordinary phone photo of a fr
 4. **Correct if needed** (optional): rim type (Full-rim / Semi-rimless / Rimless), material (Translucent / Solid) and Sensitivity re-run the extraction; drag a red marker to move a lens centre; Erase / Restore brush for leftover bits; Try-on style switches between approximate 3D and a flat overlay.
 5. **Preview on a face** opens the unsaved frame in the real Try On page (photo or live camera); **Back to Add Frames** returns with the work intact.
 6. **Add to library** saves the processed cut-out, the fitting metadata and the original photo against a new product id. A result with a serious problem (frame cut off by the photo edge, very lopsided photo) is never saved silently: saving asks first.
-7. **Regenerate later** — Browse → Edit → **Update photo** → **Re-process the original photo** (with different settings) or upload a better photo of the same frame. It is saved against the same product id; tags and size stay.
+7. **Regenerate later** — the frame's page → Staff tools → **Update photo** → **Re-process the original photo** (with different settings) or upload a better photo of the same frame. It is saved against the same product id; tags and size stay.
 
 The older one-click **Simple removal** (for photos already on a plain light background) is still there, and is used automatically for temple photos.
 
@@ -176,7 +198,7 @@ All three load in the try-on, sit on the face from their stored landmarks (photo
 
 ## 3D try-on (live camera and photos)
 
-Try On tab → **Start live try-on** opens the front camera and shows the selected frame on the customer's face in 3D, following head turns, nods and tilts in real time. Pick or search frames in the strip under the video to swap without restarting the camera. Controls: Stop camera, Switch camera (when there is more than one), Remove/Show frame, View in catalog, a fit slider and an optional **Customer PD** field. An uploaded or captured photo gets the same 3D treatment automatically (with Remove/Show frame and View in catalog); if no face is found, staff tap the two pupils and the flat overlay is used.
+**Start camera** (or **Try on with the camera** on a frame's page) opens the front camera and shows the chosen frame on the customer's face in 3D, following head turns, nods and tilts in real time. Pick or search frames in the picker to swap without restarting the camera. Controls: Stop camera, Switch camera (when there is more than one), Hide/Show frame, Frame details, and under **Adjust size** a size slider and an optional pupil distance (PD) field. An uploaded or captured photo gets the same 3D treatment automatically (with Replace photo, Use live camera, Hide/Show frame and Frame details); if no face is found, the customer or staff tap the centre of each eye and the flat overlay is used.
 
 ### How it works
 
@@ -189,8 +211,8 @@ Try On tab → **Start live try-on** opens the front camera and shows the select
 ### What each frame needs (and what makes it better)
 
 - **Required:** the front cut-out and its two lens points. Frames prepared automatically get these (plus lens outlines, rim type and translucency) from the photo; older frames keep working in 3D with no extra work.
-- **Recommended: frame size** (eye, bridge, temple — printed inside the temple, e.g. `52□18 140`). Enter it when adding a frame, or later via **Edit**. With eye + bridge, and the customer's **PD** entered on the Try On tab, the frame is shown at its true size relative to the face, so a 49 mm and a 55 mm frame look different, as they should. Without a size, the lens centres are placed on the pupils (the previous behaviour). Sizes are never guessed.
-- **Optional: temple photo.** After adding a frame (or from **Edit → Add temple photo**), photograph one temple from the side; tap the hinge, then the far tip. The 3D try-on then uses the real temple (shape, logo, colour) instead of one generated from the rim material.
+- **Recommended: frame size** (eye, bridge, temple — printed inside the temple, e.g. `52□18 140`). Enter it when adding a frame, or later via Staff tools → **Edit details**. With eye + bridge, and the customer's **PD** entered under Adjust size, the frame is shown at its true size relative to the face, so a 49 mm and a 55 mm frame look different, as they should. Without a size, the lens centres are placed on the pupils (the previous behaviour). Sizes are never guessed.
+- **Optional: temple photo.** After adding a frame (or from Staff tools → **Add temple photo**), photograph one temple from the side; tap the hinge, then the far tip. The 3D try-on then uses the real temple (shape, logo, colour) instead of one generated from the rim material.
 - **Photo quality matters most:** a sharp, front-on photo with some space around the glasses gives the best result. **Preview on a face** shows the unsaved frame in the real try-on before saving.
 
 ### Limits (honest version)
@@ -204,12 +226,12 @@ Try On tab → **Start live try-on** opens the front camera and shows the select
 
 ### Privacy
 
-Customer camera frames and photos are processed in the browser tab only. Nothing is recorded, captured, uploaded or stored; an uploaded photo is held in memory for the session and discarded on retake, sign-out or page close. The camera stops on Stop, when leaving the Try On tab, when the page is hidden or closed, and on sign-out. The only network requests the try-on adds are the libraries and model, loaded the first time it's used: MediaPipe (`cdn.jsdelivr.net`, pinned to 0.10.35) and its face model (`storage.googleapis.com`, ~4 MB), and three.js (`cdn.jsdelivr.net`, pinned to 0.186.1). No API keys or paid services. Frame photos (products, not people) are processed in the browser too; the original and the processed cut-out are stored in your own Firestore account, nowhere else.
+Customer camera frames and photos are processed in the browser tab only. Nothing is recorded, captured, uploaded or stored; an uploaded photo is held in memory for the session and discarded on retake, sign-out or page close. The camera stops on Stop, when leaving the try-on page, when the page is hidden or closed, and on sign-out. The only network requests the try-on adds are the libraries and model, loaded the first time it's used: MediaPipe (`cdn.jsdelivr.net`, pinned to 0.10.35) and its face model (`storage.googleapis.com`, ~4 MB), and three.js (`cdn.jsdelivr.net`, pinned to 0.186.1). No API keys or paid services. The existing Google Analytics (Firebase Analytics) setup counts usage events such as "frame tried on" with the frame's tags; no photos, video or face data are sent. Frame photos (products, not people) are processed in the browser too; the original and the processed cut-out are stored in your own Firestore account, nowhere else.
 
 ### Testing
 
 - `node --test tests/*.test.mjs` — maths tests (pose recovery through real perspective up to 45° turns, smoothing, frame analysis, sizes, temple photos) and the photo extraction, run on the three real photos in `tests/fixtures/` (lens centres against hand-measured positions, clear lens openings, translucency kept, shadows/stand/printing removed, bridge rebuilt and flagged, semi-rimless lower edge kept faint) plus synthetic cases (gradient background with a table edge, printing in the lens, open-bottom lenses, a frame cut off by the edge, a blank photo).
-- The whole Add Frames → review → preview → save → try-on flow was also run in headless Chromium with Firebase mocked out during development; those browser scripts aren't part of the repo.
+- During development the whole site was also driven in headless Chromium (real MediaPipe and three.js, a fake camera, Firebase mocked out) at 360, 390, 820, 1280 and 1600 px wide and in phone landscape: the customer journeys (browse → frame page → live try-on → switch frames → back; photo upload, replace, switch; camera blocked, unsupported or damaged files, a frame with no try-on asset, an unknown frame address), staff mode (lock, wrong/right password, edit, delete with confirmation), keyboard-only use, reduced motion, an axe-core WCAG 2.2 AA scan of every main view, and the Add Frames → review → preview → save flow. Those browser scripts aren't part of the repo.
 - Real-camera behaviour should be checked by hand on the deployed https site, on the kiosk and on a phone: camera permission prompt, tracking while turning the head, and how each catalogue frame looks.
 
 ## Notes
