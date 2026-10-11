@@ -2064,7 +2064,6 @@ function track(eventName, params) {
       item.type = 'button';
       item.className = 'similar-item' + (e.id === activeFrameId ? ' active' : '');
       item.dataset.id = e.id;
-      item.setAttribute('role', 'listitem');
       item.setAttribute('aria-pressed', e.id === activeFrameId ? 'true' : 'false');
       var img = document.createElement('img');
       img.loading = 'lazy';
@@ -2226,9 +2225,7 @@ function track(eventName, params) {
     editFreeTagInput.value = '';
     fillSize(entry.size, editSizeEye, editSizeBridge, editSizeTemple);
     editSideStatus.textContent = entry.hasSide ? 'Uses its own temple photo.' : 'Uses a temple generated from the front photo.';
-    editPhotoStatus.textContent = entry.prepared === 'auto'
-      ? 'Prepared automatically: ' + [RIM_LABEL[entry.rimType] || '', entry.translucent ? 'translucent' : 'solid', entry.level === '2d' ? 'flat overlay' : 'approximate 3D'].filter(Boolean).join(', ') + '.' + (entry.hasSource ? ' Original photo kept.' : '')
-      : 'Prepared by hand' + (entry.hasSource ? ' (original photo kept).' : '.');
+    editPhotoStatus.textContent = preparedText(entry);
     editSideBtn.textContent = entry.hasSide ? 'Replace temple photo' : 'Add temple photo';
 
     editTagsPanel.style.display = 'block';
@@ -2736,6 +2733,13 @@ function track(eventName, params) {
     return wrap;
   }
 
+  // How the try-on asset was made (for staff).
+  function preparedText(entry) {
+    return entry.prepared === 'auto'
+      ? 'Prepared automatically: ' + [RIM_LABEL[entry.rimType] || '', entry.translucent ? 'translucent' : 'solid', entry.level === '2d' ? 'flat overlay' : 'approximate 3D'].filter(Boolean).join(', ') + '.' + (entry.hasSource ? ' Original photo kept.' : '')
+      : 'Prepared by hand' + (entry.level === '2d' ? ', flat overlay' : '') + (entry.hasSource ? ' (original photo kept).' : '.');
+  }
+
   function renderDetail(id) {
     detailBody.innerHTML = '';
     var entry = findEntry(id);
@@ -2787,7 +2791,6 @@ function track(eventName, params) {
       info.appendChild(sub);
     }
     var mark = sizeMark(entry.size);
-    if (mark) info.appendChild(mark);
 
     var dl = document.createElement('dl');
     dl.className = 'attr-list';
@@ -2804,7 +2807,6 @@ function track(eventName, params) {
     if (entry.translucent != null && entry.prepared === 'auto') attr('Material', entry.translucent ? 'Translucent' : 'Solid');
     if (t.free && t.free.length) attr('Tags', t.free.join(', '));
     if (!mark) attr('Size', 'Not recorded. Ask staff to measure it.');
-    if (dl.children.length) info.appendChild(dl);
 
     var actions = document.createElement('div');
     actions.className = 'detail-actions';
@@ -2826,6 +2828,9 @@ function track(eventName, params) {
     note.className = 'detail-note';
     note.textContent = 'The camera view stays on this device. Try-on is a visual preview: try the frame on in the shop to check fit and comfort.';
     info.appendChild(note);
+    // the try-on actions come first; the size and the details follow
+    if (mark) info.appendChild(mark);
+    if (dl.children.length) info.appendChild(dl);
 
     if (staff.on) {
       var tools = document.createElement('div');
@@ -2833,6 +2838,10 @@ function track(eventName, params) {
       var th = document.createElement('h2');
       th.textContent = 'Staff tools';
       tools.appendChild(th);
+      var prep = document.createElement('p');
+      prep.className = 'hint staff-prepared';
+      prep.textContent = preparedText(entry);
+      tools.appendChild(prep);
       var row = document.createElement('div');
       row.className = 'row';
       [['Edit details', function () { openEditTags(entry.id); }, 'secondary'],

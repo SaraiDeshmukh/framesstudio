@@ -83,7 +83,7 @@
           <div class="search-field">
             <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.6 12.6 17 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
             <label class="visually-hidden" for="catalogSearch">Search frames</label>
-            <input type="search" id="catalogSearch" placeholder="Search by name, shape, colour or size" autocomplete="off" enterkeyhint="search">
+            <input type="search" id="catalogSearch" placeholder="Search name, shape, colour, size" autocomplete="off" enterkeyhint="search">
           </div>
           <button class="btn secondary filter-toggle" id="filterToggleBtn" type="button" aria-expanded="false" aria-controls="filterPanel">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M6 10h8M8.5 15h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
@@ -272,7 +272,7 @@
             <p class="hint" id="liveTips">Hold the screen at arm's length in even light, with your whole face in view. Turn your head slowly to see the sides.</p>
           </div>
 
-          <aside class="tryon-side" aria-label="Frames to try on">
+          <div class="tryon-side">
             <div class="current-frame" id="selectedBanner" style="display:none">
               <span class="current-thumb" id="selectedThumbWrap"></span>
               <div class="current-text">
@@ -292,7 +292,7 @@
                 <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.6 12.6 17 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
                 <input type="search" id="liveSearch" placeholder="Search frames" aria-label="Search frames to try on" autocomplete="off">
               </div>
-              <div class="picker" id="liveStrip" role="list" aria-labelledby="pickerTitle"></div>
+              <div class="picker" id="liveStrip" role="group" aria-labelledby="pickerTitle"></div>
               <p class="hint" id="liveStripEmpty" style="display:none">No frames match that search.</p>
             </div>
 
@@ -318,7 +318,7 @@
             </details>
 
             <p class="preview-note">This is a visual preview. Fit and comfort are best checked by trying the frame on in the shop.</p>
-          </aside>
+          </div>
         </div>
       </section>
 
