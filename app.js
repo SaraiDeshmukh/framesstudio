@@ -11,6 +11,7 @@ import { getAnalytics, isSupported, logEvent } from "https://www.gstatic.com/fir
 import { PoseSmoother, poseFromLandmarks, frameTransform, drawFrame } from './tracking.js';
 import { estimateHeadPose, HeadPoseFilter, eulerFromMatrix } from './headpose.js';
 import { cleanSize, sizeLabel } from './frame-size.js';
+import { LANGS, t, tn, getLang, setLang, hasLang, tagLabel, tagAdjective, tagLabelsAll, applyStatic } from './i18n.js';
 
 // Heavy parts load only when they're needed, never just because the catalogue
 // was opened: face tracking (MediaPipe, pinned to a tested version; its JS and
@@ -119,45 +120,48 @@ function track(eventName, params) {
 
   function friendlyAuthError(err) {
     var map = {
-      'auth/email-already-in-use': 'That email already has an account. Sign in instead.',
-      'auth/wrong-password': "That password isn't right.",
-      'auth/invalid-credential': "That email and password don't match an account.",
-      'auth/invalid-login-credentials': "That email and password don't match an account.",
-      'auth/weak-password': 'Use a password with at least 6 characters.',
-      'auth/invalid-email': 'Enter a valid email address.',
-      'auth/missing-email': 'Enter your email address.',
-      'auth/user-not-found': 'No account uses that email.',
-      'auth/missing-password': 'Enter the password.',
-      'auth/too-many-requests': 'Too many tries. Wait a minute, then try again.',
-      'auth/network-request-failed': "Couldn't reach the server. Check the internet connection and try again."
+      'auth/email-already-in-use': 'auth.err.inUse',
+      'auth/wrong-password': 'auth.err.wrong',
+      'auth/invalid-credential': 'auth.err.invalid',
+      'auth/invalid-login-credentials': 'auth.err.invalid',
+      'auth/weak-password': 'auth.err.weak',
+      'auth/invalid-email': 'auth.err.email',
+      'auth/missing-email': 'auth.err.noEmail',
+      'auth/user-not-found': 'auth.err.noUser',
+      'auth/missing-password': 'auth.err.noPass',
+      'auth/too-many-requests': 'auth.err.many',
+      'auth/network-request-failed': 'auth.err.network'
     };
-    return map[err && err.code] || "Couldn't sign in. Check the connection and try again.";
+    return map[err && err.code] || 'auth.err.other';
   }
 
+  // takes a text key (or a Firebase error); remembered so a language change re-renders it
+  var authErrorKey = null;
   function showAuthError(err) {
-    authError.textContent = typeof err === 'string' ? err : friendlyAuthError(err);
+    authErrorKey = typeof err === 'string' ? err : friendlyAuthError(err);
+    authError.textContent = t(authErrorKey);
     authError.style.display = 'block';
   }
 
   authForm.addEventListener('submit', function (e) {
     e.preventDefault();
-    authError.style.display = 'none';
-    if (!authEmail.value.trim()) { showAuthError('Enter your email address.'); authEmail.focus(); return; }
-    if (!authPassword.value) { showAuthError('Enter the password.'); authPassword.focus(); return; }
+    authError.style.display = 'none'; authErrorKey = null;
+    if (!authEmail.value.trim()) { showAuthError('auth.err.noEmail'); authEmail.focus(); return; }
+    if (!authPassword.value) { showAuthError('auth.err.noPass'); authPassword.focus(); return; }
     signInWithEmailAndPassword(auth, authEmail.value.trim(), authPassword.value).catch(showAuthError);
   });
 
   signUpBtn.addEventListener('click', function () {
-    authError.style.display = 'none';
+    authError.style.display = 'none'; authErrorKey = null;
     var email = authEmail.value.trim(), pass = authPassword.value;
     if (!email || pass.length < 6) {
-      showAuthError('Enter an email and a password with at least 6 characters, then choose Create an account.');
+      showAuthError('auth.err.create');
       return;
     }
     createUserWithEmailAndPassword(auth, email, pass).catch(showAuthError);
   });
 
-  signOutBtn.addEventListener('click', function () { closeStaffMenu(); setStaff(false); signOut(auth); });
+  signOutBtn.addEventListener('click', function () { closeStaffMenu(); setStaff(false); endCustomerSession(); signOut(auth); });
 
   onAuthStateChanged(auth, function (user) {
     currentUser = user;
@@ -167,6 +171,7 @@ function track(eventName, params) {
       mainNav.hidden = false; staffWrap.hidden = false;
       userEmailLabel.textContent = user.email;
       resetLocalState();
+      restoreShortlist();
       restoreStaff();
       view = { name: null, id: null };
       renderRoute(parseHash(), { initial: true });
@@ -178,7 +183,8 @@ function track(eventName, params) {
       appShell.style.display = 'none';
       mainNav.hidden = true; staffWrap.hidden = true;
       authGate.style.display = 'block';
-      document.title = 'Sign in | Frame Try-On Studio';
+      view = { name: 'signin', id: null };
+      setTitle(t('title.signIn'));
     }
   });
 
@@ -210,9 +216,9 @@ function track(eventName, params) {
         p.textContent = t;
         confirmBody.appendChild(p);
       });
-      confirmOk.textContent = o.ok || 'OK';
+      confirmOk.textContent = o.ok || t('common.ok');
       confirmOk.className = 'btn ' + (o.danger ? 'danger' : 'primary');
-      confirmCancel.textContent = o.cancel || 'Cancel';
+      confirmCancel.textContent = o.cancel || t('common.cancel');
       var done = false;
       function finish(v) {
         if (done) return;
@@ -259,8 +265,7 @@ function track(eventName, params) {
     staff.lastActive = Date.now();
     document.body.classList.toggle('staff', staff.on);
     try { if (currentUser) { if (staff.keep) localStorage.setItem(staffKey(), '1'); else localStorage.removeItem(staffKey()); } } catch (e) { /* storage blocked: tools just lock with the session */ }
-    staffBtnLabel.textContent = staff.on ? 'Staff tools' : 'Staff';
-    staffBtn.setAttribute('aria-label', staff.on ? 'Staff tools menu' : 'Unlock staff tools');
+    syncStaffLabels();
     staffBtn.setAttribute('aria-haspopup', staff.on ? 'true' : 'dialog');
     staffLockShackle.setAttribute('d', staff.on ? 'M7 9V6.5a3 3 0 0 1 5.6-1.5' : 'M7 9V6.5a3 3 0 0 1 6 0V9');
     if (!staff.on) {
@@ -270,7 +275,11 @@ function track(eventName, params) {
     }
     syncAddLock();
     if (was !== staff.on && view.name === 'detail') renderDetail(view.id);
-    if (was && !staff.on && !silent) toast('Staff tools locked.');
+    if (was && !staff.on && !silent) toast(t('staff.locked'));
+  }
+  function syncStaffLabels() {
+    staffBtnLabel.textContent = staff.on ? t('staff.btnOn') : t('staff.btn');
+    staffBtn.setAttribute('aria-label', staff.on ? t('staff.aria.menu') : t('staff.aria.unlock'));
   }
   function restoreStaff() {
     var keep = false;
@@ -287,29 +296,29 @@ function track(eventName, params) {
   function closeStaffDialog() { if (staffDialog.open) staffDialog.close(); }
   function staffAuthError(err) {
     var code = err && err.code;
-    if (code === 'auth/wrong-password' || code === 'auth/invalid-credential' || code === 'auth/invalid-login-credentials') return "That password isn't right.";
-    if (code === 'auth/too-many-requests') return 'Too many tries. Wait a minute, then try again.';
-    if (code === 'auth/network-request-failed') return "Couldn't check the password. Check the internet connection and try again.";
-    return "Couldn't check the password. Try again.";
+    if (code === 'auth/wrong-password' || code === 'auth/invalid-credential' || code === 'auth/invalid-login-credentials') return t('staff.err.wrong');
+    if (code === 'auth/too-many-requests') return t('staff.err.many');
+    if (code === 'auth/network-request-failed') return t('staff.err.network');
+    return t('staff.err.other');
   }
   staffForm.addEventListener('submit', function (e) {
     e.preventDefault();
     if (!currentUser) return;
-    if (!staffPassword.value) { staffError.textContent = 'Enter the password.'; staffError.classList.add('show'); staffPassword.focus(); return; }
+    if (!staffPassword.value) { staffError.textContent = t('staff.err.empty'); staffError.classList.add('show'); staffPassword.focus(); return; }
     staffUnlockBtn.disabled = true;
-    staffUnlockBtn.textContent = 'Checking…';
+    staffUnlockBtn.textContent = t('staff.dialog.checking');
     var cred = EmailAuthProvider.credential(currentUser.email, staffPassword.value);
     reauthenticateWithCredential(auth.currentUser, cred).then(function () {
       setStaff(true, staffKeep.checked);
       closeStaffDialog();
-      toast(staffKeep.checked ? 'Staff tools unlocked on this device.' : 'Staff tools unlocked for this session.');
+      toast(staffKeep.checked ? t('staff.unlockedDevice') : t('staff.unlockedSession'));
       var after = staff.after; staff.after = null;
       if (after) after();
     }).catch(function (err) {
       staffError.textContent = staffAuthError(err);
       staffError.classList.add('show');
       staffPassword.select();
-    }).then(function () { staffUnlockBtn.disabled = false; staffUnlockBtn.textContent = 'Unlock'; });
+    }).then(function () { staffUnlockBtn.disabled = false; staffUnlockBtn.textContent = t('staff.dialog.unlock'); });
   });
   staffCancelBtn.addEventListener('click', function () { staff.after = null; closeStaffDialog(); staffBtn.focus(); });
   staffDialog.addEventListener('close', function () { staffPassword.value = ''; });
@@ -337,7 +346,7 @@ function track(eventName, params) {
   setInterval(function () {
     if (staff.on && !staff.keep && Date.now() - staff.lastActive > STAFF_IDLE_MS) {
       setStaff(false, false, true);
-      toast('Staff tools locked after 15 minutes without use.');
+      toast(t('staff.lockedIdle'));
     }
   }, 30000);
 
@@ -350,6 +359,8 @@ function track(eventName, params) {
   var pageBrowse = document.getElementById('pageBrowse');
   var pageDetail = document.getElementById('pageDetail');
   var pageTryOn = document.getElementById('pageTryOn');
+  var pageShortlist = document.getElementById('pageShortlist');
+  var tabShortlistBtn = document.getElementById('tabShortlistBtn');
   var photoCountDisplay = document.getElementById('photoCountDisplay');
   var pageAdd = document.getElementById('pageAdd');
   var addLocked = document.getElementById('addLocked');
@@ -362,19 +373,33 @@ function track(eventName, params) {
   var catalogScrollY = 0;
   var tryonFrom = null;          // the frame whose page opened the try-on (for "Back to …")
 
+  // An address may carry ?pd=62.5 (e.g. a link or QR code from the eye test):
+  // it is applied once and then removed from the address.
   function parseHash() {
-    var parts = (location.hash || '').replace(/^#\/?/, '').split('/').filter(Boolean).map(function (p) {
+    var hash = location.hash || '', query = '';
+    var qi = hash.indexOf('?');
+    if (qi >= 0) { query = hash.slice(qi + 1); hash = hash.slice(0, qi); }
+    var parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean).map(function (p) {
       try { return decodeURIComponent(p); } catch (e) { return p; }
     });
-    if (parts[0] === 'frame' && parts[1]) return { name: 'detail', id: parts[1] };
-    if (parts[0] === 'try-on') return { name: 'tryon', id: parts[1] || null };
-    if (parts[0] === 'add') return { name: 'add', id: null };
-    return { name: 'browse', id: null };
+    var r;
+    if (parts[0] === 'frame' && parts[1]) r = { name: 'detail', id: parts[1] };
+    else if (parts[0] === 'try-on') r = { name: 'tryon', id: parts[1] || null };
+    else if (parts[0] === 'add') r = { name: 'add', id: null };
+    else if (parts[0] === 'shortlist') r = { name: 'shortlist', id: null };
+    else r = { name: 'browse', id: null };
+    if (query) {
+      var m = /(?:^|&)pd=([0-9]+(?:[.,][0-9]+)?)/.exec(query);
+      if (m) r.pd = parseFloat(m[1].replace(',', '.'));
+      r.hadQuery = true;
+    }
+    return r;
   }
   function hashFor(r) {
     if (r.name === 'detail') return '#/frame/' + encodeURIComponent(r.id);
     if (r.name === 'tryon') return '#/try-on' + (r.id ? '/' + encodeURIComponent(r.id) : '');
     if (r.name === 'add') return '#/add';
+    if (r.name === 'shortlist') return '#/shortlist';
     return '#/';
   }
   function navigate(r, opts) {
@@ -386,14 +411,29 @@ function track(eventName, params) {
     renderRoute(r, opts);
   }
   function onAddressChange() { renderRoute(parseHash()); }
+  function takeQuery(r) {
+    if (!r.hadQuery) return;
+    history.replaceState(null, '', hashFor(r));
+    if (r.pd != null) applyPdFromLink(r.pd);
+  }
   window.addEventListener('popstate', onAddressChange);
   window.addEventListener('hashchange', onAddressChange);
 
-  function setTitle(t) { document.title = (t ? t + ' | ' : '') + 'Frame Try-On Studio'; }
+  function setTitle(title) { document.title = (title ? title + ' | ' : '') + 'Frame Try-On Studio'; }
+  // the page title for the current view, in the current language
+  function refreshTitle() {
+    if (view.name === 'browse') setTitle(t('title.frames'));
+    else if (view.name === 'detail') { var e = findEntry(view.id); setTitle(e && !e.draft ? frameName(e) : t(catalogLoaded ? 'title.notFound' : 'title.frame')); }
+    else if (view.name === 'tryon') setTitle(t('title.tryon'));
+    else if (view.name === 'add') setTitle(t('title.add'));
+    else if (view.name === 'shortlist') setTitle(t('title.shortlist'));
+    else if (view.name === 'signin') setTitle(t('title.signIn'));
+  }
 
   function renderRoute(r, opts) {
     if (!currentUser) return;
     opts = opts || {};
+    takeQuery(r);
     var same = view.name === r.name && (view.id || null) === (r.id || null);
     if (same && !opts.force) return;
     var prev = view.name;
@@ -401,7 +441,7 @@ function track(eventName, params) {
     view = { name: r.name, id: r.id || null };
     showView(r.name);
     if (r.name === 'browse') {
-      setTitle('Frames');
+      setTitle(t('title.frames'));
       requestAnimationFrame(function () { window.scrollTo(0, prev && prev !== 'browse' ? catalogScrollY : 0); });
     } else if (r.name === 'detail') {
       renderDetail(r.id);
@@ -411,15 +451,19 @@ function track(eventName, params) {
       if (opts.from) tryonFrom = opts.from;
       else if (prev !== 'tryon') tryonFrom = prev === 'detail' ? (r.id || activeFrameId) : null;
       syncTryonBack();
-      setTitle('Try on');
+      setTitle(t('title.tryon'));
       if (prev !== 'tryon') window.scrollTo(0, 0);
     } else if (r.name === 'add') {
-      setTitle('Add frames');
+      setTitle(t('title.add'));
       syncAddLock();
+      window.scrollTo(0, 0);
+    } else if (r.name === 'shortlist') {
+      setTitle(t('title.shortlist'));
+      renderShortlistPage();
       window.scrollTo(0, 0);
     }
     if (!opts.initial && prev) {
-      var page = { browse: pageBrowse, detail: pageDetail, tryon: pageTryOn, add: pageAdd }[r.name];
+      var page = { browse: pageBrowse, detail: pageDetail, tryon: pageTryOn, add: pageAdd, shortlist: pageShortlist }[r.name];
       var h1 = page && page.querySelector('h1:not([hidden])');
       if (h1 && (r.name !== 'browse')) { h1.setAttribute('tabindex', '-1'); h1.focus({ preventScroll: true }); }
     }
@@ -430,7 +474,8 @@ function track(eventName, params) {
     pageDetail.style.display = name === 'detail' ? 'block' : 'none';
     pageTryOn.style.display = name === 'tryon' ? 'block' : 'none';
     pageAdd.style.display = name === 'add' ? 'block' : 'none';
-    [[tabBrowseBtn, name === 'browse' || name === 'detail'], [tabTryOnBtn, name === 'tryon'], [tabAddBtn, name === 'add']].forEach(function (pair) {
+    pageShortlist.style.display = name === 'shortlist' ? 'block' : 'none';
+    [[tabBrowseBtn, name === 'browse' || name === 'detail'], [tabTryOnBtn, name === 'tryon'], [tabShortlistBtn, name === 'shortlist'], [tabAddBtn, name === 'add']].forEach(function (pair) {
       if (pair[1]) pair[0].setAttribute('aria-current', 'page'); else pair[0].removeAttribute('aria-current');
     });
     if (name === 'tryon') { updateTryOnHint(); updateSelectedBanner(); renderLiveStrip(); syncStage(); }
@@ -445,10 +490,10 @@ function track(eventName, params) {
   function syncTryonBack() {
     var from = tryonFrom && tryonFrom !== DRAFT_ID ? findEntry(tryonFrom) : null;
     if (from) {
-      tryonBack.textContent = 'Back to ' + frameName(from);
+      tryonBack.textContent = t('try.backTo', { name: frameName(from) });
       tryonBack.href = hashFor({ name: 'detail', id: from.id });
     } else {
-      tryonBack.textContent = 'All frames';
+      tryonBack.textContent = t('try.allFrames');
       tryonBack.href = '#/';
     }
   }
@@ -487,8 +532,29 @@ function track(eventName, params) {
   var photoStage = document.getElementById('photoStage');
   var draftBanner = document.getElementById('draftBanner');
   var draftBackBtn = document.getElementById('draftBackBtn');
-  var livePd = document.getElementById('livePd');
-  var photoPd = document.getElementById('photoPd');
+  var pdInput = document.getElementById('pdInput');
+  var pdSplit = document.getElementById('pdSplit');
+  var pdSplitRow = document.getElementById('pdSplitRow');
+  var pdSingle = document.getElementById('pdSingle');
+  var pdRight = document.getElementById('pdRight');
+  var pdLeft = document.getElementById('pdLeft');
+  var pdTotal = document.getElementById('pdTotal');
+  var pdError = document.getElementById('pdError');
+  var pdStatus = document.getElementById('pdStatus');
+  var pdClearBtn = document.getElementById('pdClearBtn');
+  var pdBadge = document.getElementById('pdBadge');
+  var selectedHeartBtn = document.getElementById('selectedHeartBtn');
+  var pickerFilterEl = document.getElementById('pickerFilter');
+  var pickAllBtn = document.getElementById('pickAllBtn');
+  var pickShortlistBtn = document.getElementById('pickShortlistBtn');
+  var shortlistCount = document.getElementById('shortlistCount');
+  var shortlistNote = document.getElementById('shortlistNote');
+  var shortlistFilled = document.getElementById('shortlistFilled');
+  var shortlistEmpty = document.getElementById('shortlistEmpty');
+  var shortlistTryBtn = document.getElementById('shortlistTryBtn');
+  var shortlistClearBtn = document.getElementById('shortlistClearBtn');
+  var compareWrap = document.getElementById('compareWrap');
+  var compareHint = document.getElementById('compareHint');
 
   // ---------- browse elements ----------
   var filterBar = document.getElementById('filterBar');
@@ -703,7 +769,7 @@ function track(eventName, params) {
     ar.renderer = null; ar.promise = null; ar.frameKey = null; ar.loadingKey = null; ar.failedKey = null;
     sideCache = {};
     photo3d = null;
-    livePd.value = ''; photoPd.value = '';
+    clearPd();
     catalogIndex = []; fullDataCache = {}; activeFrameId = null;
     allFreeTags = new Set();
     activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
@@ -733,9 +799,11 @@ function track(eventName, params) {
     var adjustable = liveFitRow.style.display !== 'none' || fitRow.style.display !== 'none';
     adjustBox.hidden = !adjustable;
   }
-  function showPhotoError(msg) {
-    photoError.textContent = msg || '';
-    photoError.hidden = !msg;
+  var photoErrorKey = '';
+  function showPhotoError(key) {
+    photoErrorKey = key || '';
+    photoError.textContent = key ? t(key) : '';
+    photoError.hidden = !key;
   }
 
   // ---------- helpers ----------
@@ -759,33 +827,40 @@ function track(eventName, params) {
   }
 
   // What customers call a frame: its name if staff gave it one, else colour and
-  // shape ("Tortoise round frame").
+  // shape in the current language ("Tortoise round frame", "काला गोल फ्रेम").
   function frameName(entry) {
     if (!entry) return '';
     if (entry.name) return entry.name;
-    var t = entry.tags || {};
-    var bits = [t.color ? labelize(t.color) : '', t.shape ? labelize(t.shape).toLowerCase() : ''].filter(Boolean);
-    if (!bits.length) return 'Untitled frame';
-    var n = bits.join(' ') + ' frame';
+    var tg = entry.tags || {};
+    var en = getLang() === 'en';
+    var color = tg.color ? tagAdjective(tg.color) : '';
+    var shape = tg.shape ? (en ? tagLabel(tg.shape).toLowerCase() : tagLabel(tg.shape)) : '';
+    var n = color && shape ? t('name.colorShape', { color: color, shape: shape })
+      : color ? t('name.color', { color: color })
+      : shape ? t('name.shape', { shape: shape }) : t('name.untitled');
     return n.charAt(0).toUpperCase() + n.slice(1);
   }
   // Secondary facts for cards: who it's for and the rim ("Men's, full-rim").
   function frameMeta(entry) {
-    var t = (entry && entry.tags) || {};
-    var bits = [t.gender ? labelize(t.gender) : '', t.rim ? labelize(t.rim) : ''].filter(Boolean);
-    return bits.map(function (b, i) { return i ? b.charAt(0).toLowerCase() + b.slice(1) : b; }).join(', ');
+    var tg = (entry && entry.tags) || {};
+    var bits = [tg.gender ? tagLabel(tg.gender) : '', tg.rim ? tagLabel(tg.rim) : ''].filter(Boolean);
+    var en = getLang() === 'en';
+    return bits.map(function (b, i) { return i && en ? b.charAt(0).toLowerCase() + b.slice(1) : b; }).join(', ');
   }
   // Name plus the recorded size (if any), e.g. "Tortoise round frame, 49\u25A121 145".
   function describeFrame(entry) {
     if (!entry) return '';
-    var size = sizeLabel(entry.size);
+    var size = sizeShort(entry.size);
     return frameName(entry) + (size ? ', ' + size : '');
   }
+  // Everything a search can match, with tag words in every language, so "गोल",
+  // "round" and "गोल फ्रेम" all find a round frame whatever language is showing.
   function searchText(entry) {
-    var t = (entry && entry.tags) || {};
-    return normalizeSearch([entry.name || '', frameName(entry), t.shape, t.color, t.gender, t.rim,
-      t.shape ? labelize(t.shape) : '', t.gender ? labelize(t.gender) : '', t.rim ? labelize(t.rim) : '',
-      sizeLabel(entry.size), entry.size && entry.size.eye ? entry.size.eye + 'mm' : ''].concat(t.free || []).filter(Boolean).join(' '));
+    var tg = (entry && entry.tags) || {};
+    var words = [entry.name || '', frameName(entry), tg.shape, tg.color, tg.gender, tg.rim,
+      sizeLabel(entry.size), entry.size && entry.size.eye ? entry.size.eye + 'mm' : ''];
+    [tg.shape, tg.color, tg.gender, tg.rim].forEach(function (v) { words = words.concat(tagLabelsAll(v)); });
+    return normalizeSearch(words.concat(tg.free || []).filter(Boolean).join(' '));
   }
 
   function findEntry(id) {
@@ -1200,7 +1275,7 @@ function track(eventName, params) {
       rotationDelta += (rotationDelta > 0 ? -Math.PI : Math.PI);
     }
 
-    var userScale = fitSize.value / 100;
+    var userScale = fitSize.value / 100 * trueSizeFactor(activeFrameId);
     var scale = (faceD / frameD) * userScale;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1228,19 +1303,17 @@ function track(eventName, params) {
       return;
     }
     if (detectingPupils) {
-      calibBanner.textContent = 'Finding your face in the photo…';
+      calibBanner.textContent = t('calib.finding');
       calibBanner.style.display = 'block';
       recalBtn.style.display = 'none';
       fitRow.style.display = 'none';
     } else if (facePoints.length === 0) {
-      calibBanner.textContent = photoManual
-        ? 'Tap the centre of one eye in the photo.'
-        : "Couldn't find a face automatically. Tap the centre of one eye in the photo, then the other.";
+      calibBanner.textContent = photoManual ? t('calib.tapOne') : t('calib.noFace');
       calibBanner.style.display = 'block';
       recalBtn.style.display = 'none';
       fitRow.style.display = 'none';
     } else if (facePoints.length === 1) {
-      calibBanner.textContent = 'Now tap the centre of the other eye.';
+      calibBanner.textContent = t('calib.tapOther');
       calibBanner.style.display = 'block';
       recalBtn.style.display = 'none';
       fitRow.style.display = 'none';
@@ -1256,15 +1329,15 @@ function track(eventName, params) {
     var noSel = !activeFrameId || !findEntry(activeFrameId);
     if (catalogLoaded && !catalogIndex.length) {
       noSelectionNote.style.display = 'flex';
-      noSelectionText.textContent = 'There are no frames in the catalogue yet.';
+      noSelectionText.textContent = t('try.noFrames');
       noSelectionBtn.style.display = staff.on ? 'inline-flex' : 'none';
-      noSelectionBtn.textContent = 'Add a frame';
+      noSelectionBtn.textContent = t('try.addFrame');
       noSelectionBtn.onclick = function () { showTab('add'); };
     } else if (noSel && catalogLoaded) {
       noSelectionNote.style.display = 'flex';
-      noSelectionText.textContent = 'Choose a frame below to see it on your face.';
+      noSelectionText.textContent = t('try.choose');
       noSelectionBtn.style.display = 'inline-flex';
-      noSelectionBtn.textContent = 'Browse all frames';
+      noSelectionBtn.textContent = t('try.browse');
       noSelectionBtn.onclick = function () { showTab('browse'); };
     } else {
       noSelectionNote.style.display = 'none';
@@ -1273,7 +1346,7 @@ function track(eventName, params) {
 
   function updateSelectedBanner() {
     var entry = activeFrameId ? findEntry(activeFrameId) : null;
-    if (!entry) { selectedBanner.style.display = 'none'; return; }
+    if (!entry) { selectedBanner.style.display = 'none'; syncPdStatus(); return; }
     selectedBanner.style.display = 'flex';
     selectedThumbWrap.innerHTML = '';
     var img = document.createElement('img');
@@ -1282,10 +1355,13 @@ function track(eventName, params) {
     selectedThumbWrap.appendChild(img);
     selectedText.textContent = describeFrame(entry);
     selectedDetailsLink.style.display = entry.draft ? 'none' : '';
+    selectedHeartBtn.style.display = entry.draft ? 'none' : '';
     if (!entry.draft) {
       selectedDetailsLink.href = hashFor({ name: 'detail', id: entry.id });
-      selectedDetailsLink.setAttribute('aria-label', 'Details of ' + frameName(entry));
+      selectedDetailsLink.setAttribute('aria-label', t('try.currentDetails.aria', { name: frameName(entry) }));
+      syncHeart(selectedHeartBtn, entry.id);
     }
+    syncPdStatus();
   }
 
   // "Similar frames" on a frame's page: same shape first, then same colour.
@@ -1304,7 +1380,9 @@ function track(eventName, params) {
 
     if (!list.length) { similarLabel.style.display = 'none'; similarRow.style.display = 'none'; return; }
 
-    similarLabel.textContent = sameShape.length ? 'More ' + labelize(active.tags.shape).toLowerCase() + ' frames' : 'More frames';
+    similarLabel.textContent = sameShape.length
+      ? t('detail.similarShape', { shape: getLang() === 'en' ? tagLabel(active.tags.shape).toLowerCase() : tagLabel(active.tags.shape) })
+      : t('detail.similar');
     similarLabel.style.display = 'block';
     similarRow.style.display = 'flex';
 
@@ -1321,7 +1399,7 @@ function track(eventName, params) {
       var cap = document.createElement('span');
       cap.textContent = frameName(e);
       item.appendChild(cap);
-      var sz = sizeLabel(e.size);
+      var sz = sizeShort(e.size);
       if (sz) { var z = document.createElement('span'); z.className = 'item-size'; z.textContent = sz; item.appendChild(z); }
       similarRow.appendChild(item);
     });
@@ -1352,7 +1430,7 @@ function track(eventName, params) {
       canvas.style.display = 'none';
       captureBtn.style.display = 'inline-flex';
       retakeBtn.style.display = 'inline-flex';
-      retakeBtn.textContent = 'Cancel';
+      retakeBtn.textContent = t('common.cancel');
       updateCalibBanner();
       syncStage();
     }).catch(function (err) {
@@ -1466,7 +1544,7 @@ function track(eventName, params) {
     canvas.style.display = 'block';
     captureBtn.style.display = 'none';
     retakeBtn.style.display = 'inline-flex';
-    retakeBtn.textContent = 'Replace photo';
+    retakeBtn.textContent = t('try.replace');
     photoManual = false;
     photoSource = 'camera';
     syncStage();
@@ -1482,13 +1560,11 @@ function track(eventName, params) {
     stopStream();
     showPhotoError('');
     if (file.type && !PHOTO_TYPES.test(file.type)) {
-      showPhotoError(/heic|heif/i.test(file.type + file.name)
-        ? "This photo is in HEIC format, which browsers can't open. Choose a JPEG, PNG or WebP photo (on iPhone: Settings, Camera, Formats, Most Compatible)."
-        : "That file isn't a supported photo. Choose a JPEG, PNG or WebP image.");
+      showPhotoError(/heic|heif/i.test(file.type + file.name) ? 'photo.heic' : 'photo.type');
       syncStage();
       return;
     }
-    if (file.size > PHOTO_MAX_BYTES) { showPhotoError('That photo is too large (over 25 MB). Choose a smaller one.'); syncStage(); return; }
+    if (file.size > PHOTO_MAX_BYTES) { showPhotoError('photo.big'); syncStage(); return; }
     var img = new Image();
     var url = URL.createObjectURL(file);
     img.onload = function () {
@@ -1505,7 +1581,7 @@ function track(eventName, params) {
       canvas.style.display = 'block';
       captureBtn.style.display = 'none';
       retakeBtn.style.display = 'inline-flex';
-      retakeBtn.textContent = 'Replace photo';
+      retakeBtn.textContent = t('try.replace');
       photoSource = 'upload';
       syncStage();
       redrawFacePreview();
@@ -1516,7 +1592,7 @@ function track(eventName, params) {
     };
     img.onerror = function () {
       URL.revokeObjectURL(url);
-      showPhotoError("That file couldn't be opened as a photo. It may be damaged or in an unsupported format. Choose a JPEG, PNG or WebP image.");
+      showPhotoError('photo.broken');
       syncStage();
     };
     img.src = url;
@@ -1733,17 +1809,305 @@ function track(eventName, params) {
     } catch (e) { return 1; }
   }
 
-  function customerPD() {
-    var v = parseFloat(livePd.value || photoPd.value);
-    return (v >= 50 && v <= 80) ? v : DEFAULT_PD_MM;
+  // ---------- true size: the customer's PD from their eye test ----------
+  // Kept in memory only (never stored or sent), and cleared with the rest of the
+  // customer's visit. With a frame whose size is recorded, the frame is drawn at
+  // its real width relative to the customer's eyes; without a PD, the adult
+  // average (63 mm) is used. Frames without a recorded size are fitted to the eyes.
+  var pdValue = null;
+  function customerPD() { return pdValue != null ? pdValue : DEFAULT_PD_MM; }
+  function fmtMm(v) { return v == null ? '' : String(Math.round(v * 10) / 10); }
+  function frameLensDistMm(entry) {
+    var sz = entry ? cleanSize(entry.size) : null;
+    return sz && sz.eye && sz.bridge ? sz.eye + sz.bridge : null;
   }
-  function onPdInput(src, other) {
-    other.value = src.value;
+  // flat overlay: how much bigger or smaller than "lens centres on the pupils" the frame really is
+  function trueSizeFactor(id) {
+    var L = frameLensDistMm(findEntry(id));
+    if (!L) return 1;
+    return Math.max(0.7, Math.min(1.45, L / customerPD()));
+  }
+  function setPd(v) {
+    if (v === pdValue) { syncPdStatus(); return; }
+    pdValue = v;
     if (ar.renderer) ar.renderer.setPD(customerPD());
     redrawFacePreview();
+    syncPdStatus();
   }
-  livePd.addEventListener('input', function () { onPdInput(livePd, photoPd); });
-  photoPd.addEventListener('input', function () { onPdInput(photoPd, livePd); });
+  function num(input) {
+    var raw = (input.value || '').trim().replace(',', '.');
+    return raw === '' ? null : parseFloat(raw);
+  }
+  // Reads the inputs; returns the text key of a problem, or ''.
+  function readPd() {
+    if (pdSplit.checked) {
+      var r = num(pdRight), l = num(pdLeft);
+      var okR = r != null && r >= 25 && r <= 40, okL = l != null && l >= 25 && l <= 40;
+      if (r == null && l == null) { pdTotal.textContent = ''; setPd(null); return ''; }
+      if (okR && okL) {
+        var tot = Math.round((r + l) * 10) / 10;
+        pdTotal.textContent = t('pd.total', { pd: fmtMm(tot) });
+        setPd(tot);
+        return '';
+      }
+      pdTotal.textContent = '';
+      setPd(null);
+      return (r != null && !okR) || (l != null && !okL) ? 'pd.err.half' : '';
+    }
+    var v = num(pdInput);
+    if (v == null) { setPd(null); return ''; }
+    if (v >= 50 && v <= 80) { setPd(Math.round(v * 10) / 10); return ''; }
+    setPd(null);
+    return 'pd.err.range';
+  }
+  var pdErrorKey = '';
+  function showPdError(key) {
+    pdErrorKey = key || '';
+    pdError.textContent = key ? t(key) : '';
+    pdError.classList.toggle('show', !!key);
+    [pdInput, pdRight, pdLeft].forEach(function (el) { el.setAttribute('aria-invalid', key ? 'true' : 'false'); });
+  }
+  // while typing: apply when valid, keep quiet otherwise; when done (change): say what's wrong
+  [pdInput, pdRight, pdLeft].forEach(function (el) {
+    el.addEventListener('input', function () { var k = readPd(); if (!k) showPdError(''); });
+    el.addEventListener('change', function () { showPdError(readPd()); });
+    el.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); showPdError(readPd()); } });
+  });
+  pdSplit.addEventListener('change', function () {
+    pdSplitRow.hidden = !pdSplit.checked;
+    pdSingle.hidden = pdSplit.checked;
+    showPdError(readPd());
+    (pdSplit.checked ? pdRight : pdInput).focus();
+  });
+  function clearPd() {
+    pdInput.value = ''; pdRight.value = ''; pdLeft.value = '';
+    pdSplit.checked = false; pdSplitRow.hidden = true; pdSingle.hidden = false;
+    pdTotal.textContent = '';
+    showPdError('');
+    setPd(null);
+  }
+  pdClearBtn.addEventListener('click', function () { clearPd(); pdInput.focus(); });
+  // ?pd=62.5 in the address (a link or QR code from the eye test)
+  function applyPdFromLink(v) {
+    if (!(v >= 50 && v <= 80)) return;
+    pdSplit.checked = false; pdSplitRow.hidden = true; pdSingle.hidden = false;
+    pdInput.value = fmtMm(v);
+    showPdError(readPd());
+    customerLastActive = Date.now();
+    toast(t('pd.applied', { pd: fmtMm(v) }));
+  }
+  function syncPdStatus() {
+    var entry = activeFrameId ? findEntry(activeFrameId) : null;
+    pdClearBtn.hidden = pdValue == null && !(pdInput.value || pdRight.value || pdLeft.value);
+    if (!entry) { pdStatus.textContent = ''; pdBadge.textContent = ''; pdBadge.className = 'pd-badge'; return; }
+    var key = !frameLensDistMm(entry) ? 'noSize' : pdValue != null ? 'true' : 'avg';
+    pdStatus.textContent = t('pd.status.' + key, { pd: fmtMm(pdValue) });
+    pdBadge.textContent = t('pd.badge.' + key);
+    pdBadge.className = 'pd-badge ' + key;
+  }
+
+  // ---------- shortlist: frames a customer liked, to compare (this visit only) ----------
+  // Kept in this browser tab only (sessionStorage), never in the account, and
+  // cleared after 20 minutes without anyone using the screen.
+  var SHORTLIST_MAX = 6;
+  var CUSTOMER_IDLE_MS = 20 * 60 * 1000;
+  var shortlist = [];
+  var customerLastActive = Date.now();
+  var pickerFilter = 'all';
+  function shortlistKey() { return 'fts.shortlist.' + (currentUser ? currentUser.uid : ''); }
+  function saveShortlist() {
+    try {
+      if (shortlist.length) sessionStorage.setItem(shortlistKey(), JSON.stringify({ ids: shortlist, at: Date.now() }));
+      else sessionStorage.removeItem(shortlistKey());
+    } catch (e) { /* storage blocked: the shortlist just lasts until the page is reloaded */ }
+  }
+  function restoreShortlist() {
+    shortlist = [];
+    try {
+      var raw = JSON.parse(sessionStorage.getItem(shortlistKey()) || 'null');
+      if (raw && Array.isArray(raw.ids) && Date.now() - (raw.at || 0) < CUSTOMER_IDLE_MS) {
+        shortlist = raw.ids.filter(function (x) { return typeof x === 'string'; }).slice(0, SHORTLIST_MAX);
+      }
+    } catch (e) { shortlist = []; }
+    syncShortlistUi();
+  }
+  function inShortlist(id) { return !!id && shortlist.indexOf(id) !== -1; }
+  function toggleShortlist(id) {
+    var entry = findEntry(id);
+    if (!entry || entry.draft) return;
+    if (inShortlist(id)) {
+      shortlist = shortlist.filter(function (x) { return x !== id; });
+      toast(t('sl.removed'));
+    } else {
+      if (shortlist.length >= SHORTLIST_MAX) { toast(t('sl.full', { n: SHORTLIST_MAX }), 'error'); return; }
+      shortlist.push(id);
+      toast(t('sl.added'));
+    }
+    saveShortlist();
+    syncShortlistUi();
+  }
+  // drop frames that are no longer in the catalogue
+  function pruneShortlist() {
+    if (!catalogLoaded) return;
+    var before = shortlist.length;
+    shortlist = shortlist.filter(function (id) { var e = findEntry(id); return e && !e.draft; });
+    if (shortlist.length !== before) saveShortlist();
+  }
+  function heartSvg() {
+    return '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16.6S3.6 12.9 3.6 8.2A3.3 3.3 0 0 1 10 6.6a3.3 3.3 0 0 1 6.4 1.6c0 4.7-6.4 8.4-6.4 8.4z"/></svg>';
+  }
+  // A heart button: icon-only ones carry the action in their label; text ones say it
+  function syncHeart(btn, id) {
+    if (!btn) return;
+    var entry = id ? findEntry(id) : null;
+    var on = inShortlist(id);
+    btn.classList.toggle('on', on);
+    var name = entry ? frameName(entry) : '';
+    var label = btn.querySelector('.heart-label');
+    if (label) label.textContent = on ? t('sl.removeBtn') : t('sl.add');
+    else btn.setAttribute('aria-label', on ? t('sl.removeAria', { name: name }) : t('sl.addAria', { name: name }));
+  }
+  function syncShortlistUi() {
+    var n = shortlist.length;
+    shortlistCount.textContent = n ? String(n) : '';
+    tabShortlistBtn.setAttribute('aria-label', tn('nav.shortlist.aria', n));
+    document.querySelectorAll('[data-heart]').forEach(function (b) { syncHeart(b, b.getAttribute('data-heart')); });
+    syncHeart(selectedHeartBtn, activeFrameId);
+    pickShortlistBtn.textContent = t('try.pick.shortlist', { n: n });
+    pickerFilterEl.hidden = n === 0;
+    if (!n) pickerFilter = 'all';
+    syncPickerFilter();
+    if (view.name === 'tryon') renderLiveStrip();
+    if (view.name === 'shortlist') renderShortlistPage();
+  }
+  function syncPickerFilter() {
+    [[pickAllBtn, pickerFilter === 'all'], [pickShortlistBtn, pickerFilter === 'shortlist']].forEach(function (p) {
+      p[0].classList.toggle('active', p[1]);
+      p[0].setAttribute('aria-pressed', p[1] ? 'true' : 'false');
+    });
+  }
+  pickAllBtn.addEventListener('click', function () { pickerFilter = 'all'; syncPickerFilter(); renderLiveStrip(); });
+  pickShortlistBtn.addEventListener('click', function () { pickerFilter = 'shortlist'; syncPickerFilter(); renderLiveStrip(); });
+  selectedHeartBtn.addEventListener('click', function () { if (activeFrameId) toggleShortlist(activeFrameId); });
+
+  // The end of a customer's visit: their shortlist and PD go (camera and photo
+  // have their own rules: they never outlive the try-on page).
+  function endCustomerSession() {
+    shortlist = [];
+    saveShortlist();
+    clearPd();
+    syncShortlistUi();
+  }
+  ['pointerdown', 'keydown'].forEach(function (type) { document.addEventListener(type, function () { customerLastActive = Date.now(); }, true); });
+  setInterval(function () {
+    var idle = Date.now() - customerLastActive;
+    if (idle > CUSTOMER_IDLE_MS && (shortlist.length || pdValue != null || pdInput.value || pdRight.value || pdLeft.value)) endCustomerSession();
+    else if (shortlist.length && idle < 60000) saveShortlist();      // keep the stored list fresh while in use
+  }, 30000);
+
+  // Side-by-side comparison of the shortlisted frames.
+  function renderShortlistPage() {
+    pruneShortlist();
+    var entries = shortlist.map(findEntry).filter(function (e) { return e && !e.draft; });
+    var waiting = !catalogLoaded && shortlist.length > 0;
+    shortlistNote.textContent = waiting ? t('cat.loading') : entries.length ? tn('cat.count', entries.length) : '';
+    shortlistFilled.hidden = !entries.length;
+    shortlistEmpty.hidden = !!entries.length || waiting;
+    compareWrap.innerHTML = '';
+    if (!entries.length) return;
+    var table = document.createElement('table');
+    table.className = 'compare-table';
+    var cap = document.createElement('caption');
+    cap.className = 'visually-hidden';
+    cap.textContent = t('sl.compare');
+    table.appendChild(cap);
+    var thead = document.createElement('thead'), hr = document.createElement('tr');
+    hr.appendChild(document.createElement('td'));
+    entries.forEach(function (e) {
+      var th = document.createElement('th');
+      th.scope = 'col';
+      var a = document.createElement('a');
+      a.className = 'compare-frame';
+      a.href = hashFor({ name: 'detail', id: e.id });
+      var media = document.createElement('span');
+      media.className = 'compare-media';
+      var img = document.createElement('img');
+      img.alt = ''; img.src = e.thumbData; img.decoding = 'async';
+      media.appendChild(img);
+      a.appendChild(media);
+      var nm = document.createElement('span');
+      nm.className = 'compare-name';
+      nm.textContent = frameName(e);
+      a.appendChild(nm);
+      th.appendChild(a);
+      var acts = document.createElement('div');
+      acts.className = 'compare-actions';
+      var tryB = document.createElement('button');
+      tryB.type = 'button'; tryB.className = 'btn primary small';
+      tryB.textContent = t('card.tryon');
+      tryB.setAttribute('aria-label', t('card.tryon.aria', { name: frameName(e) }));
+      tryB.addEventListener('click', function () { pickerFilter = 'shortlist'; syncPickerFilter(); tryOnFrame(e.id, 'auto'); });
+      var rm = document.createElement('button');
+      rm.type = 'button'; rm.className = 'btn secondary small';
+      rm.textContent = t('sl.remove');
+      rm.setAttribute('aria-label', t('sl.removeAria', { name: frameName(e) }));
+      rm.addEventListener('click', function () {
+        toggleShortlist(e.id);
+        var next = compareWrap.querySelector('.compare-actions .btn.secondary');
+        (next || shortlistEmpty.querySelector('a')).focus();
+      });
+      acts.appendChild(tryB); acts.appendChild(rm);
+      th.appendChild(acts);
+      hr.appendChild(th);
+    });
+    thead.appendChild(hr);
+    table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    var anyMaterial = entries.some(function (e) { return e.prepared === 'auto' && e.translucent != null; });
+    var rows = [
+      ['attr.size', function (e) { var sz = sizeShort(e.size); return sz || t('sl.none'); }, 'mono'],
+      ['attr.shape', function (e) { return e.tags.shape ? tagLabel(e.tags.shape) : t('sl.none'); }],
+      ['attr.colour', function (e) { return e.tags.color ? tagLabel(e.tags.color) : t('sl.none'); }],
+      ['attr.rim', function (e) { return e.tags.rim ? tagLabel(e.tags.rim) : t('sl.none'); }],
+      ['attr.for', function (e) { return e.tags.gender ? tagLabel(e.tags.gender) : t('sl.none'); }]
+    ];
+    if (anyMaterial) rows.push(['attr.material', function (e) { return e.prepared === 'auto' && e.translucent != null ? t(e.translucent ? 'material.translucent' : 'material.solid') : t('sl.none'); }]);
+    rows.forEach(function (row) {
+      var tr = document.createElement('tr');
+      var th = document.createElement('th');
+      th.scope = 'row';
+      th.textContent = t(row[0]);
+      tr.appendChild(th);
+      entries.forEach(function (e) {
+        var td = document.createElement('td');
+        td.textContent = row[1](e);
+        if (row[2]) td.className = row[2];
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    compareWrap.appendChild(table);
+    requestAnimationFrame(function () { compareHint.hidden = compareWrap.scrollWidth <= compareWrap.clientWidth + 2; });
+  }
+  shortlistTryBtn.addEventListener('click', function () {
+    pruneShortlist();
+    if (!shortlist.length) return;
+    pickerFilter = 'shortlist';
+    syncPickerFilter();
+    tryOnFrame(inShortlist(activeFrameId) ? activeFrameId : shortlist[0], 'auto');
+  });
+  shortlistClearBtn.addEventListener('click', function () {
+    var n = shortlist.length;
+    if (!n) return;
+    confirmAction({ title: t('sl.clearTitle'), body: t('sl.clearBody', { n: n }), ok: t('sl.clear'), cancel: t('common.cancel'), danger: true }).then(function (yes) {
+      if (!yes) return;
+      shortlist = [];
+      saveShortlist();
+      syncShortlistUi();
+      toast(t('sl.cleared'));
+    });
+  });
 
   // ---------- live try-on (real-time tracking; see headpose.js / tracking.js for the maths) ----------
   // Camera frames are processed locally by MediaPipe in this tab. Nothing from the
@@ -1809,26 +2173,27 @@ function track(eventName, params) {
     liveStatus.textContent = text;
   }
 
-  function showLiveError(msg) {
-    liveError.textContent = msg || '';
-    liveError.style.display = msg ? 'block' : 'none';
+  // takes a text key; remembered so a language change can re-render it
+  var liveErrorKey = '';
+  function showLiveError(key) {
+    liveErrorKey = key || '';
+    liveError.textContent = key ? t(key) : '';
+    liveError.style.display = key ? 'block' : 'none';
   }
-
-  var CAMERA_BLOCKED_MSG = "The camera is blocked for this site. To use it, tap the camera or padlock icon next to the address, allow the camera, then choose Start camera again. Or use a photo instead.";
 
   function liveCameraErrorMessage(err, permissionState) {
     var name = err && err.name;
     // some browsers report a refused permission with other error names
     if (permissionState === 'denied' || name === 'NotAllowedError' || name === 'PermissionDeniedError' || name === 'SecurityError') {
-      return CAMERA_BLOCKED_MSG;
+      return 'cam.blocked';
     }
     if (name === 'NotFoundError' || name === 'DevicesNotFoundError' || name === 'OverconstrainedError') {
-      return "No camera was found on this device. Connect one and try again, or use a photo instead.";
+      return 'cam.none';
     }
     if (name === 'NotReadableError' || name === 'TrackStartError' || name === 'AbortError') {
-      return "The camera is busy or couldn't start. Close other apps or tabs that are using it, then try again.";
+      return 'cam.busy';
     }
-    return "Couldn't start the camera. Try again, or use a photo instead.";
+    return 'cam.other';
   }
 
   function cameraPermissionState() {
@@ -1839,7 +2204,7 @@ function track(eventName, params) {
   }
 
   function syncLiveToggle() {
-    liveToggleBtn.textContent = live.overlayOn ? 'Hide frame' : 'Show frame';
+    liveToggleBtn.textContent = live.overlayOn ? t('try.hide') : t('try.show');
     liveToggleBtn.setAttribute('aria-pressed', live.overlayOn ? 'false' : 'true');
   }
 
@@ -1880,7 +2245,7 @@ function track(eventName, params) {
   function startLive(deviceId) {
     showLiveError('');
     if (!window.isSecureContext || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      showLiveError("This browser can't open the camera here. Use a current version of Chrome, Edge, Safari or Firefox on the site's https:// address, or use a photo instead.");
+      showLiveError('cam.unsupported');
       return;
     }
     stopLive();
@@ -1893,7 +2258,7 @@ function track(eventName, params) {
     liveViewport.style.display = 'block';
     liveViewport.classList.remove('no-face');
     syncStage();
-    setLiveStatus('Starting the camera…');
+    setLiveStatus(t('live.starting'));
 
     var size = { width: { ideal: 1280 }, height: { ideal: 720 } };
     var video = deviceId
@@ -1914,7 +2279,7 @@ function track(eventName, params) {
       if (token !== live.token) throw CANCELLED;
       if (liveVideo.videoWidth && liveVideo.videoHeight) liveViewport.style.setProperty('--cam-ar', liveVideo.videoWidth + ' / ' + liveVideo.videoHeight);
       stage = 'model';
-      setLiveStatus(liveLandmarkerPromise ? 'Loading face tracking…' : 'Loading face tracking. The first time can take a few seconds…');
+      setLiveStatus(liveLandmarkerPromise ? t('live.loading') : t('live.loadingFirst'));
       // the 3D renderer loads alongside the tracking model; it never blocks the start
       return Promise.all([getLiveLandmarker(), ensureRenderer()]);
     }).then(function (loaded) {
@@ -1949,7 +2314,7 @@ function track(eventName, params) {
       console.error('Live try-on failed to start (' + stage + ')', err);
       stopLive();
       if (stage === 'model') {
-        showLiveError("Couldn't load face tracking. Check the internet connection and try again, or use a photo instead.");
+        showLiveError('cam.model');
         return;
       }
       cameraPermissionState().then(function (state) { showLiveError(liveCameraErrorMessage(err, state)); });
@@ -2004,7 +2369,7 @@ function track(eventName, params) {
         live.filter.reset();
         if (r3) r3.clear();
         if (!live.noFace) { live.noFace = true; liveViewport.classList.add('no-face'); }
-        setLiveStatus('Move your face into the oval and look at the camera');
+        setLiveStatus(t('live.noFace'));
       } else if (r3 && now - live.lastSeen > FACE_BLINK_MS) {
         r3.clear();               // don't leave glasses floating where the face was
       }                           // (a one- or two-frame dropout keeps the last glasses: no flicker)
@@ -2013,15 +2378,15 @@ function track(eventName, params) {
     live.lastSeen = now;
     if (live.noFace) { live.noFace = false; liveViewport.classList.remove('no-face'); }
 
-    if (!activeFrameId) { if (r3) r3.clear(); setLiveStatus('Choose a frame to try it on'); return; }
-    if (!live.overlayOn) { if (r3) r3.clear(); setLiveStatus('Frame hidden. Choose Show frame to see it again'); return; }
+    if (!activeFrameId) { if (r3) r3.clear(); setLiveStatus(t('live.choose')); return; }
+    if (!live.overlayOn) { if (r3) r3.clear(); setLiveStatus(t('live.hidden')); return; }
 
     // 3D path: full head pose (turns, nods, tilts), perspective, occlusion
     if (r3 && ar.failedKey !== activeFrameId) {
       if (ar.frameKey !== activeFrameId) {
         r3.clear();
         arUseFrame(activeFrameId);
-        setLiveStatus('Preparing the frame…');
+        setLiveStatus(t('live.preparing'));
         return;
       }
       var pose3 = estimateHeadPose(lm, v.videoWidth, v.videoHeight);
@@ -2036,18 +2401,18 @@ function track(eventName, params) {
       r3.setSize(v.videoWidth, v.videoHeight);
       r3.renderFace(sm, lm);
       var turn = Math.abs(eulerFromMatrix(sm.R).yaw);
-      setLiveStatus(turn > 1.0 ? 'Turn back towards the camera' : '');
+      setLiveStatus(turn > 1.0 ? t('live.turnBack') : '');
       return;
     }
     if (r3) r3.clear();
 
     // 2D fallback (no WebGL, or this frame can't be built in 3D)
-    if (live.failedId === activeFrameId) { setLiveStatus("This frame can't be shown. Choose another"); return; }
-    if (live.frameId !== activeFrameId) { loadLiveFrame(activeFrameId); setLiveStatus('Loading the frame…'); return; }
+    if (live.failedId === activeFrameId) { setLiveStatus(t('live.cantShow')); return; }
+    if (live.frameId !== activeFrameId) { loadLiveFrame(activeFrameId); setLiveStatus(t('live.loadingFrame')); return; }
 
     var pose = live.smoother.update(raw, now);
-    var tf = frameTransform(live.frame, pose, liveFit.value / 100);
-    if (!tf) { setLiveStatus("This frame can't be shown. Choose another"); return; }
+    var tf = frameTransform(live.frame, pose, liveFit.value / 100 * trueSizeFactor(activeFrameId));
+    if (!tf) { setLiveStatus(t('live.cantShow')); return; }
     setLiveStatus('');
     drawFrame(g, live.frame.img, tf);
   }
@@ -2055,12 +2420,14 @@ function track(eventName, params) {
   function renderLiveStrip() {
     liveStrip.innerHTML = '';
     var q = normalizeSearch(liveSearch.value);
-    var list = catalogIndex.filter(function (e) {
+    var pool = catalogIndex;
+    if (pickerFilter === 'shortlist') pool = shortlist.map(findEntry).filter(function (e) { return e && !e.draft; });
+    var list = pool.filter(function (e) {
       if (!q) return true;
       var hay = searchText(e);
       return q.split(/\s+/).every(function (word) { return hay.indexOf(word) !== -1; });
     });
-    if (draftEntry) list = [draftEntry].concat(list);
+    if (draftEntry && pickerFilter !== 'shortlist') list = [draftEntry].concat(list);
     list.forEach(function (e) {
       var item = document.createElement('button');
       item.type = 'button';
@@ -2074,20 +2441,20 @@ function track(eventName, params) {
       img.src = e.thumbData;
       item.appendChild(img);
       var cap = document.createElement('span');
-      cap.textContent = e.draft ? 'Unsaved frame' : frameName(e);
+      cap.textContent = e.draft ? t('try.unsaved') : frameName(e);
       item.appendChild(cap);
-      var sz = sizeLabel(e.size);
+      var sz = sizeShort(e.size);
       if (sz) { var z = document.createElement('span'); z.className = 'item-size'; z.textContent = sz; item.appendChild(z); }
-      item.setAttribute('aria-label', 'Try on ' + describeFrame(e));
+      item.setAttribute('aria-label', t('card.tryon.aria', { name: describeFrame(e) }));
       item.addEventListener('click', function () { selectFrame(e.id); });
       liveStrip.appendChild(item);
     });
     liveStrip.style.display = list.length ? '' : 'none';
     if (catalogLoaded && !catalogIndex.length && !draftEntry) {
-      liveStripEmpty.textContent = 'There are no frames yet.';
+      liveStripEmpty.textContent = t('try.pick.empty');
       liveStripEmpty.style.display = 'block';
     } else if (catalogLoaded && !list.length) {
-      liveStripEmpty.textContent = 'No frames match that search.';
+      liveStripEmpty.textContent = t(pickerFilter === 'shortlist' ? 'try.pick.noneShortlist' : 'try.pick.none');
       liveStripEmpty.style.display = 'block';
     } else {
       liveStripEmpty.style.display = 'none';
@@ -2293,7 +2660,7 @@ function track(eventName, params) {
       if (activeFrameId === id) updateSelectedBanner();
       closeEditTags();
       if (view.name === 'detail' && view.id === id) renderDetail(id);
-      toast('Changes saved.');
+      toast(t('toast.saved'));
     }).catch(function (e) {
       console.error('Failed to save tags', e);
       saveTagsBtn.disabled = false;
@@ -2383,7 +2750,7 @@ function track(eventName, params) {
 
   // ---------- filtering, search and sorting ----------
 
-  var FACET_LABEL = { shape: 'Shape', color: 'Colour', gender: 'For', rim: 'Rim type' };
+  function facetLabel(k) { return t('facet.' + k); }
   var FACET_KEYS = ['shape', 'color', 'gender', 'rim'];
 
   function activeFilterCount() {
@@ -2417,8 +2784,8 @@ function track(eventName, params) {
     emptyCatalog.hidden = !(catalogLoaded && total === 0) && !catalogProblem;
     var n = activeFilterCount();
     filterCount.textContent = n ? String(n) : '';
-    filterToggleBtn.setAttribute('aria-label', n ? 'Filters, ' + n + ' active' : 'Filters');
-    filterDoneBtn.textContent = shown === 1 ? 'Show 1 frame' : 'Show ' + shown + ' frames';
+    filterToggleBtn.setAttribute('aria-label', n ? t('cat.filters.aria', { n: n }) : t('cat.filters'));
+    filterDoneBtn.textContent = tn('cat.show', shown);
     renderActiveFilters();
     updateCatalogNote(shown);
   }
@@ -2430,10 +2797,10 @@ function track(eventName, params) {
       catalogIndex.forEach(function (e) { if (frameMatchesFilters(e)) shown++; });
     }
     var filtering = activeFilterCount() > 0 || !!activeFilters.search;
-    if (!catalogLoaded) catalogNote.textContent = catalogProblem ? '' : 'Loading the catalogue…';
+    if (!catalogLoaded) catalogNote.textContent = catalogProblem ? '' : t('cat.loading');
     else if (!total) catalogNote.textContent = '';
-    else if (filtering) catalogNote.textContent = 'Showing ' + shown + ' of ' + total + ' frames';
-    else catalogNote.textContent = total + (total === 1 ? ' frame' : ' frames');
+    else if (filtering) catalogNote.textContent = t('cat.showing', { shown: shown, total: total });
+    else catalogNote.textContent = tn('cat.count', total);
   }
 
   function toggleFilter(facet, value) {
@@ -2458,8 +2825,8 @@ function track(eventName, params) {
     filterBar.innerHTML = '';
     var values = { shape: {}, color: {}, gender: {}, rim: {} };
     catalogIndex.forEach(function (e) {
-      var t = e.tags || {};
-      FACET_KEYS.forEach(function (k) { if (t[k]) values[k][t[k]] = (values[k][t[k]] || 0) + 1; });
+      var tg = e.tags || {};
+      FACET_KEYS.forEach(function (k) { if (tg[k]) values[k][tg[k]] = (values[k][tg[k]] || 0) + 1; });
     });
     var any = false;
     FACET_KEYS.forEach(function (k) {
@@ -2476,7 +2843,7 @@ function track(eventName, params) {
       var group = document.createElement('fieldset');
       group.className = 'filter-group';
       var legend = document.createElement('legend');
-      legend.textContent = FACET_LABEL[k];
+      legend.textContent = facetLabel(k);
       group.appendChild(legend);
       var row = document.createElement('div');
       row.className = 'chip-row';
@@ -2487,10 +2854,10 @@ function track(eventName, params) {
         chip.className = 'tag-chip' + (on ? ' active' : '');
         chip.dataset.facet = k; chip.dataset.value = v;
         chip.setAttribute('aria-pressed', on ? 'true' : 'false');
-        chip.textContent = labelize(v);
+        chip.textContent = tagLabel(v);
         var count = document.createElement('span');
         count.className = 'visually-hidden';
-        count.textContent = ', ' + values[k][v] + (values[k][v] === 1 ? ' frame' : ' frames');
+        count.textContent = tn('cat.chipCount', values[k][v]);
         chip.appendChild(count);
         chip.addEventListener('click', function () { toggleFilter(k, v); });
         row.appendChild(chip);
@@ -2501,7 +2868,7 @@ function track(eventName, params) {
     if (!any && catalogIndex.length) {
       var none = document.createElement('p');
       none.className = 'hint';
-      none.textContent = 'No tags to filter by yet. Use the search box instead.';
+      none.textContent = t('cat.noTags');
       filterBar.appendChild(none);
     }
     filterToggleBtn.hidden = !any;
@@ -2514,11 +2881,11 @@ function track(eventName, params) {
       activeFilters[k].forEach(function (v) {
         var chip = document.createElement('span');
         chip.className = 'tag-chip';
-        chip.appendChild(document.createTextNode(labelize(v)));
+        chip.appendChild(document.createTextNode(tagLabel(v)));
         var x = document.createElement('button');
         x.type = 'button';
         x.className = 'chip-x';
-        x.setAttribute('aria-label', 'Remove filter ' + FACET_LABEL[k] + ': ' + labelize(v));
+        x.setAttribute('aria-label', t('cat.removeFilter', { facet: facetLabel(k), value: tagLabel(v) }));
         x.textContent = '×';
         x.addEventListener('click', function () {
           toggleFilter(k, v);
@@ -2533,7 +2900,7 @@ function track(eventName, params) {
       var clear = document.createElement('button');
       clear.type = 'button';
       clear.className = 'link-btn';
-      clear.textContent = 'Clear all';
+      clear.textContent = t('cat.clearAll');
       clear.addEventListener('click', function () { clearAllFilters(); catalogSearch.focus(); });
       activeFiltersEl.appendChild(clear);
     }
@@ -2605,6 +2972,16 @@ function track(eventName, params) {
       img.src = entry.thumbData;
       media.appendChild(img);
       card.appendChild(media);
+      if (!selectMode) {
+        var heart = document.createElement('button');
+        heart.type = 'button';
+        heart.className = 'icon-btn heart-btn card-heart';
+        heart.setAttribute('data-heart', entry.id);
+        heart.innerHTML = heartSvg();
+        heart.addEventListener('click', function () { toggleShortlist(entry.id); });
+        syncHeart(heart, entry.id);
+        card.appendChild(heart);
+      }
 
       var body = document.createElement('div');
       body.className = 'frame-card-body';
@@ -2619,12 +2996,12 @@ function track(eventName, params) {
       });
       title.appendChild(link);
       body.appendChild(title);
-      var sizeText = sizeLabel(entry.size);
+      var sizeText = sizeShort(entry.size);
       if (sizeText) {
         var sz = document.createElement('div');
         sz.className = 'frame-card-size';
         sz.textContent = sizeText;
-        sz.setAttribute('aria-label', 'Size ' + sizeText.replace('□', ' by '));
+        sz.setAttribute('aria-label', sizeSpoken(entry.size));
         body.appendChild(sz);
       }
       var meta = frameMeta(entry);
@@ -2642,8 +3019,8 @@ function track(eventName, params) {
         var tryBtn = document.createElement('button');
         tryBtn.type = 'button';
         tryBtn.className = 'btn secondary frame-card-tryon';
-        tryBtn.textContent = 'Try on';
-        tryBtn.setAttribute('aria-label', 'Try on ' + frameName(entry));
+        tryBtn.textContent = t('card.tryon');
+        tryBtn.setAttribute('aria-label', t('card.tryon.aria', { name: frameName(entry) }));
         tryBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'auto'); });
         actions.appendChild(tryBtn);
         card.appendChild(actions);
@@ -2659,6 +3036,18 @@ function track(eventName, params) {
     applyFilters();
   }
 
+  function sizeShort(size) {
+    var sz = cleanSize(size);
+    if (!sz) return '';
+    return sz.eye && sz.bridge ? sizeLabel(sz) : sizeSpoken(sz);
+  }
+  // "lens width 52 mm, bridge 18 mm, temple 140 mm" (the □ sign isn't read out well)
+  function sizeSpoken(size) {
+    var sz = cleanSize(size);
+    if (!sz) return '';
+    return [sz.eye ? t('size.part.eye', { n: sz.eye }) : '', sz.bridge ? t('size.part.bridge', { n: sz.bridge }) : '', sz.temple ? t('size.part.temple', { n: sz.temple }) : ''].filter(Boolean).join(', ');
+  }
+
   function toggleSelected(id, card) {
     if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
     card.classList.toggle('selected', selectedIds.has(id));
@@ -2672,17 +3061,19 @@ function track(eventName, params) {
     catalogProblem = on;
     var h = emptyCatalog.querySelector('h2');
     if (on) {
-      h.textContent = "Couldn't load the frames";
-      emptyCatalogText.textContent = 'Check the internet connection, then try again.';
-      if (!emptyCatalog.querySelector('button')) {
-        var b = document.createElement('button');
-        b.type = 'button'; b.className = 'btn primary'; b.textContent = 'Try again';
-        b.addEventListener('click', function () { if (currentUser) { catalogNote.textContent = 'Loading the catalogue…'; loadCatalog(currentUser.uid); } });
+      h.textContent = t('cat.error.title');
+      emptyCatalogText.textContent = t('cat.error.text');
+      var b = emptyCatalog.querySelector('button');
+      if (!b) {
+        b = document.createElement('button');
+        b.type = 'button'; b.className = 'btn primary';
+        b.addEventListener('click', function () { if (currentUser) { catalogNote.textContent = t('cat.loading'); loadCatalog(currentUser.uid); } });
         emptyCatalog.appendChild(b);
       }
+      b.textContent = t('cat.error.retry');
     } else {
-      h.textContent = 'No frames yet';
-      emptyCatalogText.textContent = staff.on ? 'Add the first frame from Add frames.' : 'Frames added by staff will appear here.';
+      h.textContent = t('cat.empty.title');
+      emptyCatalogText.textContent = staff.on ? t('cat.empty.staff') : t('cat.empty.customer');
       var old = emptyCatalog.querySelector('button');
       if (old) old.parentNode.removeChild(old);
     }
@@ -2712,14 +3103,14 @@ function track(eventName, params) {
     if (s.eye) {
       svg.appendChild(el('path', { d: 'M18 22 H154 M18 16 V28 M154 16 V28', class: 'dim' }));
       svg.appendChild(el('text', { x: 86, y: 14, 'text-anchor': 'middle' }, String(s.eye)));
-      svg.appendChild(el('text', { x: 86, y: 128, 'text-anchor': 'middle', class: 'cap' }, 'lens width'));
+      svg.appendChild(el('text', { x: 86, y: 128, 'text-anchor': 'middle', class: 'cap' }, t('size.lensWidth')));
     }
     if (s.bridge) {
       svg.appendChild(el('path', { d: 'M154 36 H206 M154 30 V42 M206 30 V42', class: 'dim' }));
       svg.appendChild(el('text', { x: 180, y: 26, 'text-anchor': 'middle' }, String(s.bridge)));
-      svg.appendChild(el('text', { x: 180, y: 128, 'text-anchor': 'middle', class: 'cap' }, 'bridge'));
+      svg.appendChild(el('text', { x: 180, y: 128, 'text-anchor': 'middle', class: 'cap' }, t('size.bridge')));
     }
-    if (s.temple) svg.appendChild(el('text', { x: 274, y: 128, 'text-anchor': 'middle', class: 'cap' }, 'temple ' + s.temple));
+    if (s.temple) svg.appendChild(el('text', { x: 274, y: 128, 'text-anchor': 'middle', class: 'cap' }, t('size.temple', { n: s.temple })));
     wrap.appendChild(svg);
     var code = document.createElement('p');
     code.className = 'size-mark-code';
@@ -2727,11 +3118,7 @@ function track(eventName, params) {
     wrap.appendChild(code);
     var cap = document.createElement('figcaption');
     cap.className = 'size-mark-legend';
-    var parts = [];
-    if (s.eye) parts.push('lens width ' + s.eye + ' mm');
-    if (s.bridge) parts.push('bridge ' + s.bridge + ' mm');
-    if (s.temple) parts.push('temple ' + s.temple + ' mm');
-    cap.textContent = 'Size: ' + parts.join(', ') + '. Printed inside the temple.';
+    cap.textContent = t('size.caption', { parts: sizeSpoken(s) });
     wrap.appendChild(cap);
     return wrap;
   }
@@ -2752,26 +3139,28 @@ function track(eventName, params) {
         var wait = document.createElement('p');
         wait.className = 'page-count';
         wait.setAttribute('role', 'status');
-        wait.textContent = 'Loading the frame…';
+        wait.textContent = t('detail.loading');
         detailBody.appendChild(wait);
         detailMissing.hidden = true;
-        setTitle('Frame');
+        setTitle(t('title.frame'));
         return;
       }
       detailMissing.hidden = false;
-      setTitle('Frame not found');
+      setTitle(t('title.notFound'));
       return;
     }
     detailMissing.hidden = true;
     var name = frameName(entry);
     setTitle(name);
+    var tg = entry.tags || {};
+    var en = getLang() === 'en';
 
     var grid = document.createElement('div');
     grid.className = 'detail-grid';
     var media = document.createElement('div');
     media.className = 'detail-media';
     var img = document.createElement('img');
-    img.alt = name + (entry.tags && entry.tags.color ? ', ' + labelize(entry.tags.color).toLowerCase() : '');
+    img.alt = name + (tg.color && entry.name ? ', ' + (en ? tagLabel(tg.color).toLowerCase() : tagLabel(tg.color)) : '');
     img.src = entry.thumbData;
     media.appendChild(img);
     grid.appendChild(media);
@@ -2782,11 +3171,12 @@ function track(eventName, params) {
     h1.id = 'detailTitle';
     h1.textContent = name;
     info.appendChild(h1);
-    var t = entry.tags || {};
     var subBits = [];
-    if (entry.name && (t.color || t.shape)) subBits.push([t.color ? labelize(t.color) : '', t.shape ? labelize(t.shape).toLowerCase() : ''].filter(Boolean).join(' '));
+    if (entry.name && (tg.color || tg.shape)) {
+      subBits.push([tg.color ? tagLabel(tg.color) : '', tg.shape ? (en ? tagLabel(tg.shape).toLowerCase() : tagLabel(tg.shape)) : ''].filter(Boolean).join(' '));
+    }
     var meta = frameMeta(entry);
-    if (meta) subBits.push(subBits.length ? meta.charAt(0).toLowerCase() + meta.slice(1) : meta);
+    if (meta) subBits.push(subBits.length && en ? meta.charAt(0).toLowerCase() + meta.slice(1) : meta);
     if (subBits.length) {
       var sub = document.createElement('p');
       sub.className = 'detail-sub';
@@ -2803,13 +3193,13 @@ function track(eventName, params) {
       var dd = document.createElement('dd'); dd.textContent = value;
       dl.appendChild(dt); dl.appendChild(dd);
     }
-    attr('Shape', t.shape && labelize(t.shape));
-    attr('Colour', t.color && labelize(t.color));
-    attr('Rim', t.rim && labelize(t.rim));
-    attr('For', t.gender && labelize(t.gender));
-    if (entry.translucent != null && entry.prepared === 'auto') attr('Material', entry.translucent ? 'Translucent' : 'Solid');
-    if (t.free && t.free.length) attr('Tags', t.free.join(', '));
-    if (!mark) attr('Size', 'Not recorded. Ask staff to measure it.');
+    attr(t('attr.shape'), tg.shape && tagLabel(tg.shape));
+    attr(t('attr.colour'), tg.color && tagLabel(tg.color));
+    attr(t('attr.rim'), tg.rim && tagLabel(tg.rim));
+    attr(t('attr.for'), tg.gender && tagLabel(tg.gender));
+    if (entry.translucent != null && entry.prepared === 'auto') attr(t('attr.material'), t(entry.translucent ? 'material.translucent' : 'material.solid'));
+    if (tg.free && tg.free.length) attr(t('attr.tags'), tg.free.join(', '));
+    if (!mark) attr(t('attr.size'), t('attr.sizeMissing'));
 
     var actions = document.createElement('div');
     actions.className = 'detail-actions';
@@ -2817,29 +3207,45 @@ function track(eventName, params) {
     liveBtn.type = 'button';
     liveBtn.className = 'btn primary large';
     liveBtn.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="5" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m14 9 4-2.5v7L14 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
-    liveBtn.appendChild(document.createTextNode('Try on with the camera'));
+    liveBtn.appendChild(document.createTextNode(t('detail.tryCamera')));
     liveBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'live'); });
     var photoBtn = document.createElement('button');
     photoBtn.type = 'button';
     photoBtn.className = 'btn secondary large';
-    photoBtn.textContent = 'Try on with a photo';
+    photoBtn.textContent = t('detail.tryPhoto');
     photoBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'photo'); });
     actions.appendChild(liveBtn);
     actions.appendChild(photoBtn);
     info.appendChild(actions);
+    var heart = document.createElement('button');
+    heart.type = 'button';
+    heart.className = 'btn secondary heart-btn heart-text';
+    heart.setAttribute('data-heart', entry.id);
+    heart.innerHTML = heartSvg() + '<span class="heart-label"></span>';
+    heart.addEventListener('click', function () { toggleShortlist(entry.id); });
+    syncHeart(heart, entry.id);
+    info.appendChild(heart);
     var note = document.createElement('p');
     note.className = 'detail-note';
-    note.textContent = 'The camera view stays on this device. Try-on is a visual preview: try the frame on in the shop to check fit and comfort.';
+    note.textContent = t('detail.note');
     info.appendChild(note);
     // the try-on actions come first; the size and the details follow
-    if (mark) info.appendChild(mark);
+    if (mark) {
+      if (frameLensDistMm(entry)) {
+        var ts = document.createElement('p');
+        ts.className = 'size-mark-true';
+        ts.textContent = t('detail.trueSize');
+        mark.appendChild(ts);
+      }
+      info.appendChild(mark);
+    }
     if (dl.children.length) info.appendChild(dl);
 
     if (staff.on) {
       var tools = document.createElement('div');
       tools.className = 'staff-tools';
       var th = document.createElement('h2');
-      th.textContent = 'Staff tools';
+      th.textContent = t('staffTools.title');
       tools.appendChild(th);
       var prep = document.createElement('p');
       prep.className = 'hint staff-prepared';
@@ -2847,10 +3253,10 @@ function track(eventName, params) {
       tools.appendChild(prep);
       var row = document.createElement('div');
       row.className = 'row';
-      [['Edit details', function () { openEditTags(entry.id); }, 'secondary'],
-       ['Update photo', function () { enterReplaceMode(entry.id); }, 'secondary'],
-       [entry.hasSide ? 'Replace temple photo' : 'Add temple photo', function () { enterSideMode(entry.id); }, 'secondary'],
-       ['Delete frame', function () { removeFrame(entry.id); }, 'danger']].forEach(function (a) {
+      [[t('staffTools.edit'), function () { openEditTags(entry.id); }, 'secondary'],
+       [t('staffTools.photo'), function () { enterReplaceMode(entry.id); }, 'secondary'],
+       [entry.hasSide ? t('staffTools.replaceTemple') : t('staffTools.addTemple'), function () { enterSideMode(entry.id); }, 'secondary'],
+       [t('staffTools.delete'), function () { removeFrame(entry.id); }, 'danger']].forEach(function (a) {
         var b = document.createElement('button');
         b.type = 'button';
         b.className = 'btn small ' + a[2];
@@ -2874,10 +3280,8 @@ function track(eventName, params) {
       console.warn('No try-on picture for this frame', e);
       var msg = document.createElement('p');
       msg.className = 'detail-unavailable';
-      msg.textContent = staff.on
-        ? "Try-on isn't available for this frame: its try-on picture is missing. Use Update photo to prepare it again."
-        : "Try-on isn't available for this frame yet. Ask a member of staff to show it to you.";
-      actions.parentNode.replaceChild(msg, actions);
+      msg.textContent = staff.on ? t('detail.noAsset.staff') : t('detail.noAsset.customer');
+      if (actions.parentNode) actions.parentNode.replaceChild(msg, actions);
       note.textContent = '';
       entry.noAsset = true;
     });
@@ -2905,9 +3309,9 @@ function track(eventName, params) {
     var entry = findEntry(id);
     if (!currentUser || !entry) return;
     confirmAction({
-      title: 'Delete this frame?',
-      body: ['“' + frameName(entry) + '”, its photos and its try-on data will be removed from the catalogue. This can’t be undone.'],
-      ok: 'Delete frame', danger: true
+      title: t('del.title'),
+      body: [t('del.body', { name: frameName(entry) })],
+      ok: t('del.ok'), cancel: t('common.cancel'), danger: true
     }).then(function (yes) {
       if (!yes) return;
       var uid = currentUser.uid;
@@ -2932,11 +3336,12 @@ function track(eventName, params) {
         arForget(id);
         if (addTarget.kind === 'side' && addTarget.frameId === id) { discardPendingFrame(); exitSideMode(); }
         if (addTarget.kind === 'replace' && addTarget.frameId === id) { discardPendingFrame(); exitReplaceMode(); }
-        toast('Frame deleted.');
+        if (inShortlist(id)) { shortlist = shortlist.filter(function (x) { return x !== id; }); saveShortlist(); syncShortlistUi(); }
+        toast(t('del.done'));
         if (view.name === 'detail' && view.id === id) navigate({ name: 'browse', id: null }, { replace: true });
       }).catch(function (e) {
         console.error('Failed to delete frame', e);
-        toast("Couldn't delete the frame. Check the connection and try again.", 'error');
+        toast(t('del.fail'), 'error');
       });
     });
   }
@@ -2953,7 +3358,7 @@ function track(eventName, params) {
     var photoReady = faceHasImage && activeFrameId && facePoints.length >= 2;
     photoCatalogBtn.style.display = photoReady && inCatalog ? 'inline-flex' : 'none';
     photoToggleBtn.style.display = photoReady ? 'inline-flex' : 'none';
-    photoToggleBtn.textContent = photoOverlayOn ? 'Hide frame' : 'Show frame';
+    photoToggleBtn.textContent = photoOverlayOn ? t('try.hide') : t('try.show');
     photoToggleBtn.setAttribute('aria-pressed', photoOverlayOn ? 'false' : 'true');
   }
 
@@ -2988,7 +3393,8 @@ function track(eventName, params) {
   function loadPhotoCount(uid) {
     getDoc(doc(db, 'users', uid, 'stats', 'customerPhotos')).then(function (snap) {
       var count = (snap.exists() && snap.data().count) || 0;
-      photoCountDisplay.textContent = 'Customer try-on photos: ' + count + ' (all time)';
+      photoCountDisplay.textContent = t('staff.photoCount', { n: count });
+      photoCountDisplay.dataset.count = count;
     }).catch(function (e) { console.error('Could not load photo count', e); });
   }
 
@@ -3023,6 +3429,8 @@ function track(eventName, params) {
       renderLibrary();
       showCatalogProblem(false);
       updateTryOnHint();
+      pruneShortlist();
+      syncShortlistUi();
       renderLiveStrip();
       // a link straight to a frame or a try-on can only be honoured now
       if (view.name === 'detail') renderDetail(view.id);
@@ -4026,4 +4434,62 @@ function track(eventName, params) {
   });
 
   window.addEventListener('beforeunload', function () { stopStream(); stopFrameStream(); });
+
+  // ---------- language: English, हिंदी, मराठी ----------
+  // The choice is remembered on this device. Without one, the browser's own
+  // language decides (Hindi or Marathi), else English.
+  var langBar = document.getElementById('langBar');
+  var LANG_KEY = 'fts.lang';
+  function initialLang() {
+    try { var saved = localStorage.getItem(LANG_KEY); if (saved && hasLang(saved)) return saved; } catch (e) { /* storage blocked */ }
+    var prefs = (navigator.languages || [navigator.language || 'en']).map(function (l) { return String(l).slice(0, 2).toLowerCase(); });
+    for (var i = 0; i < prefs.length; i++) { if (prefs[i] === 'en') return 'en'; if (hasLang(prefs[i])) return prefs[i]; }
+    return 'en';
+  }
+  function useLanguage(code, remember) {
+    setLang(code);
+    document.documentElement.lang = getLang();
+    if (remember) { try { localStorage.setItem(LANG_KEY, getLang()); } catch (e) { /* storage blocked */ } }
+    langBar.querySelectorAll('.lang-btn').forEach(function (b) {
+      var on = b.getAttribute('data-lang') === getLang();
+      b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      b.classList.toggle('active', on);
+    });
+    applyStatic(document);
+    rerenderForLanguage();
+  }
+  // Everything drawn by code, redrawn in the new language.
+  function rerenderForLanguage() {
+    syncStaffLabels();
+    staffUnlockBtn.textContent = staffUnlockBtn.disabled ? t('staff.dialog.checking') : t('staff.dialog.unlock');
+    if (photoCountDisplay.dataset.count != null) photoCountDisplay.textContent = t('staff.photoCount', { n: photoCountDisplay.dataset.count });
+    if (authErrorKey) authError.textContent = t(authErrorKey);
+    if (staffError.classList.contains('show') && !staffPassword.value) staffError.textContent = '';
+    refreshTitle();
+    if (!currentUser) return;
+    if (catalogLoaded || catalogProblem) { rebuildFilterBar(); renderLibrary(); showCatalogProblem(catalogProblem); }
+    else updateCatalogNote();
+    if (view.name === 'detail') renderDetail(view.id);
+    syncTryonBack();
+    updateTryOnHint();
+    updateSelectedBanner();
+    renderLiveStrip();
+    syncLiveToggle();
+    updateCatalogButtons();
+    updateCalibBanner();
+    retakeBtn.textContent = faceHasImage ? t('try.replace') : t('common.cancel');
+    if (liveErrorKey) showLiveError(liveErrorKey);
+    if (photoErrorKey) showPhotoError(photoErrorKey);
+    if (pdErrorKey) showPdError(pdErrorKey);
+    if (pdValue != null && pdSplit.checked) pdTotal.textContent = t('pd.total', { pd: fmtMm(pdValue) });
+    syncPdStatus();
+    syncShortlistUi();
+    live.statusText = null;          // the live loop writes its status again in the new language
+  }
+  langBar.addEventListener('click', function (e) {
+    var b = e.target.closest('.lang-btn');
+    if (!b || b.getAttribute('data-lang') === getLang()) return;
+    useLanguage(b.getAttribute('data-lang'), true);
+  });
+  useLanguage(initialLang(), false);
 })();

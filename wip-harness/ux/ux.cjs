@@ -18,7 +18,8 @@ const VIEWPORTS = {
 };
 function fontCss() {
   const face = (fam, dir, w) => `@font-face{font-family:'${fam}';font-style:normal;font-weight:${w};font-display:swap;src:url(https://app.test/__fonts/${dir}/files/${dir}-latin-${w}-normal.woff2) format('woff2');}`;
-  return [400, 500, 600, 700].map(w => face('IBM Plex Sans', 'ibm-plex-sans', w)).concat([400, 500, 600].map(w => face('IBM Plex Mono', 'ibm-plex-mono', w))).join('\n');
+  const deva = w => `@font-face{font-family:'IBM Plex Sans Devanagari';font-style:normal;font-weight:${w};font-display:swap;src:url(https://app.test/__fonts/ibm-plex-sans-devanagari/files/ibm-plex-sans-devanagari-devanagari-${w}-normal.woff2) format('woff2');unicode-range:U+0900-097F,U+1CD0-1CF9,U+200C-200D,U+20A8,U+20B9,U+25CC,U+A830-A839,U+A8E0-A8FF;}`;
+  return [400, 500, 600, 700].map(w => face('IBM Plex Sans', 'ibm-plex-sans', w)).concat([400, 500, 600].map(w => face('IBM Plex Mono', 'ibm-plex-mono', w))).concat([400, 500, 600].map(deva)).join('\n');
 }
 const results = [];
 function check(name, ok, detail) { results.push({ name, ok: !!ok, detail: detail || '' }); console.log((ok ? 'PASS ' : 'FAIL ') + name + (detail ? '  — ' + detail : '')); }
@@ -35,14 +36,15 @@ async function newPage(browser, o) {
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => { if (m.type() === 'error' && !/^(W|I|E)\d{4}|INFO:|GL_INVALID|GPU stall/.test(m.text())) errors.push(m.text().slice(0, 300)); });
   page.on('request', r => requests.push(r.url()));
-  await page.addInitScript(([s, signedOut, deny]) => {
+  await page.addInitScript(([s, signedOut, deny, lang]) => {
     window.__seed = s; if (signedOut) window.__signedOut = true;
+    if (lang) { try { if (!localStorage.getItem('fts.lang')) localStorage.setItem('fts.lang', lang); } catch (e) {} }
     if (deny) {
       const err = () => Promise.reject(Object.assign(new Error('Permission denied'), { name: 'NotAllowedError' }));
       navigator.mediaDevices.getUserMedia = err;
       if (navigator.permissions) { const q = navigator.permissions.query.bind(navigator.permissions); navigator.permissions.query = d => d && d.name === 'camera' ? Promise.resolve({ state: 'denied' }) : q(d); }
     }
-  }, [SEEDS[o.seed || 'ux'], !!o.signedOut, !!o.denyCamera]);
+  }, [SEEDS[o.seed || 'ux'], !!o.signedOut, !!o.denyCamera, o.lang || null]);
   await page.route('**/*', r => H.route(r, async (u) => {
     if (u.host === 'www.gstatic.com' && u.pathname.includes('/firebasejs/')) return path.join(S, 'harness/mocks', path.basename(u.pathname));
     if (u.host === 'fonts.googleapis.com') { await r.fulfill({ contentType: 'text/css', body: fontCss() }); return true; }

@@ -9,22 +9,35 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%231C1F23' stroke-width='2.6'%3E%3Ccircle cx='9' cy='17' r='6'/%3E%3Ccircle cx='23' cy='17' r='6'/%3E%3Cpath d='M15 16q1-2 2 0'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=6">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css?v=7">
 </head>
 <body>
-  <a class="skip-link" href="#main">Skip to content</a>
+  <a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
+
+  <div class="lang-bar">
+    <div class="lang-inner" id="langBar" role="group" aria-label="Language" data-i18n-attr="aria-label:lang.label">
+      <button type="button" class="lang-btn" data-lang="en" lang="en" aria-pressed="true">English</button>
+      <button type="button" class="lang-btn" data-lang="hi" lang="hi" aria-pressed="false">हिंदी</button>
+      <button type="button" class="lang-btn" data-lang="mr" lang="mr" aria-pressed="false">मराठी</button>
+    </div>
+  </div>
 
   <header class="site-header">
     <div class="header-inner">
-      <a class="brand" href="#/" aria-label="Frame Try-On Studio, all frames">
+      <a class="brand" href="#/" aria-label="Frame Try-On Studio, all frames" data-i18n-attr="aria-label:brand.aria">
         <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="9" cy="17" r="6"/><circle cx="23" cy="17" r="6"/><path d="M15 16q1-2 2 0"/></g></svg>
         <span class="brand-name">Frame Try-On Studio</span>
       </a>
-      <nav class="main-nav" id="mainNav" aria-label="Main" hidden>
-        <a class="nav-link" id="tabBrowseBtn" href="#/">Frames</a>
-        <a class="nav-link" id="tabTryOnBtn" href="#/try-on">Try on</a>
-        <a class="nav-link staff-only" id="tabAddBtn" href="#/add">Add frames</a>
+      <nav class="main-nav" id="mainNav" aria-label="Main" data-i18n-attr="aria-label:nav.label" hidden>
+        <a class="nav-link" id="tabBrowseBtn" href="#/" data-i18n="nav.frames">Frames</a>
+        <a class="nav-link" id="tabTryOnBtn" href="#/try-on" data-i18n="nav.tryon">Try on</a>
+        <a class="nav-link nav-shortlist" id="tabShortlistBtn" href="#/shortlist" aria-label="Shortlist, empty">
+          <svg class="nav-heart" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16.6S3.6 12.9 3.6 8.2A3.3 3.3 0 0 1 10 6.6a3.3 3.3 0 0 1 6.4 1.6c0 4.7-6.4 8.4-6.4 8.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+          <span class="nav-text" data-i18n="nav.shortlist">Shortlist</span>
+          <span class="nav-count" id="shortlistCount" aria-hidden="true"></span>
+        </a>
+        <a class="nav-link staff-only" id="tabAddBtn" href="#/add" data-i18n="nav.add">Add frames</a>
       </nav>
       <div class="staff-wrap" id="staffWrap" hidden>
         <button class="staff-btn" id="staffBtn" type="button" aria-haspopup="true" aria-expanded="false">
@@ -32,11 +45,11 @@
           <span id="staffBtnLabel">Staff</span>
         </button>
         <div class="staff-menu" id="staffMenu" hidden>
-          <p class="staff-menu-who"><span>Signed in as</span> <strong id="userEmailLabel"></strong></p>
+          <p class="staff-menu-who"><span data-i18n="staff.signedInAs">Signed in as</span> <strong id="userEmailLabel"></strong></p>
           <p class="staff-menu-stat" id="photoCountDisplay"></p>
-          <a class="menu-item" href="#/add" id="menuAddLink">Add frames</a>
-          <button class="menu-item" type="button" id="staffLockBtn">Lock staff tools</button>
-          <button class="menu-item" type="button" id="signOutBtn">Sign out</button>
+          <a class="menu-item" href="#/add" id="menuAddLink" data-i18n="nav.add">Add frames</a>
+          <button class="menu-item" type="button" id="staffLockBtn" data-i18n="staff.lock">Lock staff tools</button>
+          <button class="menu-item" type="button" id="signOutBtn" data-i18n="staff.signOut">Sign out</button>
         </div>
       </div>
     </div>
@@ -52,20 +65,20 @@
 
     <!-- ================= SIGN IN ================= -->
     <section id="authGate" class="auth-wrap" style="display:none" aria-labelledby="authTitle">
-      <h1 id="authTitle">Sign in</h1>
-      <p class="lede">Sign in with the shop account to open the frame catalogue.</p>
+      <h1 id="authTitle" data-i18n="auth.title">Sign in</h1>
+      <p class="lede" data-i18n="auth.lede">Sign in with the shop account to open the frame catalogue.</p>
       <form id="authForm" novalidate>
         <div class="field">
-          <label for="authEmail">Email</label>
+          <label for="authEmail" data-i18n="auth.email">Email</label>
           <input type="email" id="authEmail" autocomplete="email" required>
         </div>
         <div class="field">
-          <label for="authPassword">Password</label>
+          <label for="authPassword" data-i18n="auth.password">Password</label>
           <input type="password" id="authPassword" autocomplete="current-password" required aria-describedby="authError">
         </div>
         <p class="form-error" id="authError" role="alert"></p>
-        <button type="submit" class="btn primary block" id="signInBtn">Sign in</button>
-        <p class="auth-alt">Setting up a new shop? <button type="button" class="link-btn" id="signUpBtn">Create an account</button> <span class="muted">(at least 6 characters)</span></p>
+        <button type="submit" class="btn primary block" id="signInBtn" data-i18n="auth.signIn">Sign in</button>
+        <p class="auth-alt"><span data-i18n="auth.newShop">Setting up a new shop?</span> <button type="button" class="link-btn" id="signUpBtn" data-i18n="auth.create">Create an account</button> <span class="muted" data-i18n="auth.min">(at least 6 characters)</span></p>
       </form>
     </section>
 
@@ -75,36 +88,36 @@
       <!-- ================= CATALOGUE ================= -->
       <section id="pageBrowse" class="page" aria-labelledby="browseTitle">
         <div class="page-head">
-          <h1 id="browseTitle">Frames</h1>
+          <h1 id="browseTitle" data-i18n="cat.title">Frames</h1>
           <p class="page-count" id="catalogNote" aria-live="polite">Loading the catalogue&hellip;</p>
         </div>
 
         <div class="catalog-tools" id="catalogTools">
           <div class="search-field">
             <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.6 12.6 17 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-            <label class="visually-hidden" for="catalogSearch">Search frames</label>
-            <input type="search" id="catalogSearch" placeholder="Search name, shape, colour, size" autocomplete="off" enterkeyhint="search">
+            <label class="visually-hidden" for="catalogSearch" data-i18n="cat.search.label">Search frames</label>
+            <input type="search" id="catalogSearch" placeholder="Search name, shape, colour, size" data-i18n-attr="placeholder:cat.search.ph" autocomplete="off" enterkeyhint="search">
           </div>
           <button class="btn secondary filter-toggle" id="filterToggleBtn" type="button" aria-expanded="false" aria-controls="filterPanel">
             <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 5h14M6 10h8M8.5 15h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-            Filters<span class="filter-count" id="filterCount"></span>
+            <span data-i18n="cat.filters">Filters</span><span class="filter-count" id="filterCount"></span>
           </button>
           <div class="sort-field">
-            <label for="sortSelect">Sort</label>
+            <label for="sortSelect" data-i18n="cat.sort">Sort</label>
             <select id="sortSelect">
-              <option value="new">Newest first</option>
-              <option value="old">Oldest first</option>
-              <option value="eye">Lens width, small to large</option>
+              <option value="new" data-i18n="cat.sort.new">Newest first</option>
+              <option value="old" data-i18n="cat.sort.old">Oldest first</option>
+              <option value="eye" data-i18n="cat.sort.eye">Lens width, small to large</option>
             </select>
           </div>
         </div>
-        <div class="active-filters" id="activeFilters" aria-label="Active filters"></div>
+        <div class="active-filters" id="activeFilters" aria-label="Active filters" data-i18n-attr="aria-label:cat.activeFilters"></div>
 
         <div class="catalog-layout">
-          <div class="filter-panel" id="filterPanel" role="region" aria-label="Filters">
+          <div class="filter-panel" id="filterPanel" role="region" aria-label="Filters" data-i18n-attr="aria-label:cat.filters">
             <div class="filter-panel-head">
-              <h2>Filters</h2>
-              <button class="link-btn" id="clearFiltersBtn" type="button">Clear all</button>
+              <h2 data-i18n="cat.filters">Filters</h2>
+              <button class="link-btn" id="clearFiltersBtn" type="button" data-i18n="cat.clearAll">Clear all</button>
             </div>
             <div id="filterBar"></div>
             <button class="btn primary block filter-done" id="filterDoneBtn" type="button">Show frames</button>
@@ -112,7 +125,7 @@
 
           <div class="catalog-main">
             <div class="staff-bar staff-only">
-              <button class="btn secondary small" id="selectModeBtn" type="button">Tag several frames</button>
+              <button class="btn secondary small" id="selectModeBtn" type="button" data-i18n="cat.tagSeveral">Tag several frames</button>
             </div>
             <div class="panel" id="bulkBar" style="display:none">
               <h2 class="panel-title" id="bulkCountLabel">0 selected</h2>
@@ -134,9 +147,9 @@
 
             <div class="library-row" id="libraryRow"></div>
             <div class="empty-state" id="noResults" hidden>
-              <h2>No frames match</h2>
-              <p>Try a different search or fewer filters.</p>
-              <button class="btn secondary" id="noResultsClearBtn" type="button">Clear search and filters</button>
+              <h2 data-i18n="cat.none.title">No frames match</h2>
+              <p data-i18n="cat.none.text">Try a different search or fewer filters.</p>
+              <button class="btn secondary" id="noResultsClearBtn" type="button" data-i18n="cat.none.clear">Clear search and filters</button>
             </div>
             <div class="empty-state" id="emptyCatalog" hidden>
               <h2>No frames yet</h2>
@@ -148,12 +161,12 @@
 
       <!-- ================= FRAME DETAILS ================= -->
       <section id="pageDetail" class="page" style="display:none" aria-labelledby="detailTitle">
-        <a class="back-link" id="detailBack" href="#/">All frames</a>
+        <a class="back-link" id="detailBack" href="#/" data-i18n="detail.back">All frames</a>
         <div id="detailBody"></div>
         <div class="empty-state" id="detailMissing" hidden>
-          <h1 id="detailMissingTitle">This frame isn't in the catalogue</h1>
-          <p>It may have been removed. Browse the other frames instead.</p>
-          <a class="btn primary" href="#/">See all frames</a>
+          <h1 id="detailMissingTitle" data-i18n="detail.missing.title">This frame isn't in the catalogue</h1>
+          <p data-i18n="detail.missing.text">It may have been removed. Browse the other frames instead.</p>
+          <a class="btn primary" href="#/" data-i18n="detail.missing.btn">See all frames</a>
         </div>
 
         <div class="panel staff-only" id="editTagsPanel" style="display:none">
@@ -213,34 +226,34 @@
         </div>
         <div class="tryon-head">
           <a class="back-link" id="tryonBack" href="#/">All frames</a>
-          <h1 id="tryonTitle">Try on</h1>
+          <h1 id="tryonTitle" data-i18n="try.title">Try on</h1>
         </div>
 
         <div class="tryon-layout">
           <div class="tryon-main">
             <div class="stage" id="tryonStage">
               <div class="stage-start" id="stageStart">
-                <h2>See frames on your face</h2>
-                <p>Start the camera for a live view that follows your head, or use a photo.</p>
+                <h2 data-i18n="try.start.title">See frames on your face</h2>
+                <p data-i18n="try.start.text">Start the camera for a live view that follows your head, or use a photo.</p>
                 <button class="btn primary large" id="liveStartBtn" type="button">
                   <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="5" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m14 9 4-2.5v7L14 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
-                  Start camera
+                  <span data-i18n="try.start.btn">Start camera</span>
                 </button>
-                <p class="fine" id="cameraNote">Your browser will ask to use the camera. The video stays on this device: nothing is recorded, saved or sent.</p>
+                <p class="fine" id="cameraNote" data-i18n="try.start.note">Your browser will ask to use the camera. The video stays on this device: nothing is recorded, saved or sent.</p>
                 <div class="start-photo">
-                  <span class="start-photo-label">Or use a photo</span>
+                  <span class="start-photo-label" data-i18n="try.photo.label">Or use a photo</span>
                   <div class="row center">
-                    <button class="btn secondary" id="uploadBtn" type="button">Upload a photo</button>
-                    <button class="btn secondary" id="cameraBtn" type="button">Take a photo</button>
+                    <button class="btn secondary" id="uploadBtn" type="button" data-i18n="try.photo.upload">Upload a photo</button>
+                    <button class="btn secondary" id="cameraBtn" type="button" data-i18n="try.photo.take">Take a photo</button>
                   </div>
-                  <p class="fine">JPEG, PNG or WebP. A clear, front-facing photo works best.</p>
+                  <p class="fine" data-i18n="try.photo.formats">JPEG, PNG or WebP. A clear, front-facing photo works best.</p>
                 </div>
                 <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp" hidden>
               </div>
 
               <div class="viewport live-viewport" id="liveViewport" style="display:none">
                 <video id="liveVideo" autoplay playsinline muted></video>
-                <canvas id="liveCanvas" aria-label="Live camera view with the frame"></canvas>
+                <canvas id="liveCanvas" aria-label="Live camera view with the frame" data-i18n-attr="aria-label:try.live.aria"></canvas>
                 <div class="face-guide" aria-hidden="true"></div>
                 <div class="live-status" id="liveStatus" role="status" aria-live="polite"></div>
               </div>
@@ -248,8 +261,8 @@
               <div class="viewport photo-viewport" id="viewport" style="display:none">
                 <div class="placeholder" id="placeholder" style="display:none"></div>
                 <video id="video" autoplay playsinline muted style="display:none"></video>
-                <div class="photo-stage" id="photoStage"><canvas id="canvas" style="display:none" aria-label="Your photo with the frame"></canvas></div>
-                <button class="btn primary capture-btn" id="captureBtn" type="button" style="display:none">Take photo</button>
+                <div class="photo-stage" id="photoStage"><canvas id="canvas" style="display:none" aria-label="Your photo with the frame" data-i18n-attr="aria-label:try.photo.aria"></canvas></div>
+                <button class="btn primary capture-btn" id="captureBtn" type="button" style="display:none" data-i18n="try.capture">Take photo</button>
               </div>
             </div>
 
@@ -258,29 +271,31 @@
             <p class="calib-banner" id="calibBanner" role="status"></p>
 
             <div class="stage-controls" id="liveControls">
-              <button class="btn secondary" id="liveStopBtn" type="button" style="display:none">Stop camera</button>
-              <button class="btn secondary" id="liveSwitchBtn" type="button" style="display:none">Switch camera</button>
+              <button class="btn secondary" id="liveStopBtn" type="button" style="display:none" data-i18n="try.stop">Stop camera</button>
+              <button class="btn secondary" id="liveSwitchBtn" type="button" style="display:none" data-i18n="try.switch">Switch camera</button>
               <button class="btn secondary" id="liveToggleBtn" type="button" style="display:none">Hide frame</button>
-              <button class="btn secondary" id="liveCatalogBtn" type="button" style="display:none">Frame details</button>
+              <button class="btn secondary" id="liveCatalogBtn" type="button" style="display:none" data-i18n="try.details">Frame details</button>
             </div>
             <div class="stage-controls" id="photoControls">
               <button class="btn secondary" id="retakeBtn" type="button" style="display:none">Replace photo</button>
-              <button class="btn secondary" id="photoLiveBtn" type="button" style="display:none">Use live camera</button>
+              <button class="btn secondary" id="photoLiveBtn" type="button" style="display:none" data-i18n="try.useLive">Use live camera</button>
               <button class="btn secondary" id="photoToggleBtn" type="button" style="display:none">Hide frame</button>
-              <button class="btn secondary" id="recalBtn" type="button" style="display:none">Mark pupils by hand</button>
-              <button class="btn secondary" id="photoCatalogBtn" type="button" style="display:none">Frame details</button>
+              <button class="btn secondary" id="recalBtn" type="button" style="display:none" data-i18n="try.manual">Mark pupils by hand</button>
+              <button class="btn secondary" id="photoCatalogBtn" type="button" style="display:none" data-i18n="try.details">Frame details</button>
             </div>
-            <p class="hint" id="liveTips">Hold the screen at arm's length in even light, with your whole face in view. Turn your head slowly to see the sides.</p>
+            <p class="hint" id="liveTips" data-i18n="try.tips">Hold the screen at arm's length in even light, with your whole face in view. Turn your head slowly to see the sides.</p>
           </div>
 
           <div class="tryon-side">
             <div class="current-frame" id="selectedBanner" style="display:none">
               <span class="current-thumb" id="selectedThumbWrap"></span>
               <div class="current-text">
-                <span class="current-label">Trying on</span>
+                <span class="current-label" data-i18n="try.current">Trying on</span>
                 <span class="current-name" id="selectedText"></span>
+                <span class="pd-badge" id="pdBadge"></span>
               </div>
-              <a class="btn secondary small" id="selectedDetailsLink" href="#/">Details</a>
+              <button class="icon-btn heart-btn" id="selectedHeartBtn" type="button" aria-pressed="false"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16.6S3.6 12.9 3.6 8.2A3.3 3.3 0 0 1 10 6.6a3.3 3.3 0 0 1 6.4 1.6c0 4.7-6.4 8.4-6.4 8.4z"/></svg></button>
+              <a class="btn secondary small" id="selectedDetailsLink" href="#/" data-i18n="try.currentDetails">Details</a>
             </div>
             <div class="no-selection-note" id="noSelectionNote" style="display:none">
               <span id="noSelectionText"></span>
@@ -288,51 +303,90 @@
             </div>
 
             <div id="liveStripWrap">
-              <h2 class="side-title" id="pickerTitle">Choose a frame</h2>
+              <h2 class="side-title" id="pickerTitle" data-i18n="try.pick.title">Choose a frame</h2>
+              <div class="picker-filter" id="pickerFilter" role="group" aria-label="Which frames to show" data-i18n-attr="aria-label:try.pick.which" hidden>
+                <button type="button" class="tag-chip" id="pickAllBtn" aria-pressed="true" data-i18n="try.pick.all">All frames</button>
+                <button type="button" class="tag-chip" id="pickShortlistBtn" aria-pressed="false"></button>
+              </div>
               <div class="search-field compact">
                 <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="8.5" cy="8.5" r="5.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M12.6 12.6 17 17" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-                <input type="search" id="liveSearch" placeholder="Search frames" aria-label="Search frames to try on" autocomplete="off">
+                <input type="search" id="liveSearch" placeholder="Search frames" aria-label="Search frames to try on" data-i18n-attr="placeholder:try.pick.search, aria-label:try.pick.searchAria" autocomplete="off">
               </div>
               <div class="picker" id="liveStrip" role="group" aria-labelledby="pickerTitle"></div>
               <p class="hint" id="liveStripEmpty" style="display:none">No frames match that search.</p>
             </div>
 
+            <section class="pd-panel" id="pdPanel" aria-labelledby="pdTitle">
+              <h2 class="side-title" id="pdTitle" data-i18n="pd.title">True size from your eye test</h2>
+              <p class="hint" data-i18n="pd.text">Enter your PD, the distance between your pupils. It is on your eye test report as PD or IPD. Ask staff if you are not sure.</p>
+              <div class="pd-single" id="pdSingle">
+                <label for="pdInput" data-i18n="pd.label">PD (mm)</label>
+                <input type="number" id="pdInput" class="pd-input" min="50" max="80" step="0.5" inputmode="decimal" placeholder="63" aria-describedby="pdError pdStatus">
+              </div>
+              <label class="check-row"><input type="checkbox" id="pdSplit"> <span data-i18n="pd.split">My report shows two numbers (right and left eye)</span></label>
+              <div class="pd-split-row" id="pdSplitRow" hidden>
+                <label><span data-i18n="pd.right">Right eye (mm)</span><input type="number" id="pdRight" class="pd-input" min="25" max="40" step="0.5" inputmode="decimal" placeholder="31.5" aria-describedby="pdError pdStatus"></label>
+                <label><span data-i18n="pd.left">Left eye (mm)</span><input type="number" id="pdLeft" class="pd-input" min="25" max="40" step="0.5" inputmode="decimal" placeholder="31.5" aria-describedby="pdError pdStatus"></label>
+                <p class="pd-total" id="pdTotal"></p>
+              </div>
+              <p class="form-error" id="pdError" role="alert"></p>
+              <div class="pd-foot">
+                <p class="pd-status" id="pdStatus" aria-live="polite"></p>
+                <button type="button" class="btn secondary small" id="pdClearBtn" data-i18n="pd.clear" hidden>Clear</button>
+              </div>
+            </section>
+
             <details class="adjust" id="adjustBox" hidden>
-              <summary>Adjust size</summary>
+              <summary data-i18n="adj.title">Adjust size</summary>
               <div class="fit-row" id="liveFitRow" style="display:none">
-                <label class="slider-label" for="liveFit">Frame size <span class="val" id="liveFitVal">100%</span></label>
+                <label class="slider-label" for="liveFit"><span data-i18n="adj.size">Frame size</span> <span class="val" id="liveFitVal">100%</span></label>
                 <input type="range" id="liveFit" min="70" max="130" value="100">
-                <div class="pd-row">
-                  <label for="livePd">Pupil distance (PD), mm</label>
-                  <input type="number" id="livePd" class="pd-input" min="50" max="80" step="0.5" placeholder="63" inputmode="decimal" aria-describedby="pdHint">
-                </div>
               </div>
               <div class="fit-row" id="fitRow" style="display:none">
-                <label class="slider-label" for="fitSize">Frame size <span class="val" id="fitSizeVal">100%</span></label>
+                <label class="slider-label" for="fitSize"><span data-i18n="adj.size">Frame size</span> <span class="val" id="fitSizeVal">100%</span></label>
                 <input type="range" id="fitSize" min="70" max="130" value="100">
-                <div class="pd-row">
-                  <label for="photoPd">Pupil distance (PD), mm</label>
-                  <input type="number" id="photoPd" class="pd-input" min="50" max="80" step="0.5" placeholder="63" inputmode="decimal" aria-describedby="pdHint">
-                </div>
               </div>
-              <p class="hint" id="pdHint">If you know your PD from an eye test, enter it: frames with a recorded size are then shown at their true size. Otherwise the adult average (63 mm) is used.</p>
             </details>
 
-            <p class="preview-note">This is a visual preview. Fit and comfort are best checked by trying the frame on in the shop.</p>
+            <p class="preview-note" data-i18n="try.previewNote">This is a visual preview. Fit and comfort are best checked by trying the frame on in the shop.</p>
           </div>
+        </div>
+      </section>
+
+      <!-- ================= SHORTLIST ================= -->
+      <section id="pageShortlist" class="page" style="display:none" aria-labelledby="shortlistTitle">
+        <div class="page-head">
+          <h1 id="shortlistTitle" data-i18n="sl.title">Your shortlist</h1>
+          <p class="page-count" id="shortlistNote" aria-live="polite"></p>
+        </div>
+        <div id="shortlistFilled">
+          <p class="lede" data-i18n="sl.lede">Compare the frames you liked. Show this list to a member of staff to try them on in person.</p>
+          <div class="row">
+            <button class="btn primary" id="shortlistTryBtn" type="button" data-i18n="sl.tryThese">Try these on</button>
+            <button class="btn secondary" id="shortlistClearBtn" type="button" data-i18n="sl.clear">Clear shortlist</button>
+          </div>
+          <h2 class="section-title" id="compareTitle" data-i18n="sl.compare">Side-by-side comparison</h2>
+          <p class="hint compare-hint" id="compareHint" data-i18n="sl.compareHint">Swipe sideways to see every frame.</p>
+          <div class="compare-wrap" id="compareWrap" role="region" aria-labelledby="compareTitle" tabindex="0"></div>
+        </div>
+        <div class="empty-state" id="shortlistEmpty" hidden>
+          <h2 data-i18n="sl.empty.title">Your shortlist is empty</h2>
+          <p data-i18n="sl.empty.text">Tap the heart on any frame to keep it here and compare.</p>
+          <a class="btn primary" href="#/" data-i18n="sl.empty.btn">Browse frames</a>
         </div>
       </section>
 
       <!-- ================= ADD FRAMES (staff) ================= -->
       <section id="pageAdd" class="page" style="display:none" aria-labelledby="addTitle">
         <div class="page-head">
-          <h1 id="addTitle">Add frames</h1>
+          <h1 id="addTitle" data-i18n="add.title">Add frames</h1>
         </div>
         <div class="staff-locked" id="addLocked" hidden>
-          <p>Adding and editing frames is for shop staff.</p>
-          <button class="btn primary" id="addUnlockBtn" type="button">Unlock staff tools</button>
+          <p data-i18n="add.locked">Adding and editing frames is for shop staff.</p>
+          <button class="btn primary" id="addUnlockBtn" type="button" data-i18n="add.unlock">Unlock staff tools</button>
         </div>
         <div id="addContent">
+        <p class="hint lang-note" id="addLangNote" data-i18n="add.englishOnly"></p>
         <div class="selected-banner side-target" id="sideTarget">
           <span id="sideTargetThumb"></span>
           <span class="sel-text" id="sideTargetText">Temple photo</span>
@@ -475,10 +529,10 @@
 
   <footer class="site-footer" id="siteFooter">
     <div class="footer-inner">
-      <p>Virtual try-on is a visual preview, not a fitting. Try frames on in the shop to check fit and comfort.</p>
+      <p data-i18n="footer.preview">Virtual try-on is a visual preview, not a fitting. Try frames on in the shop to check fit and comfort.</p>
       <details>
-        <summary>How the camera and photos are used</summary>
-        <p>Face tracking runs in this browser. Camera video and photos stay on this device: they are not recorded, saved or sent anywhere, and the camera turns off when you leave the try-on page. The shop uses Google Analytics to count how the site is used, for example how often frames are tried on; no photos, video or face data are included.</p>
+        <summary data-i18n="footer.privacy.title">How the camera and photos are used</summary>
+        <p data-i18n="footer.privacy.text">Face tracking runs in this browser. Camera video and photos stay on this device: they are not recorded, saved or sent anywhere, and the camera turns off when you leave the try-on page. Your shortlist and PD are kept only until you leave the screen for a while. The shop uses Google Analytics to count how the site is used, for example how often frames are tried on; no photos, video or face data are included.</p>
       </details>
     </div>
   </footer>
@@ -486,18 +540,18 @@
   <!-- staff unlock -->
   <dialog class="dialog" id="staffDialog" aria-labelledby="staffDialogTitle">
     <form id="staffForm" novalidate>
-      <h2 id="staffDialogTitle">Staff tools</h2>
-      <p>Enter the shop account password to add, edit or delete frames.</p>
+      <h2 id="staffDialogTitle" data-i18n="staff.dialog.title">Staff tools</h2>
+      <p data-i18n="staff.dialog.text">Enter the shop account password to add, edit or delete frames.</p>
       <div class="field">
-        <label for="staffPassword">Password</label>
+        <label for="staffPassword" data-i18n="staff.dialog.password">Password</label>
         <input type="password" id="staffPassword" autocomplete="current-password" required aria-describedby="staffError">
       </div>
       <p class="form-error" id="staffError" role="alert"></p>
-      <label class="check-row"><input type="checkbox" id="staffKeep"> Keep staff tools unlocked on this device</label>
-      <p class="hint">Leave this off on a shared shop screen: the tools then lock again after 15 minutes without use.</p>
+      <label class="check-row"><input type="checkbox" id="staffKeep"> <span data-i18n="staff.dialog.keep">Keep staff tools unlocked on this device</span></label>
+      <p class="hint" data-i18n="staff.dialog.hint">Leave this off on a shared shop screen: the tools then lock again after 15 minutes without use.</p>
       <div class="dialog-actions">
-        <button type="submit" class="btn primary" id="staffUnlockBtn">Unlock</button>
-        <button type="button" class="btn secondary" id="staffCancelBtn">Cancel</button>
+        <button type="submit" class="btn primary" id="staffUnlockBtn" data-i18n="staff.dialog.unlock">Unlock</button>
+        <button type="button" class="btn secondary" id="staffCancelBtn" data-i18n="common.cancel">Cancel</button>
       </div>
     </form>
   </dialog>
@@ -514,6 +568,6 @@
 
   <div class="toast-region" id="toastRegion" role="status" aria-live="polite"></div>
 
-  <script type="module" src="app.js?v=8"></script>
+  <script type="module" src="app.js?v=9"></script>
 </body>
 </html>
