@@ -37,7 +37,7 @@ service cloud.firestore {
     function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
     function optStr(m, k, max) { return !(k in m) || m[k] == null || str(m[k], 0, max); }
     function optHttps(m, k) {
-      return !(k in m) || m[k] == null || m[k] == '' || (str(m[k], 9, 300) && m[k].matches('https://[^\\s<>"]+'));
+      return !(k in m) || m[k] == null || m[k] == '' || (str(m[k], 9, 300) && m[k].matches('https://[^[:space:]<>"]+'));
     }
     function phoneLike(m, k) {
       return !(k in m) || m[k] == null || m[k] == '' || (str(m[k], 6, 20) && m[k].matches('[+0-9 ()-]+'));
@@ -226,7 +226,7 @@ service cloud.firestore {
         && img.path is string
         && img.path.matches('shops/' + shopId + '/products/' + productId + '/(assets|source)/[A-Za-z0-9._-]{1,80}')
         && (!('url' in img) || (allowUrl && str(img.url, 10, 1500)
-              && img.url.matches('(https://firebasestorage\\.googleapis\\.com/|http://(127\\.0\\.0\\.1|localhost):9199/)[^\\s<>"]+')))
+              && img.url.matches('(https://firebasestorage[.]googleapis[.]com/|http://(127[.]0[.]0[.]1|localhost):9199/)[^[:space:]<>"]+')))
         && (!('bytes' in img) || (img.bytes is int && img.bytes >= 0 && img.bytes <= 20000000));
     }
     function validImages(p, productId) {
