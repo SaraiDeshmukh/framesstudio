@@ -1,63 +1,37 @@
-import { firebaseConfig } from './firebase-config.js';
-import { initializeApp } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js";
-import {
-  getAuth, createUserWithEmailAndPassword, signInWithEmailAndPassword,
-  onAuthStateChanged, signOut, EmailAuthProvider, reauthenticateWithCredential
-} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js";
-import {
-  getFirestore, doc, setDoc, getDoc, updateDoc, deleteDoc, collection, getDocs, serverTimestamp, increment
-} from "https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js";
-import { getAnalytics, isSupported, logEvent } from "https://www.gstatic.com/firebasejs/12.18.0/firebase-analytics.js";
+import { CONFIGURED } from './firebase-init.js';
+import * as backend from './backend.js';
 import { PoseSmoother, poseFromLandmarks, frameTransform, drawFrame } from './tracking.js';
 import { estimateHeadPose, HeadPoseFilter, eulerFromMatrix } from './headpose.js';
 import { cleanSize, sizeLabel } from './frame-size.js';
 import { LANGS, t, tn, getLang, setLang, hasLang, tagLabel, tagAdjective, tagLabelsAll, applyStatic } from './i18n.js';
+import './i18n-platform.js';
+import { DEMO_FRAMES } from './demo/catalog.js';
+import { priceView, formatINR, formatRate } from './pricing.js';
+import { whatsappLink, telLink, REPORT_REASONS } from './validation.js';
+import { buildFit as buildFitFrom, makeManifest, manifestOk } from './asset-build.js';
+import { checkPhoto } from './photo-quality.js';
 
 // Heavy parts load only when they're needed, never just because the catalogue
 // was opened: face tracking (MediaPipe, pinned to a tested version; its JS and
 // WASM must match) and the 3D renderer when try-on starts, the photo extraction
-// when staff add a frame.
+// when a shop adds a frame, and the shop/admin dashboards when they're opened.
 var MEDIAPIPE_URL = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35";
 var DEFAULT_PD_MM = 63;   // adult average (same value as ar-renderer.js)
-var visionModule = null, rendererModule = null, extractModule = null;
+var visionModule = null, rendererModule = null, extractModule = null, partnerModule = null, adminModule = null;
 function loadVision() { return visionModule || (visionModule = import(MEDIAPIPE_URL).catch(function (e) { visionModule = null; throw e; })); }
 function loadRenderer() { return rendererModule || (rendererModule = import('./ar-renderer.js').catch(function (e) { rendererModule = null; throw e; })); }
 function loadExtract() { return extractModule || (extractModule = import('./frame-extract.js').catch(function (e) { extractModule = null; throw e; })); }
+function loadPartner() { return partnerModule || (partnerModule = import('./partner.js?v=1').catch(function (e) { partnerModule = null; throw e; })); }
+function loadAdmin() { return adminModule || (adminModule = import('./admin.js?v=1').catch(function (e) { adminModule = null; throw e; })); }
 function createTryOnRenderer() { return loadRenderer().then(function (m) { return m.createTryOnRenderer(); }); }
 
-// No Firebase Storage — images live directly inside Firestore documents, so this
-// app runs entirely on the free Spark plan. No billing account needed.
-//
-// No customer photo is ever written to the account either: this is a single shared
-// login used at the counter for many different people, so the photo stays purely
-// in-memory for the current visit and is discarded the moment it's replaced or the
-// page is closed.
-
-var CONFIGURED = firebaseConfig.apiKey && firebaseConfig.apiKey.indexOf('YOUR_') !== 0;
-var setupNotice = document.getElementById('setupNotice');
-var authGate = document.getElementById('authGate');
-
-if (!CONFIGURED) {
-  setupNotice.style.display = 'block';
-  throw new Error('firebase-config.js still has placeholder values.');
-}
-
-var app = initializeApp(firebaseConfig);
-var auth = getAuth(app);
-var db = getFirestore(app);
-
-// Analytics is initialized only after confirming the browser supports it (per
-// Firebase's own guidance), and every call site below is guarded so a missing or
-// unsupported Analytics instance can never break the actual try-on functionality.
-var analytics = null;
-isSupported().then(function (supported) {
-  if (supported) analytics = getAnalytics(app);
-}).catch(function () {});
-
-function track(eventName, params) {
-  if (!analytics) return;
-  try { logEvent(analytics, eventName, params || {}); } catch (e) { /* analytics must never break the app */ }
-}
+// Privacy, in short (details in legal/privacy.html and README):
+// - Customers never sign in. Their camera video and any photo they choose are
+//   processed in this tab only: nothing here uploads, stores, captures or shares
+//   them, and the in-memory copies are cleared when they leave the try-on.
+// - The only uploads the site makes are a partner shop's FRAME photos, from the
+//   Add frames page, signed in, into that shop's own folder (see storage.rules).
+// - No analytics or advertising scripts.
 
 (function () {
   var MAX_FACE_DIM = 800;
@@ -96,89 +70,80 @@ function track(eventName, params) {
     });
   }
 
-  // ---------- auth elements ----------
-  var appShell = document.getElementById('appShell');
-  var authForm = document.getElementById('authForm');
-  var authEmail = document.getElementById('authEmail');
-  var authPassword = document.getElementById('authPassword');
-  var authError = document.getElementById('authError');
-  var signUpBtn = document.getElementById('signUpBtn');
-  var signOutBtn = document.getElementById('signOutBtn');
+  // ---------- accounts (shops and the admin only; customers never sign in) ----------
+  var accountBtn = document.getElementById('accountBtn');
+  var accountMenu = document.getElementById('accountMenu');
+  var partnerLink = document.getElementById('partnerLink');
   var userEmailLabel = document.getElementById('userEmailLabel');
-  var mainNav = document.getElementById('mainNav');
-  var staffWrap = document.getElementById('staffWrap');
+  var menuAdmin = document.getElementById('menuAdmin');
+  var signOutBtn = document.getElementById('signOutBtn');
+  var announcementEl = document.getElementById('announcement');
 
-  var currentUser = null;
+  var currentUser = null;        // a signed-in shop owner or admin (never a customer)
+  var account = { isAdmin: false, checked: false };
 
-  function friendlyAuthError(err) {
-    var map = {
-      'auth/email-already-in-use': 'auth.err.inUse',
-      'auth/wrong-password': 'auth.err.wrong',
-      'auth/invalid-credential': 'auth.err.invalid',
-      'auth/invalid-login-credentials': 'auth.err.invalid',
-      'auth/weak-password': 'auth.err.weak',
-      'auth/invalid-email': 'auth.err.email',
-      'auth/missing-email': 'auth.err.noEmail',
-      'auth/user-not-found': 'auth.err.noUser',
-      'auth/missing-password': 'auth.err.noPass',
-      'auth/too-many-requests': 'auth.err.many',
-      'auth/network-request-failed': 'auth.err.network'
-    };
-    return map[err && err.code] || 'auth.err.other';
+  function syncAccountUi() {
+    var signedIn = backend.isRealUser(currentUser);
+    accountBtn.hidden = !signedIn;
+    partnerLink.hidden = signedIn;
+    userEmailLabel.textContent = signedIn ? (currentUser.email || '') : '';
+    menuAdmin.hidden = !(signedIn && account.isAdmin);
+    if (!signedIn) closeAccountMenu();
   }
-
-  // takes a text key (or a Firebase error); remembered so a language change re-renders it
-  var authErrorKey = null;
-  function showAuthError(err) {
-    authErrorKey = typeof err === 'string' ? err : friendlyAuthError(err);
-    authError.textContent = t(authErrorKey);
-    authError.style.display = 'block';
+  function openAccountMenu() {
+    accountMenu.hidden = false;
+    accountBtn.setAttribute('aria-expanded', 'true');
+    var first = accountMenu.querySelector('.menu-item');
+    if (first) first.focus();
   }
-
-  authForm.addEventListener('submit', function (e) {
-    e.preventDefault();
-    authError.style.display = 'none'; authErrorKey = null;
-    if (!authEmail.value.trim()) { showAuthError('auth.err.noEmail'); authEmail.focus(); return; }
-    if (!authPassword.value) { showAuthError('auth.err.noPass'); authPassword.focus(); return; }
-    signInWithEmailAndPassword(auth, authEmail.value.trim(), authPassword.value).catch(showAuthError);
+  function closeAccountMenu() {
+    if (accountMenu.hidden) return;
+    accountMenu.hidden = true;
+    accountBtn.setAttribute('aria-expanded', 'false');
+  }
+  accountBtn.addEventListener('click', function () { if (accountMenu.hidden) openAccountMenu(); else closeAccountMenu(); });
+  accountMenu.addEventListener('click', function (e) { if (e.target.closest('a')) closeAccountMenu(); });
+  document.addEventListener('click', function (e) { if (!accountMenu.hidden && !accountMenu.contains(e.target) && !accountBtn.contains(e.target)) closeAccountMenu(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !accountMenu.hidden) { closeAccountMenu(); accountBtn.focus(); } });
+  signOutBtn.addEventListener('click', function () {
+    closeAccountMenu();
+    endCustomerSession();
+    backend.signOutUser().then(function () {
+      toast(t('acct.signedOut'));
+      if (view.name === 'partner' || view.name === 'admin' || view.name === 'add') navigate({ name: 'home', id: null }, { replace: true });
+    });
   });
 
-  signUpBtn.addEventListener('click', function () {
-    authError.style.display = 'none'; authErrorKey = null;
-    var email = authEmail.value.trim(), pass = authPassword.value;
-    if (!email || pass.length < 6) {
-      showAuthError('auth.err.create');
-      return;
+  // On a shared shop screen a dashboard left signed in signs itself out after
+  // 30 minutes without use, unless "Keep me signed in on this device" was ticked.
+  var ACCOUNT_IDLE_MS = 30 * 60 * 1000, accountLastActive = Date.now();
+  ['pointerdown', 'keydown'].forEach(function (type) { document.addEventListener(type, function () { accountLastActive = Date.now(); }, true); });
+  setInterval(function () {
+    if (backend.isRealUser(currentUser) && !backendKeep() && Date.now() - accountLastActive > ACCOUNT_IDLE_MS) {
+      backend.signOutUser().then(function () { toast(t('acct.idleOut')); if (view.name === 'partner' || view.name === 'admin' || view.name === 'add') navigate({ name: 'home', id: null }, { replace: true }); });
     }
-    createUserWithEmailAndPassword(auth, email, pass).catch(showAuthError);
+  }, 60000);
+  function backendKeep() { try { return localStorage.getItem('fts.keepSignedIn') === '1'; } catch (e) { return false; } }
+
+  backend.onAuth(function (user) {
+    var before = currentUser ? currentUser.uid : null;
+    currentUser = user && !user.isAnonymous ? user : null;
+    account = { isAdmin: false, checked: false };
+    syncAccountUi();
+    var check = currentUser ? backend.checkAdmin(currentUser.uid) : Promise.resolve(false);
+    check.then(function (isAdmin) {
+      account = { isAdmin: !!isAdmin, checked: true };
+      syncAccountUi();
+      if ((currentUser ? currentUser.uid : null) !== before || view.name === 'partner' || view.name === 'admin' || view.name === 'add') {
+        if (view.name === 'partner' || view.name === 'admin' || view.name === 'add') renderRoute(parseHash(), { force: true });
+      }
+    });
   });
 
-  signOutBtn.addEventListener('click', function () { closeStaffMenu(); setStaff(false); endCustomerSession(); signOut(auth); });
-
-  onAuthStateChanged(auth, function (user) {
-    currentUser = user;
-    if (user) {
-      authGate.style.display = 'none';
-      appShell.style.display = 'block';
-      mainNav.hidden = false; staffWrap.hidden = false;
-      userEmailLabel.textContent = user.email;
-      resetLocalState();
-      restoreShortlist();
-      restoreStaff();
-      view = { name: null, id: null };
-      renderRoute(parseHash(), { initial: true });
-      loadCatalog(user.uid);
-      loadPhotoCount(user.uid);
-    } else {
-      stopLive();
-      setStaff(false, false, true);
-      appShell.style.display = 'none';
-      mainNav.hidden = true; staffWrap.hidden = true;
-      authGate.style.display = 'block';
-      view = { name: 'signin', id: null };
-      setTitle(t('title.signIn'));
-    }
-  });
+  // An announcement from the admin (platform settings), shown on every page.
+  backend.getConfig && CONFIGURED && backend.getConfig('platform').then(function (cfg) {
+    if (cfg && cfg.announcement) { announcementEl.textContent = cfg.announcement; announcementEl.hidden = false; }
+  }).catch(function () {});
 
   // ---------- small UI helpers: notifications and confirmations ----------
   var toastRegion = document.getElementById('toastRegion');
@@ -230,135 +195,34 @@ function track(eventName, params) {
     });
   }
 
-  // ---------- staff mode ----------
-  // A shared shop screen: customers browse and try on; adding, editing and
-  // deleting frames needs the account password again. Staff can keep the tools
-  // unlocked on their own device; otherwise they lock after 15 minutes idle.
-  var staffBtn = document.getElementById('staffBtn');
-  var staffBtnLabel = document.getElementById('staffBtnLabel');
-  var staffLockShackle = document.getElementById('staffLockShackle');
-  var staffMenu = document.getElementById('staffMenu');
-  var staffLockBtn = document.getElementById('staffLockBtn');
-  var menuAddLink = document.getElementById('menuAddLink');
-  var staffDialog = document.getElementById('staffDialog');
-  var staffForm = document.getElementById('staffForm');
-  var staffPassword = document.getElementById('staffPassword');
-  var staffKeep = document.getElementById('staffKeep');
-  var staffError = document.getElementById('staffError');
-  var staffUnlockBtn = document.getElementById('staffUnlockBtn');
-  var staffCancelBtn = document.getElementById('staffCancelBtn');
-  var STAFF_IDLE_MS = 15 * 60 * 1000;
-  var staff = { on: false, keep: false, lastActive: 0, after: null };
-
-  function staffKey() { return 'fts.staffKeep.' + (currentUser ? currentUser.uid : ''); }
-  function setStaff(on, keep, silent) {
-    var was = staff.on;
-    staff.on = !!on; staff.keep = !!(on && keep);
-    staff.lastActive = Date.now();
-    document.body.classList.toggle('staff', staff.on);
-    try { if (currentUser) { if (staff.keep) localStorage.setItem(staffKey(), '1'); else localStorage.removeItem(staffKey()); } } catch (e) { /* storage blocked: tools just lock with the session */ }
-    syncStaffLabels();
-    staffBtn.setAttribute('aria-haspopup', staff.on ? 'true' : 'dialog');
-    staffLockShackle.setAttribute('d', staff.on ? 'M7 9V6.5a3 3 0 0 1 5.6-1.5' : 'M7 9V6.5a3 3 0 0 1 6 0V9');
-    if (!staff.on) {
-      closeStaffMenu();
-      if (selectMode) exitSelectMode();
-      if (editingFrameId) closeEditTags();
-    }
-    syncAddLock();
-    if (was !== staff.on && view.name === 'detail') renderDetail(view.id);
-    if (was && !staff.on && !silent) toast(t('staff.locked'));
-  }
-  function syncStaffLabels() {
-    staffBtnLabel.textContent = staff.on ? t('staff.btnOn') : t('staff.btn');
-    staffBtn.setAttribute('aria-label', staff.on ? t('staff.aria.menu') : t('staff.aria.unlock'));
-  }
-  function restoreStaff() {
-    var keep = false;
-    try { keep = localStorage.getItem(staffKey()) === '1'; } catch (e) { keep = false; }
-    setStaff(keep, keep, true);
-  }
-  function openStaffDialog(after) {
-    staff.after = after || null;
-    staffError.classList.remove('show'); staffError.textContent = '';
-    staffPassword.value = ''; staffKeep.checked = false;
-    if (staffDialog.showModal) staffDialog.showModal(); else staffDialog.setAttribute('open', '');
-    staffPassword.focus();
-  }
-  function closeStaffDialog() { if (staffDialog.open) staffDialog.close(); }
-  function staffAuthError(err) {
-    var code = err && err.code;
-    if (code === 'auth/wrong-password' || code === 'auth/invalid-credential' || code === 'auth/invalid-login-credentials') return t('staff.err.wrong');
-    if (code === 'auth/too-many-requests') return t('staff.err.many');
-    if (code === 'auth/network-request-failed') return t('staff.err.network');
-    return t('staff.err.other');
-  }
-  staffForm.addEventListener('submit', function (e) {
-    e.preventDefault();
-    if (!currentUser) return;
-    if (!staffPassword.value) { staffError.textContent = t('staff.err.empty'); staffError.classList.add('show'); staffPassword.focus(); return; }
-    staffUnlockBtn.disabled = true;
-    staffUnlockBtn.textContent = t('staff.dialog.checking');
-    var cred = EmailAuthProvider.credential(currentUser.email, staffPassword.value);
-    reauthenticateWithCredential(auth.currentUser, cred).then(function () {
-      setStaff(true, staffKeep.checked);
-      closeStaffDialog();
-      toast(staffKeep.checked ? t('staff.unlockedDevice') : t('staff.unlockedSession'));
-      var after = staff.after; staff.after = null;
-      if (after) after();
-    }).catch(function (err) {
-      staffError.textContent = staffAuthError(err);
-      staffError.classList.add('show');
-      staffPassword.select();
-    }).then(function () { staffUnlockBtn.disabled = false; staffUnlockBtn.textContent = t('staff.dialog.unlock'); });
-  });
-  staffCancelBtn.addEventListener('click', function () { staff.after = null; closeStaffDialog(); staffBtn.focus(); });
-  staffDialog.addEventListener('close', function () { staffPassword.value = ''; });
-
-  function openStaffMenu() {
-    staffMenu.hidden = false;
-    staffBtn.setAttribute('aria-expanded', 'true');
-    var first = staffMenu.querySelector('.menu-item');
-    if (first) first.focus();
-  }
-  function closeStaffMenu() {
-    if (staffMenu.hidden) return;
-    staffMenu.hidden = true;
-    staffBtn.setAttribute('aria-expanded', 'false');
-  }
-  staffBtn.addEventListener('click', function () {
-    if (!staff.on) { openStaffDialog(); return; }
-    if (staffMenu.hidden) openStaffMenu(); else closeStaffMenu();
-  });
-  staffLockBtn.addEventListener('click', function () { setStaff(false); staffBtn.focus(); });
-  menuAddLink.addEventListener('click', function () { closeStaffMenu(); });
-  document.addEventListener('click', function (e) { if (!staffMenu.hidden && !staffMenu.contains(e.target) && !staffBtn.contains(e.target)) closeStaffMenu(); });
-  document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && !staffMenu.hidden) { closeStaffMenu(); staffBtn.focus(); } });
-  ['pointerdown', 'keydown'].forEach(function (t) { document.addEventListener(t, function () { if (staff.on) staff.lastActive = Date.now(); }, true); });
-  setInterval(function () {
-    if (staff.on && !staff.keep && Date.now() - staff.lastActive > STAFF_IDLE_MS) {
-      setStaff(false, false, true);
-      toast(t('staff.lockedIdle'));
-    }
-  }, 30000);
-
   // ---------- views and addresses ----------
-  // Each view has its own address (#/, #/frame/<id>, #/try-on/<id>, #/add), so a
-  // refresh keeps the customer where they were and Back works as expected.
+  // Each view has its own address, so a refresh keeps people where they were
+  // and Back works as expected:
+  //   #/                 home, with the demo
+  //   #/demo             the demo frames      #/shops         participating shops
+  //   #/shop/<id>        a shop's frames      #/frame/<id>    a frame's page
+  //   #/try-on/<id>      try-on               #/shortlist
+  //   #/partner/...      the shop dashboard   #/admin/...     the admin dashboard
+  //   #/add/<productId>[/side]  a shop's photo step for one of its products
   var tabBrowseBtn = document.getElementById('tabBrowseBtn');
   var tabTryOnBtn = document.getElementById('tabTryOnBtn');
-  var tabAddBtn = document.getElementById('tabAddBtn');
+  var tabShopsBtn = document.getElementById('tabShopsBtn');
+  var pageHome = document.getElementById('pageHome');
+  var pageShops = document.getElementById('pageShops');
+  var pagePartner = document.getElementById('pagePartner');
+  var pageAdmin = document.getElementById('pageAdmin');
   var pageBrowse = document.getElementById('pageBrowse');
   var pageDetail = document.getElementById('pageDetail');
   var pageTryOn = document.getElementById('pageTryOn');
   var pageShortlist = document.getElementById('pageShortlist');
   var tabShortlistBtn = document.getElementById('tabShortlistBtn');
-  var photoCountDisplay = document.getElementById('photoCountDisplay');
   var pageAdd = document.getElementById('pageAdd');
   var addLocked = document.getElementById('addLocked');
   var addContent = document.getElementById('addContent');
-  var addUnlockBtn = document.getElementById('addUnlockBtn');
   var tryonBack = document.getElementById('tryonBack');
+  var detailBack = document.getElementById('detailBack');
+  var browseTitle = document.getElementById('browseTitle');
+  var browseIntro = document.getElementById('browseIntro');
 
   var view = { name: null, id: null };
   var catalogLoaded = false;
@@ -377,12 +241,18 @@ function track(eventName, params) {
     var r;
     if (parts[0] === 'frame' && parts[1]) r = { name: 'detail', id: parts[1] };
     else if (parts[0] === 'try-on') r = { name: 'tryon', id: parts[1] || null };
-    else if (parts[0] === 'add') r = { name: 'add', id: null };
+    else if (parts[0] === 'add') r = { name: 'add', id: parts[1] || null, sub: parts[2] || null };
     else if (parts[0] === 'shortlist') r = { name: 'shortlist', id: null };
-    else r = { name: 'browse', id: null };
+    else if (parts[0] === 'demo') r = { name: 'browse', id: null, source: 'demo' };
+    else if (parts[0] === 'shop' && parts[1]) r = { name: 'browse', id: null, source: 'shop:' + parts[1] };
+    else if (parts[0] === 'shops') r = { name: 'shops', id: null };
+    else if (parts[0] === 'partner') r = { name: 'partner', id: parts[1] || null, sub: parts[2] || null };
+    else if (parts[0] === 'admin') r = { name: 'admin', id: parts[1] || null };
+    else r = { name: 'home', id: null };
     if (query) {
       var m = /(?:^|&)pd=([0-9]+(?:[.,][0-9]+)?)/.exec(query);
       if (m) r.pd = parseFloat(m[1].replace(',', '.'));
+      if (/(?:^|&)kiosk=1(?:&|$)/.test(query)) r.kiosk = true;
       r.hadQuery = true;
     }
     return r;
@@ -390,8 +260,12 @@ function track(eventName, params) {
   function hashFor(r) {
     if (r.name === 'detail') return '#/frame/' + encodeURIComponent(r.id);
     if (r.name === 'tryon') return '#/try-on' + (r.id ? '/' + encodeURIComponent(r.id) : '');
-    if (r.name === 'add') return '#/add';
+    if (r.name === 'add') return '#/add' + (r.id ? '/' + encodeURIComponent(r.id) + (r.sub ? '/' + r.sub : '') : '');
     if (r.name === 'shortlist') return '#/shortlist';
+    if (r.name === 'browse') return r.source && r.source.indexOf('shop:') === 0 ? '#/shop/' + encodeURIComponent(r.source.slice(5)) : '#/demo';
+    if (r.name === 'shops') return '#/shops';
+    if (r.name === 'partner') return '#/partner' + (r.id ? '/' + encodeURIComponent(r.id) + (r.sub ? '/' + encodeURIComponent(r.sub) : '') : '');
+    if (r.name === 'admin') return '#/admin' + (r.id ? '/' + encodeURIComponent(r.id) : '');
     return '#/';
   }
   function navigate(r, opts) {
@@ -405,40 +279,75 @@ function track(eventName, params) {
   function onAddressChange() { renderRoute(parseHash()); }
   function takeQuery(r) {
     if (!r.hadQuery) return;
+    if (r.kiosk) setKiosk(r.source);
     history.replaceState(null, '', hashFor(r));
     if (r.pd != null) applyPdFromLink(r.pd);
   }
   window.addEventListener('popstate', onAddressChange);
   window.addEventListener('hashchange', onAddressChange);
 
+  // Kiosk: a shop's screen opened at #/shop/<id>?kiosk=1 stays on that shop
+  // (the logo and "Frames" lead back to it) for this browser tab.
+  var kioskSource = null;
+  try { kioskSource = sessionStorage.getItem('fts.kiosk') || null; } catch (e) { kioskSource = null; }
+  function setKiosk(source) {
+    if (!source || source.indexOf('shop:') !== 0) return;
+    kioskSource = source;
+    try { sessionStorage.setItem('fts.kiosk', source); } catch (e) { /* tab only */ }
+    syncKiosk();
+  }
+  function syncKiosk() {
+    document.body.classList.toggle('kiosk', !!kioskSource);
+    var brand = document.getElementById('brandLink');
+    if (brand) brand.href = kioskSource ? hashFor({ name: 'browse', source: kioskSource }) : '#/';
+    tabBrowseBtn.href = kioskSource ? hashFor({ name: 'browse', source: kioskSource }) : '#/demo';
+    tabBrowseBtn.textContent = t(kioskSource ? 'nav.frames' : 'nav.demo');
+  }
+
   function setTitle(title) { document.title = (title ? title + ' | ' : '') + 'Frame Try-On Studio'; }
   // the page title for the current view, in the current language
   function refreshTitle() {
-    if (view.name === 'browse') setTitle(t('title.frames'));
+    if (view.name === 'home') setTitle('');
+    else if (view.name === 'browse') setTitle(sourceTitle());
     else if (view.name === 'detail') { var e = findEntry(view.id); setTitle(e && !e.draft ? frameName(e) : t(catalogLoaded ? 'title.notFound' : 'title.frame')); }
     else if (view.name === 'tryon') setTitle(t('title.tryon'));
-    else if (view.name === 'add') setTitle(t('title.add'));
+    else if (view.name === 'add') setTitle(t('add.titleProduct'));
     else if (view.name === 'shortlist') setTitle(t('title.shortlist'));
-    else if (view.name === 'signin') setTitle(t('title.signIn'));
+    else if (view.name === 'shops') setTitle(t('shops.title'));
+    else if (view.name === 'partner') setTitle(t('partner.title'));
+    else if (view.name === 'admin') setTitle(t('admin.title'));
   }
 
   function renderRoute(r, opts) {
-    if (!currentUser) return;
     opts = opts || {};
     takeQuery(r);
-    var same = view.name === r.name && (view.id || null) === (r.id || null);
+    var same = view.name === r.name && (view.id || null) === (r.id || null) && (view.source || null) === (r.source || null) && (view.sub || null) === (r.sub || null);
     if (same && !opts.force) return;
     var prev = view.name;
     if (prev === 'browse' && r.name !== 'browse') catalogScrollY = window.scrollY;
-    view = { name: r.name, id: r.id || null };
+    view = { name: r.name, id: r.id || null, source: r.source || null, sub: r.sub || null };
     showView(r.name);
-    if (r.name === 'browse') {
-      setTitle(t('title.frames'));
+    if (r.name === 'home') {
+      setTitle('');
+      renderHome();
+      window.scrollTo(0, 0);
+    } else if (r.name === 'browse') {
+      useSource(r.source || 'demo');
+      setTitle(sourceTitle());
       requestAnimationFrame(function () { window.scrollTo(0, prev && prev !== 'browse' ? catalogScrollY : 0); });
     } else if (r.name === 'detail') {
+      ensureEntry(r.id).then(function () { if (view.name === 'detail' && view.id === r.id) renderDetail(r.id); });
       renderDetail(r.id);
       window.scrollTo(0, 0);
     } else if (r.name === 'tryon') {
+      if (!sourceKey) useSource(kioskSource || 'demo');
+      if (r.id) {
+        ensureEntry(r.id).then(function () {
+          if (view.name !== 'tryon' || view.id !== r.id) return;
+          if (r.id !== activeFrameId && findEntry(r.id)) selectFrame(r.id, { keepUrl: true });
+          syncTryonBack(); updateSelectedBanner(); updateTryOnHint(); renderLiveStrip();
+        });
+      }
       if (r.id && r.id !== activeFrameId && findEntry(r.id)) selectFrame(r.id, { keepUrl: true });
       if (opts.from) tryonFrom = opts.from;
       else if (prev !== 'tryon') tryonFrom = prev === 'detail' ? (r.id || activeFrameId) : null;
@@ -446,38 +355,50 @@ function track(eventName, params) {
       setTitle(t('title.tryon'));
       if (prev !== 'tryon') window.scrollTo(0, 0);
     } else if (r.name === 'add') {
-      setTitle(t('title.add'));
-      syncAddLock();
+      setTitle(t('add.titleProduct'));
+      openAddRoute(r);
       window.scrollTo(0, 0);
     } else if (r.name === 'shortlist') {
       setTitle(t('title.shortlist'));
       renderShortlistPage();
       window.scrollTo(0, 0);
+    } else if (r.name === 'shops') {
+      setTitle(t('shops.title'));
+      renderShops();
+      window.scrollTo(0, 0);
+    } else if (r.name === 'partner') {
+      setTitle(t('partner.title'));
+      openPartner(r);
+      if (prev !== 'partner' || !r.id) window.scrollTo(0, 0);
+    } else if (r.name === 'admin') {
+      setTitle(t('admin.title'));
+      openAdmin(r);
+      window.scrollTo(0, 0);
     }
     if (!opts.initial && prev) {
-      var page = { browse: pageBrowse, detail: pageDetail, tryon: pageTryOn, add: pageAdd, shortlist: pageShortlist }[r.name];
+      var page = { browse: pageBrowse, detail: pageDetail, tryon: pageTryOn, add: pageAdd, shortlist: pageShortlist, shops: pageShops }[r.name];
       var h1 = page && page.querySelector('h1:not([hidden])');
       if (h1 && (r.name !== 'browse')) { h1.setAttribute('tabindex', '-1'); h1.focus({ preventScroll: true }); }
     }
   }
 
   function showView(name) {
-    pageBrowse.style.display = name === 'browse' ? 'block' : 'none';
-    pageDetail.style.display = name === 'detail' ? 'block' : 'none';
-    pageTryOn.style.display = name === 'tryon' ? 'block' : 'none';
-    pageAdd.style.display = name === 'add' ? 'block' : 'none';
-    pageShortlist.style.display = name === 'shortlist' ? 'block' : 'none';
-    [[tabBrowseBtn, name === 'browse' || name === 'detail'], [tabTryOnBtn, name === 'tryon'], [tabShortlistBtn, name === 'shortlist'], [tabAddBtn, name === 'add']].forEach(function (pair) {
+    var pages = { home: pageHome, shops: pageShops, partner: pagePartner, admin: pageAdmin, browse: pageBrowse, detail: pageDetail, tryon: pageTryOn, add: pageAdd, shortlist: pageShortlist };
+    Object.keys(pages).forEach(function (k) { pages[k].style.display = name === k ? 'block' : 'none'; });
+    [[tabBrowseBtn, name === 'browse' || name === 'detail'], [tabTryOnBtn, name === 'tryon'], [tabShortlistBtn, name === 'shortlist'], [tabShopsBtn, name === 'shops']].forEach(function (pair) {
       if (pair[1]) pair[0].setAttribute('aria-current', 'page'); else pair[0].removeAttribute('aria-current');
     });
     if (name === 'tryon') { updateTryOnHint(); updateSelectedBanner(); renderLiveStrip(); syncStage(); }
-    if (name !== 'tryon') { stopLive(); stopStream(); }  // never leave a camera running in the background
+    if (name !== 'tryon') { stopLive(); stopStream(); if (faceHasImage) retakeFace(); clearFacePixels(); }  // never leave a camera running, or a face photo in memory, in the background
     if (name !== 'tryon' && draftEntry) endDraftPreview(false);
-    if (name !== 'detail' && editingFrameId) closeEditTags();
+    if (name !== 'add') stopFrameStream();
   }
 
   // Internal callers still think in tabs.
-  function showTab(name) { navigate({ name: name, id: null }); }
+  function showTab(name) {
+    if (name === 'browse') { navigate({ name: 'browse', source: sourceKey || kioskSource || 'demo' }); return; }
+    navigate({ name: name, id: null });
+  }
 
   function syncTryonBack() {
     var from = tryonFrom && tryonFrom !== DRAFT_ID ? findEntry(tryonFrom) : null;
@@ -485,28 +406,18 @@ function track(eventName, params) {
       tryonBack.textContent = t('try.backTo', { name: frameName(from) });
       tryonBack.href = hashFor({ name: 'detail', id: from.id });
     } else {
-      tryonBack.textContent = t('try.allFrames');
-      tryonBack.href = '#/';
+      tryonBack.textContent = t(sourceKey && sourceKey !== 'demo' ? 'try.allShopFrames' : 'try.allDemo');
+      tryonBack.href = hashFor({ name: 'browse', source: sourceKey || kioskSource || 'demo' });
     }
   }
-
-  function syncAddLock() {
-    var locked = !staff.on;
-    addLocked.hidden = !locked;
-    addContent.hidden = locked;
-    if (locked && view.name === 'add') { stopFrameStream(); }
-  }
-  addUnlockBtn.addEventListener('click', function () { openStaffDialog(function () { syncAddLock(); }); });
 
   // ---------- try-on/face elements ----------
   var video = document.getElementById('video');
   var canvas = document.getElementById('canvas');
   var ctx = canvas.getContext('2d');
   var placeholder = document.getElementById('placeholder');
-  var cameraBtn = document.getElementById('cameraBtn');
   var uploadBtn = document.getElementById('uploadBtn');
   var fileInput = document.getElementById('fileInput');
-  var captureBtn = document.getElementById('captureBtn');
   var calibBanner = document.getElementById('calibBanner');
   var recalBtn = document.getElementById('recalBtn');
   var photoCatalogBtn = document.getElementById('photoCatalogBtn');
@@ -575,33 +486,19 @@ function track(eventName, params) {
   var emptyCatalogText = document.getElementById('emptyCatalogText');
   var detailBody = document.getElementById('detailBody');
   var detailMissing = document.getElementById('detailMissing');
-  var bulkError = document.getElementById('bulkError');
-  var editError = document.getElementById('editError');
-  var editNameInput = document.getElementById('editNameInput');
-  var frameNameInput = document.getElementById('frameNameInput');
 
-  // ---------- select mode / bulk edit elements ----------
-  var selectModeBtn = document.getElementById('selectModeBtn');
-  var bulkBar = document.getElementById('bulkBar');
-  var bulkCountLabel = document.getElementById('bulkCountLabel');
-  var bulkShapeChips = document.getElementById('bulkShapeChips');
-  var bulkColorChips = document.getElementById('bulkColorChips');
-  var bulkGenderChips = document.getElementById('bulkGenderChips');
-  var bulkRimChips = document.getElementById('bulkRimChips');
-  var applyBulkBtn = document.getElementById('applyBulkBtn');
-  var exitSelectModeBtn = document.getElementById('exitSelectModeBtn');
-
-  // ---------- single-frame edit elements ----------
-  var editTagsPanel = document.getElementById('editTagsPanel');
-  var editThumbWrap = document.getElementById('editThumbWrap');
-  var editShapeChips = document.getElementById('editShapeChips');
-  var editColorChips = document.getElementById('editColorChips');
-  var editGenderChips = document.getElementById('editGenderChips');
-  var editRimChips = document.getElementById('editRimChips');
-  var editFreeTagInput = document.getElementById('editFreeTagInput');
-  var editFreeTagList = document.getElementById('editFreeTagList');
-  var saveTagsBtn = document.getElementById('saveTagsBtn');
-  var cancelEditTagsBtn = document.getElementById('cancelEditTagsBtn');
+  // ---------- home, shops, report ----------
+  var homeDemoRow = document.getElementById('homeDemoRow');
+  var homeShopRow = document.getElementById('homeShopRow');
+  var shopsGrid = document.getElementById('shopsGrid');
+  var shopsNote = document.getElementById('shopsNote');
+  var reportDialog = document.getElementById('reportDialog');
+  var reportForm = document.getElementById('reportForm');
+  var reportReasons = document.getElementById('reportReasons');
+  var reportNote = document.getElementById('reportNote');
+  var reportError = document.getElementById('reportError');
+  var reportSend = document.getElementById('reportSend');
+  var reportCancel = document.getElementById('reportCancel');
 
   // ---------- add-frame elements ----------
   var frameSourceChooser = document.getElementById('frameSourceChooser');
@@ -613,6 +510,14 @@ function track(eventName, params) {
   var frameVideo = document.getElementById('frameVideo');
   var frameCaptureBtn = document.getElementById('frameCaptureBtn');
   var addedMsg = document.getElementById('addedMsg');
+  var photoGuide = document.getElementById('photoGuide');
+  var photoCheck = document.getElementById('photoCheck');
+  var saveNoTryonBtn = document.getElementById('saveNoTryonBtn');
+  var addProductBar = document.getElementById('addProductBar');
+  var addProductThumb = document.getElementById('addProductThumb');
+  var addProductName = document.getElementById('addProductName');
+  var addProductBack = document.getElementById('addProductBack');
+  var frameNameInput = document.getElementById('frameNameInput');
 
   var toleranceRow = document.getElementById('toleranceRow');
   var bgModeAutoBtn = document.getElementById('bgModeAutoBtn');
@@ -692,18 +597,25 @@ function track(eventName, params) {
 
   var frameStream = null;
 
-  var catalogIndex = [];      // [{id, thumbData, tags}]  -- light, from users/{uid}/frames
-  var fullDataCache = {};     // id -> {img, p1, p2}       -- heavy, lazy-loaded from users/{uid}/framesFull
+  // The catalogue being shown (the demo, or one shop's published frames), and
+  // every frame loaded so far from any source (a shortlist can mix shops).
+  var catalogIndex = [];      // entries of the current source
+  var entryMap = {};          // id -> entry, every source loaded this visit
+  var sourceKey = null;       // 'demo' | 'shop:<shopId>'
+  var sourceShop = null;      // the shop's public profile, for 'shop:' sources
+  var shopCache = {};         // shopId -> Promise<public profile | null>
+  var fullDataCache = {};     // id -> {img, p1, p2, fit} -- the try-on asset, loaded when a frame is tried
   var activeFrameId = null;
   var allFreeTags = new Set();
   var activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
 
   var pendingRawCanvas = null;
   var pendingBgOnlyCanvas = null; // the empty-surface reference photo, only used in two-shot mode
-  var pendingAiRemovedCanvas = null; // the remove.bg result, only used in AI mode
+  // (The old remove.bg option sent frame photos to an outside service; it's gone:
+  // everything below runs on the shop's own device.)
+  var pendingAiRemovedCanvas = null;
   var aiRemovalLoading = false;
-  var REMOVEBG_WORKER_URL = 'https://removebg-proxy.thesaraideshmukh.workers.dev/';
-  var bgRemovalMode = 'auto'; // 'auto' | 'single' | 'twoShot' | 'ai'
+  var bgRemovalMode = 'auto'; // 'auto' | 'single' | 'twoShot'
   // Automatic extraction (frame-extract.js) of the photo being added: its result
   // is cached per set of options, so brush strokes don't re-run it.
   var auto = { result: null, key: '', busy: false, rim: 'auto', trans: 'auto', level: null, calibManual: false, token: 0 };
@@ -723,25 +635,10 @@ function track(eventName, params) {
   var ERASE_DRAG_THRESHOLD = 6;
   var ERASE_BRUSH_RADIUS = 10;
 
-  var selectMode = false;
-  var selectedIds = new Set();
-  var bulkPending = { shape: null, color: null, gender: null, rim: null };
-  var bulkTouched = { shape: false, color: false, gender: false, rim: false };
-
-  var editingFrameId = null;
-  var editPendingTags = null;
-  var editSizeEye = document.getElementById('editSizeEye');
-  var editSizeBridge = document.getElementById('editSizeBridge');
-  var editSizeTemple = document.getElementById('editSizeTemple');
-  var editSideStatus = document.getElementById('editSideStatus');
-  var editPhotoStatus = document.getElementById('editPhotoStatus');
-  var editPhotoBtn = document.getElementById('editPhotoBtn');
-  var editSideBtn = document.getElementById('editSideBtn');
-
-  // What the Add Frames page is photographing: a new frame's front, or the temple
-  // (side view) of an existing frame, used for its 3D temples.
-  var addTarget = { kind: 'front', frameId: null };
-  var lastAddedId = null;
+  // What the photo page is photographing for a shop's product: its front
+  // (kind 'product'), or a temple from the side (kind 'side') for 3D temples.
+  // `product` is the product as last read, `shopStatus` its shop's status.
+  var addTarget = { kind: 'none', frameId: null, product: null, shopStatus: null };
   var SIDE_BYTE_BUDGET = 700000;
 
   // 3D preview of the model generated from the photo being added (own renderer).
@@ -756,27 +653,30 @@ function track(eventName, params) {
     temple.value = size && size.temple ? size.temple : '';
   }
 
-  function resetLocalState() {
-    if (ar.renderer) { ar.renderer.dispose(); }
-    ar.renderer = null; ar.promise = null; ar.frameKey = null; ar.loadingKey = null; ar.failedKey = null;
-    sideCache = {};
-    photo3d = null;
-    clearPd();
-    catalogIndex = []; fullDataCache = {}; activeFrameId = null;
+  // Clears what the catalogue page shows when switching to another source.
+  function resetCatalogView() {
+    catalogIndex = [];
     allFreeTags = new Set();
     activeFilters = { shape: new Set(), color: new Set(), gender: new Set(), rim: new Set(), search: '' };
     catalogSearch.value = ''; sortSelect.value = 'new';
-    catalogLoaded = false; tryonFrom = null;
-    faceHasImage = false; facePoints = [];
-    canvas.style.display = 'none'; video.style.display = 'none';
-    retakeBtn.style.display = 'none'; fitRow.style.display = 'none';
-    showPhotoError('');
+    catalogLoaded = false; catalogProblem = false;
     libraryRow.innerHTML = '';
-    selectMode = false; selectedIds = new Set();
-    libraryRow.classList.remove('selecting');
-    bulkBar.style.display = 'none';
-    editTagsPanel.style.display = 'none'; editingFrameId = null;
-    syncStage();
+    filterBar.innerHTML = '';
+    noResults.hidden = true; emptyCatalog.hidden = true;
+  }
+
+  // Forgets the customer's photo pixels held in memory (the canvases the photo
+  // and the tracking used). Called whenever a photo is replaced or the try-on
+  // page is left. The browser itself may keep freed memory around for a while;
+  // nothing here keeps a reference to it.
+  function clearFacePixels() {
+    [faceBaseCanvas, canvas].forEach(function (c) {
+      try { c.getContext('2d').clearRect(0, 0, c.width, c.height); } catch (e) { /* ignore */ }
+      c.width = 1; c.height = 1;
+    });
+    if (exposureCanvas) { exposureCanvas.width = 1; exposureCanvas.height = 1; }
+    lastPhotoLandmarks = null;
+    if (ar.renderer && ar.renderer.clear) { try { ar.renderer.clear(); } catch (e) { /* ignore */ } }
   }
 
   // The try-on stage shows one thing at a time: the start panel, the live
@@ -816,6 +716,7 @@ function track(eventName, params) {
   // shape in the current language ("Tortoise round frame", "काला गोल फ्रेम").
   function frameName(entry) {
     if (!entry) return '';
+    if (entry.nameKey) { var dn = t(entry.nameKey); if (dn !== entry.nameKey) return dn; }
     if (entry.name) return entry.name;
     var tg = entry.tags || {};
     var en = getLang() === 'en';
@@ -851,8 +752,7 @@ function track(eventName, params) {
 
   function findEntry(id) {
     if (id === DRAFT_ID) return draftEntry;
-    for (var i = 0; i < catalogIndex.length; i++) { if (catalogIndex[i].id === id) return catalogIndex[i]; }
-    return null;
+    return (id && entryMap[id]) || null;
   }
 
   function shrinkToBudget(canvas, maxBytes, mime, quality) {
@@ -1226,22 +1126,22 @@ function track(eventName, params) {
     if (ar.renderer && ar.renderer.canvas.parentNode === photoStage) ar.renderer.detach();
   }
 
+  // The try-on asset of a frame: its cut-out image and fitting data. Demo frames
+  // ship with the site; shop products load theirs from Storage (download links
+  // on the published product). Loaded with CORS so the 3D renderer may read the
+  // pixels; nothing is sent anywhere.
   function getFullFrameData(id) {
     if (fullDataCache[id]) return Promise.resolve(fullDataCache[id]);
-    if (!currentUser) return Promise.reject(new Error('Not signed in'));
-    return getDoc(doc(db, 'users', currentUser.uid, 'framesFull', id)).then(function (snap) {
-      if (!snap.exists()) throw new Error('Frame data missing');
-      var data = snap.data();
-      return new Promise(function (resolve, reject) {
-        var img = new Image();
-        img.onload = function () {
-          var result = { img: img, p1: scalePoint(data.p1, data, img), p2: scalePoint(data.p2, data, img), fit: fitForImage(data, img) };
-          fullDataCache[id] = result;
-          resolve(result);
-        };
-        img.onerror = reject;
-        img.src = data.imageData;
-      });
+    var entry = findEntry(id);
+    if (!entry) return Promise.reject(new Error('Unknown frame'));
+    if (!entry.tryOnReady) return Promise.reject(Object.assign(new Error('No try-on asset'), { code: 'no-asset' }));
+    var manifestP = entry.manifest ? Promise.resolve(entry.manifest) : backend.fetchManifest(entry.manifestUrl);
+    return Promise.all([manifestP, loadImage(entry.cutoutUrl, true)]).then(function (r) {
+      var m = r[0], img = r[1];
+      if (!manifestOk(m)) throw new Error('Bad try-on data');
+      var result = { img: img, p1: scalePoint(m.p1, m, img), p2: scalePoint(m.p2, m, img), fit: fitForImage(m, img), side: m.side || null };
+      fullDataCache[id] = result;
+      return result;
     });
   }
 
@@ -1315,10 +1215,10 @@ function track(eventName, params) {
     var noSel = !activeFrameId || !findEntry(activeFrameId);
     if (catalogLoaded && !catalogIndex.length) {
       noSelectionNote.style.display = 'flex';
-      noSelectionText.textContent = t('try.noFrames');
-      noSelectionBtn.style.display = staff.on ? 'inline-flex' : 'none';
-      noSelectionBtn.textContent = t('try.addFrame');
-      noSelectionBtn.onclick = function () { showTab('add'); };
+      noSelectionText.textContent = t('try.noFramesHere');
+      noSelectionBtn.style.display = 'inline-flex';
+      noSelectionBtn.textContent = t('try.toDemo');
+      noSelectionBtn.onclick = function () { useSource('demo'); renderLiveStrip(); updateTryOnHint(); };
     } else if (noSel && catalogLoaded) {
       noSelectionNote.style.display = 'flex';
       noSelectionText.textContent = t('try.choose');
@@ -1357,7 +1257,10 @@ function track(eventName, params) {
     var active = baseId ? findEntry(baseId) : null;
     if (!active) { similarLabel.style.display = 'none'; similarRow.style.display = 'none'; return; }
 
-    var pool = catalogIndex.filter(function (e) { return e.id !== active.id; });
+    var pool = Object.keys(entryMap).map(function (k) { return entryMap[k]; }).filter(function (e) {
+      if (e.id === active.id) return false;
+      return active.demo ? (e.demo && !DEMO_HIDDEN[e.id]) : (e.shopId === active.shopId && e.isPublic);
+    });
     var sameShape = active.tags.shape ? pool.filter(function (e) { return e.tags.shape === active.tags.shape; }) : [];
     var sameColor = active.tags.color ? pool.filter(function (e) { return e.tags.color === active.tags.color && sameShape.indexOf(e) === -1; }) : [];
     var list = sameShape.concat(sameColor);
@@ -1391,45 +1294,12 @@ function track(eventName, params) {
     });
   }
 
-  // 'ideal' is only a soft preference -- some browsers/devices don't reliably honor
-  // it and default to the front camera anyway. 'exact' forces the issue; if a device
-  // genuinely can't satisfy it (rare, but possible on some hardware), fall back to
-  // the soft preference rather than failing outright.
-  function getBackCameraStream() {
-    return navigator.mediaDevices.getUserMedia({ video: { facingMode: { exact: 'environment' } }, audio: false })
-      .catch(function () {
-        return navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' } }, audio: false });
-      });
-  }
-
-  function startCamera() {
-    stopStream();
-    getBackCameraStream().then(function (s) {
-      stream = s;
-      video.srcObject = stream;
-      return video.play();
-    }).then(function () {
-      faceHasImage = false;
-      facePoints = [];
-      showPhotoError('');
-      video.style.display = 'block';
-      canvas.style.display = 'none';
-      captureBtn.style.display = 'inline-flex';
-      retakeBtn.style.display = 'inline-flex';
-      retakeBtn.textContent = t('common.cancel');
-      updateCalibBanner();
-      syncStage();
-    }).catch(function (err) {
-      stopStream();
-      video.style.display = 'none';
-      syncStage();
-      cameraPermissionState().then(function (state) { showPhotoError(liveCameraErrorMessage(err, state)); });
-    });
-  }
-
+  // The photo mode never opens a camera any more (photos are chosen from the
+  // device); this stays as a safety net that stops any stream left behind.
   function stopStream() {
     if (stream) { stream.getTracks().forEach(function (t) { t.stop(); }); stream = null; }
-    if (video.style.display !== 'none' && !faceHasImage) { video.style.display = 'none'; captureBtn.style.display = 'none'; }
+    if (video.srcObject) { try { video.srcObject.getTracks().forEach(function (t) { t.stop(); }); } catch (e) { /* ignore */ } video.srcObject = null; }
+    video.style.display = 'none';
   }
 
   var MP_WASM = "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.35/wasm";
@@ -1514,32 +1384,6 @@ function track(eventName, params) {
     });
   }
 
-  function capturePhoto() {
-    var capped = capDimensions(video.videoWidth || 640, video.videoHeight || 480, MAX_FACE_DIM);
-    var w = capped.w, h = capped.h;
-    faceBaseCanvas.width = w; faceBaseCanvas.height = h;
-    canvas.width = w; canvas.height = h;
-    var bctx = faceBaseCanvas.getContext('2d');
-    bctx.drawImage(video, 0, 0, w, h);
-
-    stopStream();
-    faceHasImage = true;
-    facePoints = [];
-    fitSize.value = 100; fitSizeVal.textContent = '100%';
-    video.style.display = 'none';
-    canvas.style.display = 'block';
-    captureBtn.style.display = 'none';
-    retakeBtn.style.display = 'inline-flex';
-    retakeBtn.textContent = t('try.replace');
-    photoManual = false;
-    photoSource = 'camera';
-    syncStage();
-    redrawFacePreview();
-    detectFaceInPhoto();
-    track('customer_session_started', { source: 'camera' });
-    bumpPhotoCount();
-  }
-
   var PHOTO_TYPES = /^image\/(jpeg|png|webp)$/;
   var PHOTO_MAX_BYTES = 25 * 1024 * 1024;
   function handleFaceUpload(file) {
@@ -1565,7 +1409,6 @@ function track(eventName, params) {
       fitSize.value = 100; fitSizeVal.textContent = '100%';
       video.style.display = 'none';
       canvas.style.display = 'block';
-      captureBtn.style.display = 'none';
       retakeBtn.style.display = 'inline-flex';
       retakeBtn.textContent = t('try.replace');
       photoSource = 'upload';
@@ -1573,8 +1416,7 @@ function track(eventName, params) {
       redrawFacePreview();
       detectFaceInPhoto();
       URL.revokeObjectURL(url);
-      track('customer_session_started', { source: 'upload' });
-      bumpPhotoCount();
+      img.removeAttribute('src');          // the decoded file isn't kept around
     };
     img.onerror = function () {
       URL.revokeObjectURL(url);
@@ -1596,16 +1438,16 @@ function track(eventName, params) {
     fitSize.value = 100; fitSizeVal.textContent = '100%';
     video.style.display = 'none';
     canvas.style.display = 'none';
-    captureBtn.style.display = 'none';
     retakeBtn.style.display = 'none';
     photoToggleBtn.style.display = 'none';
     photoCatalogBtn.style.display = 'none';
+    clearFacePixels();
     updateCalibBanner();
     syncStage();
   }
 
   var photoManual = false;           // true once staff chose to mark the pupils by hand
-  var photoSource = null;            // 'upload' | 'camera': what "Replace photo" goes back to
+  var photoSource = null;            // 'upload': what "Replace photo" goes back to
   canvas.addEventListener('click', function (e) {
     if (!faceHasImage || facePoints.length >= 2 || detectingPupils) return;
     var rect = canvas.getBoundingClientRect();
@@ -1615,12 +1457,10 @@ function track(eventName, params) {
     redrawFacePreview();
   });
 
-  cameraBtn.addEventListener('click', function () { stopLive(); showLiveError(''); startCamera(); });
   uploadBtn.addEventListener('click', function () { fileInput.value = ''; fileInput.click(); });
   fileInput.addEventListener('change', function (e) {
     if (e.target.files && e.target.files[0]) { stopLive(); showLiveError(''); handleFaceUpload(e.target.files[0]); }
   });
-  captureBtn.addEventListener('click', capturePhoto);
   // Manual taps replace the automatic fit (and its 3D pose) with the 2D overlay.
   recalBtn.addEventListener('click', function () { facePoints = []; photo3d = null; photoManual = true; updateCalibBanner(); redrawFacePreview(); });
   retakeBtn.addEventListener('click', function () {
@@ -1628,7 +1468,6 @@ function track(eventName, params) {
     retakeFace();
     // "Replace photo" goes straight back to where the photo came from
     if (hadPhoto && photoSource === 'upload') { fileInput.value = ''; fileInput.click(); }
-    else if (hadPhoto && photoSource === 'camera') startCamera();
     else stageStart.querySelector('button').focus();
   });
   photoCatalogBtn.addEventListener('click', function () { showInCatalog(activeFrameId); });
@@ -1663,9 +1502,10 @@ function track(eventName, params) {
     return ar.promise;
   }
 
-  function loadImage(src) {
+  function loadImage(src, cors) {
     return new Promise(function (resolve, reject) {
       var img = new Image();
+      if (cors && !/^(data:|blob:)/.test(src)) img.crossOrigin = 'anonymous';
       img.onload = function () { resolve(img); };
       img.onerror = reject;
       img.src = src;
@@ -1697,15 +1537,16 @@ function track(eventName, params) {
     return 1;
   }
 
+  // The temple photo (optional, for the 3D temples), described in the asset.
   function getSideData(id) {
     var entry = findEntry(id);
-    if (!entry || !entry.hasSide || !currentUser) return Promise.resolve(null);
+    if (!entry || !entry.hasSide || !entry.sideUrl) return Promise.resolve(null);
     if (!sideCache[id]) {
-      sideCache[id] = getDoc(doc(db, 'users', currentUser.uid, 'framesSide', id)).then(function (snap) {
-        if (!snap.exists()) return null;
-        var d = snap.data();
-        return loadImage(d.imageData).then(function (img) {
-          return { img: img, hinge: scalePoint(d.hinge, d, img), tip: scalePoint(d.tip, d, img) };
+      sideCache[id] = getFullFrameData(id).then(function (full) {
+        var sd = full.side;
+        if (!sd) return null;
+        return loadImage(entry.sideUrl, true).then(function (img) {
+          return { img: img, hinge: scalePoint(sd.hinge, sd, img), tip: scalePoint(sd.tip, sd, img) };
         });
       }).catch(function (e) {
         console.error('Could not load the temple photo', e);
@@ -1900,7 +1741,7 @@ function track(eventName, params) {
   var shortlist = [];
   var customerLastActive = Date.now();
   var pickerFilter = 'all';
-  function shortlistKey() { return 'fts.shortlist.' + (currentUser ? currentUser.uid : ''); }
+  function shortlistKey() { return 'fts.shortlist'; }
   function saveShortlist() {
     try {
       if (shortlist.length) sessionStorage.setItem(shortlistKey(), JSON.stringify({ ids: shortlist, at: Date.now() }));
@@ -1916,6 +1757,8 @@ function track(eventName, params) {
       }
     } catch (e) { shortlist = []; }
     syncShortlistUi();
+    // frames from shops are fetched again after a refresh
+    Promise.all(shortlist.map(ensureEntry)).then(function () { pruneShortlist(); syncShortlistUi(); });
   }
   function inShortlist(id) { return !!id && shortlist.indexOf(id) !== -1; }
   function toggleShortlist(id) {
@@ -1934,9 +1777,8 @@ function track(eventName, params) {
   }
   // drop frames that are no longer in the catalogue
   function pruneShortlist() {
-    if (!catalogLoaded) return;
     var before = shortlist.length;
-    shortlist = shortlist.filter(function (id) { var e = findEntry(id); return e && !e.draft; });
+    shortlist = shortlist.filter(function (id) { return !missingIds[id] && !(DEMO_HIDDEN[id]) && id !== DRAFT_ID; });
     if (shortlist.length !== before) saveShortlist();
   }
   function heartSvg() {
@@ -1983,11 +1825,14 @@ function track(eventName, params) {
     saveShortlist();
     clearPd();
     syncShortlistUi();
+    stopLive();
+    if (faceHasImage) retakeFace();
+    clearFacePixels();
   }
   ['pointerdown', 'keydown'].forEach(function (type) { document.addEventListener(type, function () { customerLastActive = Date.now(); }, true); });
   setInterval(function () {
     var idle = Date.now() - customerLastActive;
-    if (idle > CUSTOMER_IDLE_MS && (shortlist.length || pdValue != null || pdInput.value || pdRight.value || pdLeft.value)) endCustomerSession();
+    if (idle > CUSTOMER_IDLE_MS && (shortlist.length || pdValue != null || pdInput.value || pdRight.value || pdLeft.value || faceHasImage || live.running)) endCustomerSession();
     else if (shortlist.length && idle < 60000) saveShortlist();      // keep the stored list fresh while in use
   }, 30000);
 
@@ -1995,7 +1840,7 @@ function track(eventName, params) {
   function renderShortlistPage() {
     pruneShortlist();
     var entries = shortlist.map(findEntry).filter(function (e) { return e && !e.draft; });
-    var waiting = !catalogLoaded && shortlist.length > 0;
+    var waiting = entries.length < shortlist.length;
     shortlistNote.textContent = waiting ? t('cat.loading') : entries.length ? tn('cat.count', entries.length) : '';
     shortlistFilled.hidden = !entries.length;
     shortlistEmpty.hidden = !!entries.length || waiting;
@@ -2032,6 +1877,7 @@ function track(eventName, params) {
       tryB.type = 'button'; tryB.className = 'btn primary small';
       tryB.textContent = t('card.tryon');
       tryB.setAttribute('aria-label', t('card.tryon.aria', { name: frameName(e) }));
+      tryB.disabled = !e.tryOnReady;
       tryB.addEventListener('click', function () { pickerFilter = 'shortlist'; syncPickerFilter(); tryOnFrame(e.id, 'auto'); });
       var rm = document.createElement('button');
       rm.type = 'button'; rm.className = 'btn secondary small';
@@ -2050,13 +1896,19 @@ function track(eventName, params) {
     table.appendChild(thead);
     var tbody = document.createElement('tbody');
     var anyMaterial = entries.some(function (e) { return e.prepared === 'auto' && e.translucent != null; });
-    var rows = [
+    var anyShop = entries.some(function (e) { return !e.demo; });
+    var rows = [];
+    if (anyShop) {
+      rows.push(['attr.price', function (e) { if (e.demo) return t('demo.badge'); var v = e.pricing ? priceView(e.pricing) : null; return v ? formatINR(v.pay.finalPaise, getLang()) + ' ' + (v.mode === 'none' ? t('price.noGst') : t('price.inclGst')) : t('sl.none'); }]);
+      rows.push(['attr.shop', function (e) { var sh = shopOf(e); return e.demo ? t('demo.badge') : sh ? sh.name : t('sl.none'); }]);
+    }
+    rows = rows.concat([
       ['attr.size', function (e) { var sz = sizeShort(e.size); return sz || t('sl.none'); }, 'mono'],
       ['attr.shape', function (e) { return e.tags.shape ? tagLabel(e.tags.shape) : t('sl.none'); }],
       ['attr.colour', function (e) { return e.tags.color ? tagLabel(e.tags.color) : t('sl.none'); }],
       ['attr.rim', function (e) { return e.tags.rim ? tagLabel(e.tags.rim) : t('sl.none'); }],
       ['attr.for', function (e) { return e.tags.gender ? tagLabel(e.tags.gender) : t('sl.none'); }]
-    ];
+    ]);
     if (anyMaterial) rows.push(['attr.material', function (e) { return e.prepared === 'auto' && e.translucent != null ? t(e.translucent ? 'material.translucent' : 'material.solid') : t('sl.none'); }]);
     rows.forEach(function (row) {
       var tr = document.createElement('tr');
@@ -2081,7 +1933,9 @@ function track(eventName, params) {
     if (!shortlist.length) return;
     pickerFilter = 'shortlist';
     syncPickerFilter();
-    tryOnFrame(inShortlist(activeFrameId) ? activeFrameId : shortlist[0], 'auto');
+    var first = shortlist.filter(function (id) { var e = findEntry(id); return e && e.tryOnReady; });
+    if (!first.length) return;
+    tryOnFrame(inShortlist(activeFrameId) && findEntry(activeFrameId).tryOnReady ? activeFrameId : first[0], 'auto');
   });
   shortlistClearBtn.addEventListener('click', function () {
     var n = shortlist.length;
@@ -2289,7 +2143,6 @@ function track(eventName, params) {
       setLiveStatus('');
       renderLiveStrip();
       live.raf = requestAnimationFrame(liveTick);
-      track('customer_session_started', { source: 'live' });
       return navigator.mediaDevices.enumerateDevices().then(function (list) {
         if (token !== live.token) return;
         live.devices = list.filter(function (d) { return d.kind === 'videoinput'; });
@@ -2406,8 +2259,10 @@ function track(eventName, params) {
   function renderLiveStrip() {
     liveStrip.innerHTML = '';
     var q = normalizeSearch(liveSearch.value);
-    var pool = catalogIndex;
-    if (pickerFilter === 'shortlist') pool = shortlist.map(findEntry).filter(function (e) { return e && !e.draft; });
+    var pool = catalogIndex.filter(function (e) { return e.tryOnReady; });
+    var act = activeFrameId && activeFrameId !== DRAFT_ID ? findEntry(activeFrameId) : null;
+    if (act && pool.indexOf(act) === -1) pool = [act].concat(pool);
+    if (pickerFilter === 'shortlist') pool = shortlist.map(findEntry).filter(function (e) { return e && !e.draft && e.tryOnReady; });
     var list = pool.filter(function (e) {
       if (!q) return true;
       var hay = searchText(e);
@@ -2539,215 +2394,6 @@ function track(eventName, params) {
       }
       freeTagInput.value = '';
     }
-  });
-
-  // ---------- single-frame tag editing ----------
-
-  function renderEditFreeTagList() {
-    editFreeTagList.innerHTML = '';
-    editPendingTags.free.forEach(function (tag) {
-      var chip = document.createElement('span');
-      chip.className = 'tag-chip removable';
-      chip.appendChild(document.createTextNode(tag + ' '));
-      var x = document.createElement('button');
-      x.type = 'button';
-      x.className = 'tag-remove';
-      x.textContent = '\u00d7';
-      x.setAttribute('aria-label', t('add.removeTag', { tag: tag }));
-      x.addEventListener('click', function () {
-        editPendingTags.free = editPendingTags.free.filter(function (f) { return f !== tag; });
-        renderEditFreeTagList();
-      });
-      chip.appendChild(x);
-      editFreeTagList.appendChild(chip);
-    });
-  }
-
-  function openEditTags(id) {
-    var entry = findEntry(id);
-    if (!entry) return;
-    editingFrameId = id;
-    var tg = entry.tags || {};
-    editPendingTags = { shape: tg.shape || null, color: tg.color || null, gender: tg.gender || null, rim: tg.rim || null, free: (tg.free || []).slice() };
-
-    editThumbWrap.innerHTML = '';
-    var img = document.createElement('img');
-    img.src = entry.thumbData;
-    img.alt = '';
-    editThumbWrap.appendChild(img);
-    editNameInput.value = entry.name || '';
-    editError.classList.remove('show');
-
-    renderEditChips();
-    renderEditFreeTagList();
-    editFreeTagInput.value = '';
-    fillSize(entry.size, editSizeEye, editSizeBridge, editSizeTemple);
-    syncEditPanelText();
-
-    editTagsPanel.style.display = 'block';
-    var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    editTagsPanel.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
-    editNameInput.focus({ preventScroll: true });
-  }
-
-  function renderEditChips() {
-    renderChipGroup(editShapeChips, 'shape', editPendingTags.shape, function (v) { editPendingTags.shape = v; });
-    renderChipGroup(editColorChips, 'color', editPendingTags.color, function (v) { editPendingTags.color = v; });
-    renderChipGroup(editGenderChips, 'gender', editPendingTags.gender, function (v) { editPendingTags.gender = v; });
-    renderChipGroup(editRimChips, 'rim', editPendingTags.rim, function (v) { editPendingTags.rim = v; });
-  }
-  // The editor's code-drawn text (also redrawn when the language changes).
-  function syncEditPanelText() {
-    var entry = editingFrameId && findEntry(editingFrameId);
-    if (!entry) return;
-    editNameInput.placeholder = frameName(Object.assign({}, entry, { name: null }));
-    editSideStatus.textContent = entry.hasSide ? t('edit.side.own') : t('edit.side.generated');
-    editPhotoStatus.textContent = preparedText(entry);
-    editSideBtn.textContent = entry.hasSide ? t('staffTools.replaceTemple') : t('staffTools.addTemple');
-  }
-
-  function closeEditTags() {
-    editTagsPanel.style.display = 'none';
-    editingFrameId = null;
-    editPendingTags = null;
-  }
-
-  editFreeTagInput.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      var t = editFreeTagInput.value.trim().toLowerCase();
-      if (t && editPendingTags.free.indexOf(t) === -1) {
-        editPendingTags.free.push(t);
-        renderEditFreeTagList();
-        if (!allFreeTags.has(t)) { allFreeTags.add(t); refreshTagSuggestions(); }
-      }
-      editFreeTagInput.value = '';
-    }
-  });
-
-  cancelEditTagsBtn.addEventListener('click', closeEditTags);
-  editPhotoBtn.addEventListener('click', function () {
-    var id = editingFrameId;
-    closeEditTags();
-    if (id) enterReplaceMode(id);
-  });
-  editSideBtn.addEventListener('click', function () {
-    var id = editingFrameId;
-    closeEditTags();
-    if (id) enterSideMode(id);
-  });
-
-  saveTagsBtn.addEventListener('click', function () {
-    if (!editingFrameId || !currentUser || !editPendingTags) return;
-    var id = editingFrameId;
-    var newTags = {
-      shape: editPendingTags.shape, color: editPendingTags.color,
-      gender: editPendingTags.gender, rim: editPendingTags.rim,
-      free: editPendingTags.free.slice()
-    };
-    var newSize = readSize(editSizeEye, editSizeBridge, editSizeTemple);
-    var newName = editNameInput.value.trim().slice(0, 60) || null;
-    saveTagsBtn.disabled = true;
-    editError.classList.remove('show');
-    updateDoc(doc(db, 'users', currentUser.uid, 'frames', id), { tags: newTags, size: newSize, name: newName }).then(function () {
-      var entry = findEntry(id);
-      if (entry) { entry.tags = newTags; entry.size = newSize; entry.name = newName; }
-      arForget(id);                       // tags/size change how the 3D model is built
-      renderLiveStrip();
-      if (activeFrameId === id) redrawFacePreview();
-      saveTagsBtn.disabled = false;
-      renderLibrary();
-      rebuildFilterBar();
-      applyFilters();
-      if (activeFrameId === id) updateSelectedBanner();
-      closeEditTags();
-      if (view.name === 'detail' && view.id === id) renderDetail(id);
-      toast(t('toast.saved'));
-    }).catch(function (e) {
-      console.error('Failed to save tags', e);
-      saveTagsBtn.disabled = false;
-      editError.textContent = t('edit.err');
-      editError.classList.add('show');
-    });
-  });
-
-  // ---------- select mode / bulk tag editing ----------
-
-  function renderBulkChips() {
-    renderChipGroup(bulkShapeChips, 'shape', bulkPending.shape, function (v) { bulkPending.shape = v; bulkTouched.shape = true; updateApplyBulkState(); });
-    renderChipGroup(bulkColorChips, 'color', bulkPending.color, function (v) { bulkPending.color = v; bulkTouched.color = true; updateApplyBulkState(); });
-    renderChipGroup(bulkGenderChips, 'gender', bulkPending.gender, function (v) { bulkPending.gender = v; bulkTouched.gender = true; updateApplyBulkState(); });
-    renderChipGroup(bulkRimChips, 'rim', bulkPending.rim, function (v) { bulkPending.rim = v; bulkTouched.rim = true; updateApplyBulkState(); });
-  }
-
-  function updateBulkCountLabel() {
-    bulkCountLabel.textContent = tn('bulk.count', selectedIds.size);
-  }
-
-  function updateApplyBulkState() {
-    var anyTouched = bulkTouched.shape || bulkTouched.color || bulkTouched.gender || bulkTouched.rim;
-    applyBulkBtn.disabled = !(selectedIds.size > 0 && anyTouched);
-  }
-
-  function enterSelectMode() {
-    if (!staff.on) return;
-    selectMode = true;
-    selectedIds = new Set();
-    bulkPending = { shape: null, color: null, gender: null, rim: null };
-    bulkTouched = { shape: false, color: false, gender: false, rim: false };
-    renderBulkChips();
-    bulkError.classList.remove('show');
-    bulkBar.style.display = 'block';
-    selectModeBtn.style.display = 'none';
-    updateBulkCountLabel();
-    updateApplyBulkState();
-    renderLibrary();
-  }
-
-  function exitSelectMode() {
-    selectMode = false;
-    selectedIds = new Set();
-    bulkBar.style.display = 'none';
-    selectModeBtn.style.display = '';
-    renderLibrary();
-  }
-
-  selectModeBtn.addEventListener('click', enterSelectMode);
-  exitSelectModeBtn.addEventListener('click', exitSelectMode);
-
-  applyBulkBtn.addEventListener('click', function () {
-    if (!currentUser || !selectedIds.size) return;
-    applyBulkBtn.disabled = true;
-    bulkError.classList.remove('show');
-    var uid = currentUser.uid;
-    var patch = {};
-    if (bulkTouched.shape) patch.shape = bulkPending.shape;
-    if (bulkTouched.color) patch.color = bulkPending.color;
-    if (bulkTouched.gender) patch.gender = bulkPending.gender;
-    if (bulkTouched.rim) patch.rim = bulkPending.rim;
-
-    var ids = Array.from(selectedIds);
-    var writes = ids.map(function (id) {
-      var entry = findEntry(id);
-      if (!entry) return Promise.resolve();
-      var newTags = Object.assign({}, entry.tags, patch);
-      return updateDoc(doc(db, 'users', uid, 'frames', id), { tags: newTags }).then(function () {
-        entry.tags = newTags;
-        arForget(id);
-      });
-    });
-
-    Promise.all(writes).then(function () {
-      rebuildFilterBar();
-      exitSelectMode();
-      toast(tn('bulk.done', ids.length));
-    }).catch(function (e) {
-      console.error('Bulk tag update failed', e);
-      renderLibrary(); rebuildFilterBar();
-      bulkError.textContent = t('bulk.err');
-      bulkError.classList.add('show');
-      applyBulkBtn.disabled = false;
-    });
   });
 
   // ---------- filtering, search and sorting ----------
@@ -2942,6 +2588,10 @@ function track(eventName, params) {
         var ea = (a.size && a.size.eye) || Infinity, eb = (b.size && b.size.eye) || Infinity;
         if (ea !== eb) return ea - eb;
       }
+      if (mode === 'price' || mode === 'priceDesc') {
+        var pa = payPaise(a), pb = payPaise(b);
+        if (pa !== pb) return mode === 'price' ? pa - pb : pb - pa;
+      }
       var d = addedAt(b) - addedAt(a);
       if (mode === 'old') d = -d;
       return d || order.get(a.id) - order.get(b.id);
@@ -2950,19 +2600,44 @@ function track(eventName, params) {
 
   // ---------- catalogue: cards ----------
 
+  // What a customer pays for a frame (for sorting); frames without a price last.
+  function payPaise(e) { var v = e && e.pricing ? priceView(e.pricing) : null; return v ? v.pay.finalPaise : Infinity; }
+
+  // The price line for cards and lists: "₹2,499 incl. GST" (with a struck-out
+  // regular price when on sale). Nothing for demo frames.
+  function priceLine(entry, cls) {
+    var v = entry && entry.pricing ? priceView(entry.pricing) : null;
+    if (!v) return null;
+    var el = document.createElement('p');
+    el.className = cls || 'price-line';
+    var now = document.createElement('span');
+    now.className = 'price-now';
+    now.textContent = formatINR(v.pay.finalPaise, getLang());
+    el.appendChild(now);
+    if (v.sale) {
+      var was = document.createElement('s');
+      was.className = 'price-was';
+      was.textContent = formatINR(v.regular.finalPaise, getLang());
+      el.appendChild(document.createTextNode(' '));
+      el.appendChild(was);
+    }
+    var tax = document.createElement('span');
+    tax.className = 'price-tax';
+    tax.textContent = ' ' + (v.mode === 'none' ? t('price.noGst') : t('price.inclGst'));
+    el.appendChild(tax);
+    return el;
+  }
+
+  function availabilityText(a) { return a ? t('avail.' + a) : ''; }
+
   function renderLibrary() {
     libraryRow.innerHTML = '';
-    libraryRow.classList.toggle('selecting', selectMode);
+    var isShop = sourceKey && sourceKey !== 'demo';
+    sortSelect.querySelectorAll('option[data-shop-only]').forEach(function (o) { o.hidden = !isShop; o.disabled = !isShop; });
     sortedCatalog().forEach(function (entry) {
-      var isSelected = selectMode && selectedIds.has(entry.id);
       var card = document.createElement('article');
-      card.className = 'frame-card' + (isSelected ? ' selected' : '');
+      card.className = 'frame-card' + (entry.demo ? ' demo-card' : '');
       card.dataset.id = entry.id;
-
-      var mark = document.createElement('span');
-      mark.className = 'frame-card-select-mark';
-      mark.setAttribute('aria-hidden', 'true');
-      card.appendChild(mark);
 
       var media = document.createElement('div');
       media.className = 'frame-card-media';
@@ -2974,16 +2649,14 @@ function track(eventName, params) {
       img.src = entry.thumbData;
       media.appendChild(img);
       card.appendChild(media);
-      if (!selectMode) {
-        var heart = document.createElement('button');
-        heart.type = 'button';
-        heart.className = 'icon-btn heart-btn card-heart';
-        heart.setAttribute('data-heart', entry.id);
-        heart.innerHTML = heartSvg();
-        heart.addEventListener('click', function () { toggleShortlist(entry.id); });
-        syncHeart(heart, entry.id);
-        card.appendChild(heart);
-      }
+      var heart = document.createElement('button');
+      heart.type = 'button';
+      heart.className = 'icon-btn heart-btn card-heart';
+      heart.setAttribute('data-heart', entry.id);
+      heart.innerHTML = heartSvg();
+      heart.addEventListener('click', function () { toggleShortlist(entry.id); });
+      syncHeart(heart, entry.id);
+      card.appendChild(heart);
 
       var body = document.createElement('div');
       body.className = 'frame-card-body';
@@ -2993,11 +2666,10 @@ function track(eventName, params) {
       link.className = 'frame-card-link';
       link.href = hashFor({ name: 'detail', id: entry.id });
       link.textContent = frameName(entry);
-      link.addEventListener('click', function (e) {
-        if (selectMode) { e.preventDefault(); toggleSelected(entry.id, card); }
-      });
       title.appendChild(link);
       body.appendChild(title);
+      var pl = priceLine(entry);
+      if (pl) body.appendChild(pl);
       var sizeText = sizeShort(entry.size);
       if (sizeText) {
         var sz = document.createElement('div');
@@ -3013,11 +2685,22 @@ function track(eventName, params) {
         m.textContent = meta;
         body.appendChild(m);
       }
+      if (entry.demo) {
+        var badge = document.createElement('span');
+        badge.className = 'demo-badge';
+        badge.textContent = t('demo.badge');
+        body.appendChild(badge);
+      } else if (entry.availability === 'out_of_stock') {
+        var oos = document.createElement('span');
+        oos.className = 'avail-badge';
+        oos.textContent = availabilityText(entry.availability);
+        body.appendChild(oos);
+      }
       card.appendChild(body);
 
-      if (!selectMode) {
-        var actions = document.createElement('div');
-        actions.className = 'frame-card-actions';
+      var actions = document.createElement('div');
+      actions.className = 'frame-card-actions';
+      if (entry.tryOnReady) {
         var tryBtn = document.createElement('button');
         tryBtn.type = 'button';
         tryBtn.className = 'btn secondary frame-card-tryon';
@@ -3025,14 +2708,19 @@ function track(eventName, params) {
         tryBtn.setAttribute('aria-label', t('card.tryon.aria', { name: frameName(entry) }));
         tryBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'auto'); });
         actions.appendChild(tryBtn);
-        card.appendChild(actions);
       } else {
-        card.setAttribute('aria-selected', isSelected ? 'true' : 'false');
-        card.addEventListener('click', function (e) {
-          if (e.target.closest('a')) return;
-          toggleSelected(entry.id, card);
-        });
+        var no = document.createElement('a');
+        no.className = 'btn secondary frame-card-tryon';
+        no.href = hashFor({ name: 'detail', id: entry.id });
+        no.textContent = t('card.details');
+        no.setAttribute('aria-label', t('card.details.aria', { name: frameName(entry) }));
+        actions.appendChild(no);
+        var nt = document.createElement('span');
+        nt.className = 'no-tryon';
+        nt.textContent = t('card.noTryon');
+        body.appendChild(nt);
       }
+      card.appendChild(actions);
       libraryRow.appendChild(card);
     });
     applyFilters();
@@ -3050,14 +2738,6 @@ function track(eventName, params) {
     return [sz.eye ? t('size.part.eye', { n: sz.eye }) : '', sz.bridge ? t('size.part.bridge', { n: sz.bridge }) : '', sz.temple ? t('size.part.temple', { n: sz.temple }) : ''].filter(Boolean).join(', ');
   }
 
-  function toggleSelected(id, card) {
-    if (selectedIds.has(id)) selectedIds.delete(id); else selectedIds.add(id);
-    card.classList.toggle('selected', selectedIds.has(id));
-    card.setAttribute('aria-selected', selectedIds.has(id) ? 'true' : 'false');
-    updateBulkCountLabel();
-    updateApplyBulkState();
-  }
-
   var catalogProblem = false;
   function showCatalogProblem(on) {
     catalogProblem = on;
@@ -3069,13 +2749,13 @@ function track(eventName, params) {
       if (!b) {
         b = document.createElement('button');
         b.type = 'button'; b.className = 'btn primary';
-        b.addEventListener('click', function () { if (currentUser) { catalogNote.textContent = t('cat.loading'); loadCatalog(currentUser.uid); } });
+        b.addEventListener('click', function () { var k = sourceKey; sourceKey = null; catalogNote.textContent = t('cat.loading'); useSource(k || 'demo'); });
         emptyCatalog.appendChild(b);
       }
       b.textContent = t('cat.error.retry');
     } else {
       h.textContent = t('cat.empty.title');
-      emptyCatalogText.textContent = staff.on ? t('cat.empty.staff') : t('cat.empty.customer');
+      emptyCatalogText.textContent = t(sourceKey && sourceKey !== 'demo' ? 'cat.empty.shop' : 'cat.empty.customer');
       var old = emptyCatalog.querySelector('button');
       if (old) old.parentNode.removeChild(old);
     }
@@ -3125,14 +2805,53 @@ function track(eventName, params) {
     return wrap;
   }
 
-  // How the try-on asset was made (for staff).
-  function preparedText(entry) {
-    if (entry.prepared === 'auto') {
-      var details = [rimLabel(entry.rimType), t(entry.translucent ? 'prep.translucent' : 'prep.solid'), t(entry.level === '2d' ? 'prep.2d' : 'prep.3d')].filter(Boolean).join(', ');
-      return t('prep.auto', { details: details }) + (entry.hasSource ? ' ' + t('prep.kept') : '');
+  function fmtDate(ms) {
+    if (!ms) return '';
+    try { return new Date(ms).toLocaleDateString(getLang() === 'en' ? 'en-IN' : getLang() + '-IN', { day: 'numeric', month: 'short', year: 'numeric' }); }
+    catch (e) { return new Date(ms).toDateString(); }
+  }
+
+  // The full price block on a frame's page: what the customer pays, and how the
+  // retailer's price splits into price before GST and GST.
+  function priceBlock(entry, shop) {
+    var v = entry.pricing ? priceView(entry.pricing) : null;
+    var box = document.createElement('div');
+    box.className = 'price-block';
+    if (!v) { var none = document.createElement('p'); none.className = 'hint'; none.textContent = t('price.ask'); box.appendChild(none); return box; }
+    var now = document.createElement('p');
+    now.className = 'price-big';
+    now.textContent = formatINR(v.pay.finalPaise, getLang());
+    if (v.sale) {
+      var was = document.createElement('s');
+      was.className = 'price-was';
+      was.textContent = formatINR(v.regular.finalPaise, getLang());
+      now.appendChild(document.createTextNode(' '));
+      now.appendChild(was);
     }
-    var flat = entry.level === '2d';
-    return t(entry.hasSource ? (flat ? 'prep.handFlatKept' : 'prep.handKept') : (flat ? 'prep.handFlat' : 'prep.hand'));
+    box.appendChild(now);
+    var lines = document.createElement('dl');
+    lines.className = 'price-lines';
+    function line(label, value) {
+      var dt = document.createElement('dt'); dt.textContent = label;
+      var dd = document.createElement('dd'); dd.textContent = value;
+      lines.appendChild(dt); lines.appendChild(dd);
+    }
+    if (v.mode === 'none') {
+      line(t('price.final'), formatINR(v.pay.finalPaise, getLang()));
+      line(t('price.gst'), t('price.noGstLong'));
+    } else {
+      line(t('price.before'), formatINR(v.pay.basePaise, getLang()));
+      line(t('price.gstRate', { rate: formatRate(v.rate) }), formatINR(v.pay.taxPaise, getLang()));
+      line(t('price.final'), formatINR(v.pay.finalPaise, getLang()));
+    }
+    if (v.sale) line(t('price.saving'), formatINR(v.savingPaise, getLang()));
+    box.appendChild(lines);
+    var fine = document.createElement('p');
+    fine.className = 'fine';
+    fine.textContent = t('price.setBy', { shop: shop ? shop.name : t('price.theShop') }) +
+      (entry.priceUpdatedAt ? ' ' + t('price.updated', { date: fmtDate(entry.priceUpdatedAt) }) : '');
+    box.appendChild(fine);
+    return box;
   }
 
   function renderDetail(id) {
@@ -3140,7 +2859,7 @@ function track(eventName, params) {
     var entry = findEntry(id);
     if (!entry || entry.draft) {
       similarLabel.style.display = 'none'; similarRow.style.display = 'none';
-      if (!catalogLoaded && !catalogProblem) {
+      if (!missingIds[id] && CONFIGURED && !/^demo-/.test(id || '')) {
         var wait = document.createElement('p');
         wait.className = 'page-count';
         wait.setAttribute('role', 'status');
@@ -3159,6 +2878,20 @@ function track(eventName, params) {
     setTitle(name);
     var tg = entry.tags || {};
     var en = getLang() === 'en';
+    var shop = entry.shopId ? shopOf(entry) : null;
+    if (entry.shopId && !shop) {
+      getShopInfo(entry.shopId).then(function (sh) { if (sh) { rememberShop(entry.shopId, sh); if (view.name === 'detail' && view.id === id) renderDetail(id); } });
+    }
+    detailBack.href = entry.demo ? '#/demo' : hashFor({ name: 'browse', source: 'shop:' + entry.shopId });
+    detailBack.textContent = entry.demo ? t('detail.backDemo') : t('detail.backShop', { shop: shop ? shop.name : t('price.theShop') });
+
+    var own = !entry.demo && currentUser && entry.shopId === currentUser.uid;
+    if (!entry.demo && !entry.isPublic) {
+      var pv = document.createElement('div');
+      pv.className = 'preview-banner';
+      pv.textContent = t('detail.previewOnly');
+      detailBody.appendChild(pv);
+    }
 
     var grid = document.createElement('div');
     grid.className = 'detail-grid';
@@ -3177,8 +2910,8 @@ function track(eventName, params) {
     h1.textContent = name;
     info.appendChild(h1);
     var subBits = [];
-    if (entry.name && (tg.color || tg.shape)) {
-      subBits.push([tg.color ? tagLabel(tg.color) : '', tg.shape ? (en ? tagLabel(tg.shape).toLowerCase() : tagLabel(tg.shape)) : ''].filter(Boolean).join(' '));
+    if ((entry.name || entry.nameKey) && (tg.color || tg.shape)) {
+      subBits.push([entry.colourName || (tg.color ? tagLabel(tg.color) : ''), tg.shape ? (en ? tagLabel(tg.shape).toLowerCase() : tagLabel(tg.shape)) : ''].filter(Boolean).join(' '));
     }
     var meta = frameMeta(entry);
     if (meta) subBits.push(subBits.length && en ? meta.charAt(0).toLowerCase() + meta.slice(1) : meta);
@@ -3188,7 +2921,91 @@ function track(eventName, params) {
       sub.textContent = subBits.join(', ');
       info.appendChild(sub);
     }
+
+    if (entry.demo) {
+      var dn = document.createElement('p');
+      dn.className = 'demo-note';
+      dn.textContent = t('detail.demoNote');
+      info.appendChild(dn);
+    } else {
+      var seller = document.createElement('p');
+      seller.className = 'sold-by';
+      seller.appendChild(document.createTextNode(t('detail.soldBy') + ' '));
+      var sl = document.createElement('a');
+      sl.href = hashFor({ name: 'browse', source: 'shop:' + entry.shopId });
+      sl.textContent = shop ? shop.name : t('price.theShop');
+      seller.appendChild(sl);
+      if (shop && shop.city) seller.appendChild(document.createTextNode(', ' + shop.city));
+      info.appendChild(seller);
+      info.appendChild(priceBlock(entry, shop));
+      if (entry.availability) {
+        var av = document.createElement('p');
+        av.className = 'availability avail-' + entry.availability;
+        av.textContent = availabilityText(entry.availability);
+        info.appendChild(av);
+      }
+    }
+
+    var actions = document.createElement('div');
+    actions.className = 'detail-actions';
+    if (entry.tryOnReady) {
+      var liveBtn = document.createElement('button');
+      liveBtn.type = 'button';
+      liveBtn.className = 'btn primary large';
+      liveBtn.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="5" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m14 9 4-2.5v7L14 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
+      liveBtn.appendChild(document.createTextNode(t('detail.tryCamera')));
+      liveBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'live'); });
+      var photoBtn = document.createElement('button');
+      photoBtn.type = 'button';
+      photoBtn.className = 'btn secondary large';
+      photoBtn.textContent = t('detail.tryPhoto');
+      photoBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'photo'); });
+      actions.appendChild(liveBtn);
+      actions.appendChild(photoBtn);
+    } else {
+      var unav = document.createElement('p');
+      unav.className = 'detail-unavailable';
+      unav.textContent = t('detail.noTryon');
+      actions.appendChild(unav);
+    }
+    info.appendChild(actions);
+    var heart = document.createElement('button');
+    heart.type = 'button';
+    heart.className = 'btn secondary heart-btn heart-text';
+    heart.setAttribute('data-heart', entry.id);
+    heart.innerHTML = heartSvg() + '<span class="heart-label"></span>';
+    heart.addEventListener('click', function () { toggleShortlist(entry.id); });
+    syncHeart(heart, entry.id);
+    info.appendChild(heart);
+
+    if (!entry.demo && shop) {
+      var buy = document.createElement('div');
+      buy.className = 'buy-box';
+      var bh = document.createElement('h2');
+      bh.textContent = t('detail.buyTitle');
+      buy.appendChild(bh);
+      var bp = document.createElement('p');
+      bp.className = 'hint';
+      bp.textContent = t('detail.buyText', { shop: shop.name });
+      buy.appendChild(bp);
+      buy.appendChild(contactLinks(shop, entry));
+      info.appendChild(buy);
+    }
+
+    var note = document.createElement('p');
+    note.className = 'detail-note';
+    note.textContent = t('detail.note');
+    info.appendChild(note);
     var mark = sizeMark(entry.size);
+    if (mark) {
+      if (frameLensDistMm(entry)) {
+        var ts = document.createElement('p');
+        ts.className = 'size-mark-true';
+        ts.textContent = t('detail.trueSize');
+        mark.appendChild(ts);
+      }
+      info.appendChild(mark);
+    }
 
     var dl = document.createElement('dl');
     dl.className = 'attr-list';
@@ -3199,103 +3016,70 @@ function track(eventName, params) {
       dl.appendChild(dt); dl.appendChild(dd);
     }
     attr(t('attr.shape'), tg.shape && tagLabel(tg.shape));
-    attr(t('attr.colour'), tg.color && tagLabel(tg.color));
+    attr(t('attr.colour'), entry.colourName || (tg.color && tagLabel(tg.color)));
     attr(t('attr.rim'), tg.rim && tagLabel(tg.rim));
     attr(t('attr.for'), tg.gender && tagLabel(tg.gender));
-    if (entry.translucent != null && entry.prepared === 'auto') attr(t('attr.material'), t(entry.translucent ? 'material.translucent' : 'material.solid'));
+    attr(t('attr.type'), entry.frameType && t('ftype.' + entry.frameType));
+    attr(t('attr.material'), entry.material || (entry.translucent != null && entry.prepared === 'auto' ? t(entry.translucent ? 'material.translucent' : 'material.solid') : ''));
+    attr(t('attr.brand'), entry.brand);
+    attr(t('attr.sku'), entry.sku);
     if (tg.free && tg.free.length) attr(t('attr.tags'), tg.free.join(', '));
     if (!mark) attr(t('attr.size'), t('attr.sizeMissing'));
-
-    var actions = document.createElement('div');
-    actions.className = 'detail-actions';
-    var liveBtn = document.createElement('button');
-    liveBtn.type = 'button';
-    liveBtn.className = 'btn primary large';
-    liveBtn.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="5" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m14 9 4-2.5v7L14 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>';
-    liveBtn.appendChild(document.createTextNode(t('detail.tryCamera')));
-    liveBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'live'); });
-    var photoBtn = document.createElement('button');
-    photoBtn.type = 'button';
-    photoBtn.className = 'btn secondary large';
-    photoBtn.textContent = t('detail.tryPhoto');
-    photoBtn.addEventListener('click', function () { tryOnFrame(entry.id, 'photo'); });
-    actions.appendChild(liveBtn);
-    actions.appendChild(photoBtn);
-    info.appendChild(actions);
-    var heart = document.createElement('button');
-    heart.type = 'button';
-    heart.className = 'btn secondary heart-btn heart-text';
-    heart.setAttribute('data-heart', entry.id);
-    heart.innerHTML = heartSvg() + '<span class="heart-label"></span>';
-    heart.addEventListener('click', function () { toggleShortlist(entry.id); });
-    syncHeart(heart, entry.id);
-    info.appendChild(heart);
-    var note = document.createElement('p');
-    note.className = 'detail-note';
-    note.textContent = t('detail.note');
-    info.appendChild(note);
-    // the try-on actions come first; the size and the details follow
-    if (mark) {
-      if (frameLensDistMm(entry)) {
-        var ts = document.createElement('p');
-        ts.className = 'size-mark-true';
-        ts.textContent = t('detail.trueSize');
-        mark.appendChild(ts);
-      }
-      info.appendChild(mark);
-    }
     if (dl.children.length) info.appendChild(dl);
-
-    if (staff.on) {
-      var tools = document.createElement('div');
-      tools.className = 'staff-tools';
-      var th = document.createElement('h2');
-      th.textContent = t('staffTools.title');
-      tools.appendChild(th);
-      var prep = document.createElement('p');
-      prep.className = 'hint staff-prepared';
-      prep.textContent = preparedText(entry);
-      tools.appendChild(prep);
-      var row = document.createElement('div');
-      row.className = 'row';
-      [[t('staffTools.edit'), function () { openEditTags(entry.id); }, 'secondary'],
-       [t('staffTools.photo'), function () { enterReplaceMode(entry.id); }, 'secondary'],
-       [entry.hasSide ? t('staffTools.replaceTemple') : t('staffTools.addTemple'), function () { enterSideMode(entry.id); }, 'secondary'],
-       [t('staffTools.delete'), function () { removeFrame(entry.id); }, 'danger']].forEach(function (a) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.className = 'btn small ' + a[2];
-        b.textContent = a[0];
-        b.addEventListener('click', a[1]);
-        row.appendChild(b);
-      });
-      tools.appendChild(row);
-      info.appendChild(tools);
+    if (entry.description) {
+      var desc = document.createElement('p');
+      desc.className = 'detail-desc';
+      desc.textContent = entry.description;
+      info.appendChild(desc);
     }
+
+    var foot = document.createElement('div');
+    foot.className = 'detail-foot';
+    if (!entry.demo && entry.isPublic) {
+      var rep = document.createElement('button');
+      rep.type = 'button';
+      rep.className = 'link-btn';
+      rep.textContent = t('report.link');
+      rep.addEventListener('click', function () { openReport(entry); });
+      foot.appendChild(rep);
+    }
+    if (own) {
+      var ed = document.createElement('a');
+      ed.className = 'btn secondary small';
+      ed.href = hashFor({ name: 'partner', id: 'product', sub: entry.id });
+      ed.textContent = t('detail.editInDashboard');
+      foot.appendChild(ed);
+    }
+    if (foot.childNodes.length) info.appendChild(foot);
+
     grid.appendChild(info);
     detailBody.appendChild(grid);
     updateSimilarCarousel();
 
-    // the full-size picture (and whether a try-on asset exists at all)
-    getFullFrameData(entry.id).then(function (full) {
-      if (view.name !== 'detail' || view.id !== entry.id) return;
-      if (full.img && full.img.src) img.src = full.img.src;
-    }).catch(function (e) {
-      if (view.name !== 'detail' || view.id !== entry.id) return;
-      console.warn('No try-on picture for this frame', e);
-      var msg = document.createElement('p');
-      msg.className = 'detail-unavailable';
-      msg.textContent = staff.on ? t('detail.noAsset.staff') : t('detail.noAsset.customer');
-      if (actions.parentNode) actions.parentNode.replaceChild(msg, actions);
-      note.textContent = '';
-      entry.noAsset = true;
-    });
+    // the full-size picture of the try-on asset
+    if (entry.tryOnReady) {
+      getFullFrameData(entry.id).then(function (full) {
+        if (view.name !== 'detail' || view.id !== entry.id) return;
+        if (full.img && full.img.src) img.src = full.img.src;
+      }).catch(function (e) {
+        if (view.name !== 'detail' || view.id !== entry.id) return;
+        console.warn('No try-on picture for this frame', e);
+        var msg = document.createElement('p');
+        msg.className = 'detail-unavailable';
+        msg.textContent = t('detail.noAsset.customer');
+        if (actions.parentNode) actions.parentNode.replaceChild(msg, actions);
+        entry.tryOnReady = false;
+      });
+    }
   }
 
   // From a card, a frame's page or "Frame details": open the try-on with this frame.
   function tryOnFrame(id, mode) {
     var entry = findEntry(id);
-    if (!entry) return;
+    if (!entry || !entry.tryOnReady) return;
+    // the picker shows the frames this one came from
+    var src = entry.demo ? 'demo' : 'shop:' + entry.shopId;
+    if (sourceKey !== src && entry.isPublic !== false) useSource(src);
     var fromDetail = view.name === 'detail';
     selectFrame(id, { keepUrl: true });
     navigate({ name: 'tryon', id: id }, { from: fromDetail ? id : null });
@@ -3308,47 +3092,6 @@ function track(eventName, params) {
         else if (view.name === 'tryon') { var b = document.getElementById('liveStartBtn'); if (b && !stageStart.hidden) b.focus({ preventScroll: true }); }
       });
     }
-  }
-
-  function removeFrame(id) {
-    var entry = findEntry(id);
-    if (!currentUser || !entry) return;
-    confirmAction({
-      title: t('del.title'),
-      body: [t('del.body', { name: frameName(entry) })],
-      ok: t('del.ok'), cancel: t('common.cancel'), danger: true
-    }).then(function (yes) {
-      if (!yes) return;
-      var uid = currentUser.uid;
-      return Promise.all([
-        deleteDoc(doc(db, 'users', uid, 'frames', id)),
-        deleteDoc(doc(db, 'users', uid, 'framesFull', id))
-      ]).then(function () {
-        deleteDoc(doc(db, 'users', uid, 'framesSide', id)).catch(function (e) { console.error('Failed to delete temple photo', e); });
-        deleteDoc(doc(db, 'users', uid, 'framesSource', id)).catch(function (e) { console.error('Failed to delete original photo', e); });
-        catalogIndex = catalogIndex.filter(function (f) { return f.id !== id; });
-        delete fullDataCache[id];
-        selectedIds.delete(id);
-        var el = libraryRow.querySelector('[data-id="' + id + '"]');
-        if (el) el.parentNode.removeChild(el);
-        if (activeFrameId === id) { activeFrameId = null; redrawFacePreview(); }
-        if (editingFrameId === id) closeEditTags();
-        rebuildFilterBar();
-        applyFilters();
-        updateSelectedBanner();
-        updateTryOnHint();
-        renderLiveStrip();
-        arForget(id);
-        if (addTarget.kind === 'side' && addTarget.frameId === id) { discardPendingFrame(); exitSideMode(); }
-        if (addTarget.kind === 'replace' && addTarget.frameId === id) { discardPendingFrame(); exitReplaceMode(); }
-        if (inShortlist(id)) { shortlist = shortlist.filter(function (x) { return x !== id; }); saveShortlist(); syncShortlistUi(); }
-        toast(t('del.done'));
-        if (view.name === 'detail' && view.id === id) navigate({ name: 'browse', id: null }, { replace: true });
-      }).catch(function (e) {
-        console.error('Failed to delete frame', e);
-        toast(t('del.fail'), 'error');
-      });
-    });
   }
 
   // "Return to the product": the frame's own page.
@@ -3381,78 +3124,345 @@ function track(eventName, params) {
     updateSelectedBanner();
     updateTryOnHint();
     redrawFacePreview();
-    var entry = findEntry(id);
-    if (entry && !entry.draft) {
-      track('frame_tried_on', {
-        shape: entry.tags.shape || 'untagged',
-        color: entry.tags.color || 'untagged',
-        rim: entry.tags.rim || 'untagged'
+  }
+
+  // ---------- catalogue sources: the demo and participating shops ----------
+
+  var DEMO_HIDDEN = {};            // demo frames the admin has switched off (config/demo)
+  var demoConfigLoaded = !CONFIGURED;
+  var missingIds = {};             // product ids confirmed gone (for pruning the shortlist)
+
+  function demoEntry(f) {
+    return {
+      id: f.id, source: 'demo', demo: true, shopId: null, name: null, nameKey: 'demo.name.' + f.id,
+      tags: f.tags, size: cleanSize(f.size), material: f.material, frameType: f.frameType,
+      thumbData: f.thumb, cutoutUrl: f.cutout, manifest: f.manifest, tryOnReady: true,
+      level: f.level, rimType: f.rimType, translucent: f.translucent, prepared: f.prepared,
+      hasSide: false, createdAt: 0, order: DEMO_FRAMES.indexOf(f)
+    };
+  }
+  DEMO_FRAMES.forEach(function (f) { entryMap[f.id] = demoEntry(f); });
+  function demoEntries() {
+    return DEMO_FRAMES.filter(function (f) { return !DEMO_HIDDEN[f.id]; }).map(function (f) { return entryMap[f.id]; });
+  }
+  if (CONFIGURED) {
+    backend.getConfig('demo').then(function (cfg) {
+      DEMO_HIDDEN = {};
+      ((cfg && cfg.hidden) || []).forEach(function (id) { DEMO_HIDDEN[id] = true; });
+    }).catch(function () {}).then(function () {
+      demoConfigLoaded = true;
+      if (sourceKey === 'demo') { catalogIndex = demoEntries(); afterCatalogLoaded(); }
+      if (view.name === 'home') renderHome();
+    });
+  }
+
+  // A published product as a catalogue entry.
+  function productEntry(p) {
+    var im = p.images || {}, tr = p.tryOn || {};
+    var ready = tr.status === 'ready' && im.cutout && im.cutout.url && im.manifest && im.manifest.url;
+    return {
+      id: p.id, source: 'shop', demo: false, shopId: p.shopId,
+      name: typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 80) : null,
+      tags: p.tags || {}, size: cleanSize(p.size), thumbData: im.thumb ? im.thumb.url : '',
+      cutoutUrl: ready ? im.cutout.url : null, manifestUrl: ready ? im.manifest.url : null,
+      sideUrl: im.side && im.side.url ? im.side.url : null, hasSide: !!(ready && im.side && im.side.url),
+      tryOnReady: !!ready, level: tr.level || '3d', rimType: tr.rimType || null,
+      translucent: tr.translucent == null ? null : !!tr.translucent, prepared: tr.prepared || 'auto',
+      createdAt: p.createdMs || 0, pricing: p.pricing || null, priceUpdatedAt: p.priceUpdatedMs || null,
+      availability: p.availability || null, sku: p.sku || '', brand: p.brand || '', material: p.material || '',
+      colourName: p.colourName || '', description: p.description || '', frameType: p.frameType || null,
+      link: p.link || '', isPublic: p.public === true, status: p.status
+    };
+  }
+
+  function getShopInfo(shopId) {
+    if (!shopCache[shopId]) {
+      shopCache[shopId] = backend.getShop(shopId).catch(function (e) {
+        console.warn('Shop not available', e);
+        return null;
       });
     }
+    return shopCache[shopId];
   }
+  function shopOf(entry) { return entry && entry.shopId && shopCache[entry.shopId] && shopCache[entry.shopId].value; }
+  function rememberShop(shopId, shop) { shopCache[shopId] = Promise.resolve(shop); shopCache[shopId].value = shop; }
 
-  // A plain count of how many times a customer photo has been captured for try-on --
-  // no identity, no image, nothing that could tie a number back to a specific person.
-  // Lives at users/{uid}/stats/customerPhotos, so it's covered by the same per-account
-  // security rule as everything else and needs no separate Firestore rule change.
-  function loadPhotoCount(uid) {
-    getDoc(doc(db, 'users', uid, 'stats', 'customerPhotos')).then(function (snap) {
-      var count = (snap.exists() && snap.data().count) || 0;
-      photoCountDisplay.textContent = t('staff.photoCount', { n: count });
-      photoCountDisplay.dataset.count = count;
-    }).catch(function (e) { console.error('Could not load photo count', e); });
-  }
-
-  function bumpPhotoCount() {
-    if (!currentUser) return;
-    var ref = doc(db, 'users', currentUser.uid, 'stats', 'customerPhotos');
-    updateDoc(ref, { count: increment(1) })
-      .catch(function () { return setDoc(ref, { count: 1 }, { merge: true }); })
-      .catch(function (e) { console.error('Could not update photo count', e); })
-      .then(function () { loadPhotoCount(currentUser.uid); });
-  }
-
-  function loadCatalog(uid) {
-    showCatalogProblem(false);
-    return getDocs(collection(db, 'users', uid, 'frames')).then(function (snap) {
-      if (!currentUser || currentUser.uid !== uid) return;
-      catalogIndex = [];
-      snap.forEach(function (d) {
-        var data = d.data();
-        if (data.tags && data.tags.free) data.tags.free.forEach(function (t) { allFreeTags.add(t); });
-        var created = data.createdAt && typeof data.createdAt.toMillis === 'function' ? data.createdAt.toMillis() : null;
-        catalogIndex.push({
-          id: d.id, thumbData: data.thumbData, tags: data.tags || {}, size: cleanSize(data.size), hasSide: !!data.hasSide,
-          name: typeof data.name === 'string' && data.name.trim() ? data.name.trim().slice(0, 60) : null, createdAt: created,
-          hasSource: !!data.hasSource, level: data.level || '3d', rimType: data.rimType || null,
-          translucent: data.translucent == null ? null : !!data.translucent, prepared: data.prepared || 'manual'
-        });
+  // Makes sure a frame (from a link, the shortlist or a refresh) is known.
+  function ensureEntry(id) {
+    if (!id || id === DRAFT_ID || entryMap[id]) return Promise.resolve(entryMap[id] || null);
+    if (!CONFIGURED || missingIds[id]) return Promise.resolve(null);
+    return backend.getProduct(id).then(function (p) {
+      if (!p || !p.public) { missingIds[id] = true; return null; }
+      var e = productEntry(p);
+      entryMap[id] = e;
+      return getShopInfo(p.shopId).then(function (shop) {
+        if (shop) rememberShop(p.shopId, shop);
+        return e;
       });
-      catalogLoaded = true;
-      refreshTagSuggestions();
-      rebuildFilterBar();
-      renderLibrary();
-      showCatalogProblem(false);
-      updateTryOnHint();
-      pruneShortlist();
-      syncShortlistUi();
-      renderLiveStrip();
-      // a link straight to a frame or a try-on can only be honoured now
-      if (view.name === 'detail') renderDetail(view.id);
-      if (view.name === 'tryon') {
-        if (view.id && findEntry(view.id) && activeFrameId !== view.id) selectFrame(view.id, { keepUrl: true });
-        syncTryonBack(); updateSelectedBanner();
-      }
+    }).catch(function () { missingIds[id] = true; return null; });
+  }
+
+  function sourceTitle() {
+    if (sourceKey && sourceKey.indexOf('shop:') === 0) return sourceShop ? sourceShop.name : t('cat.shopFrames');
+    return t('cat.demoTitle');
+  }
+
+  var sourceSeq = 0;
+  // Shows a source in the catalogue page (and the try-on picker).
+  function useSource(key) {
+    if (key === sourceKey && (catalogLoaded || catalogProblem)) { renderBrowseIntro(); browseTitle.textContent = sourceTitle(); return; }
+    var seq = ++sourceSeq;
+    sourceKey = key;
+    sourceShop = null;
+    resetCatalogView();
+    browseTitle.textContent = sourceTitle();
+    renderBrowseIntro();
+    updateCatalogNote(0);
+    if (key === 'demo') {
+      catalogIndex = demoEntries();
+      afterCatalogLoaded();
+      return;
+    }
+    var shopId = key.slice(5);
+    if (!CONFIGURED) { showCatalogProblem(true); return; }
+    Promise.all([getShopInfo(shopId), backend.loadPublicCatalogue(shopId, 2000)]).then(function (r) {
+      if (seq !== sourceSeq) return;
+      var shop = r[0];
+      if (!shop || shop.status !== 'approved') { sourceShop = null; catalogIndex = []; catalogLoaded = true; showShopMissing(); return; }
+      rememberShop(shopId, shop);
+      sourceShop = shop;
+      catalogIndex = r[1].map(function (p) { var e = productEntry(p); entryMap[e.id] = e; return e; });
+      browseTitle.textContent = sourceTitle();
+      if (view.name === 'browse') setTitle(sourceTitle());
+      renderBrowseIntro();
+      afterCatalogLoaded();
     }).catch(function (e) {
-      console.error('Failed to load catalog', e);
-      catalogIndex = [];
-      catalogLoaded = false;
-      libraryRow.innerHTML = '';
+      if (seq !== sourceSeq) return;
+      console.error('Failed to load the shop catalogue', e);
+      catalogIndex = []; catalogLoaded = false;
       showCatalogProblem(true);
       updateCatalogNote(0);
       updateTryOnHint();
-      if (view.name === 'detail') renderDetail(view.id);
     });
+  }
+
+  function afterCatalogLoaded() {
+    catalogLoaded = true;
+    catalogIndex.forEach(function (e) { ((e.tags && e.tags.free) || []).forEach(function (tg) { allFreeTags.add(tg); }); });
+    rebuildFilterBar();
+    renderLibrary();
+    showCatalogProblem(false);
+    updateTryOnHint();
+    syncShortlistUi();
+    renderLiveStrip();
+    syncTryonBack();
+    if (view.name === 'detail') renderDetail(view.id);
+    if (view.name === 'tryon') {
+      if (view.id && findEntry(view.id) && activeFrameId !== view.id) selectFrame(view.id, { keepUrl: true });
+      updateSelectedBanner();
+    }
+  }
+
+  function showShopMissing() {
+    libraryRow.innerHTML = '';
+    browseTitle.textContent = t('cat.shopMissing.title');
+    browseIntro.innerHTML = '';
+    var p = document.createElement('p');
+    p.className = 'lede';
+    p.textContent = t('cat.shopMissing.text');
+    var a = document.createElement('a');
+    a.className = 'btn primary'; a.href = '#/shops'; a.textContent = t('home.shopsBtn');
+    browseIntro.appendChild(p); browseIntro.appendChild(a);
+    catalogNote.textContent = '';
+    noResults.hidden = true; emptyCatalog.hidden = true;
+  }
+
+  // Above the catalogue: what this is (the demo, or which shop and how to reach it).
+  function renderBrowseIntro() {
+    browseIntro.innerHTML = '';
+    if (!sourceKey || sourceKey === 'demo') {
+      var note = document.createElement('p');
+      note.className = 'demo-note';
+      note.textContent = t('cat.demoNote');
+      browseIntro.appendChild(note);
+      return;
+    }
+    if (sourceShop) browseIntro.appendChild(shopCard(sourceShop, { full: true }));
+  }
+
+  // A shop's name, place and contact links (for its catalogue, frame pages and the shop list).
+  function shopCard(shop, opts) {
+    opts = opts || {};
+    var card = document.createElement(opts.link ? 'a' : 'div');
+    card.className = 'shop-card' + (opts.full ? ' full' : '');
+    if (opts.link) card.href = hashFor({ name: 'browse', source: 'shop:' + shop.id });
+    var h = document.createElement(opts.full ? 'p' : 'h3');
+    h.className = 'shop-name';
+    h.textContent = shop.name;
+    card.appendChild(h);
+    var place = [shop.address, shop.city].filter(Boolean).join(', ');
+    if (place) { var pl = document.createElement('p'); pl.className = 'shop-place'; pl.textContent = place; card.appendChild(pl); }
+    if (opts.full && shop.about) { var ab = document.createElement('p'); ab.className = 'shop-about'; ab.textContent = shop.about; card.appendChild(ab); }
+    if (!opts.link) {
+      var links = contactLinks(shop, null);
+      if (links.childNodes.length) card.appendChild(links);
+    }
+    return card;
+  }
+
+  // Call / WhatsApp / email / website links for a shop (and a product's own page).
+  function contactLinks(shop, entry) {
+    var row = document.createElement('div');
+    row.className = 'contact-row';
+    function add(href, key, primary, external) {
+      if (!href) return;
+      var a = document.createElement('a');
+      a.className = 'btn small ' + (primary ? 'primary' : 'secondary');
+      a.href = href;
+      a.textContent = t(key);
+      if (external) { a.target = '_blank'; a.rel = 'noopener noreferrer'; }
+      row.appendChild(a);
+    }
+    var ask = entry ? t('contact.askAbout', { name: frameName(entry), sku: entry.sku ? ' (' + entry.sku + ')' : '' }) : '';
+    add(whatsappLink(shop.whatsapp, ask), 'contact.whatsapp', !!entry, true);
+    add(telLink(shop.phone), 'contact.call', false, false);
+    if (shop.email) add('mailto:' + shop.email + (entry ? '?subject=' + encodeURIComponent(ask) : ''), 'contact.email', false, false);
+    if (entry && entry.link) add(entry.link, 'contact.productPage', false, true);
+    else if (shop.website) add(shop.website, 'contact.website', false, true);
+    return row;
+  }
+
+  // ---------- home and the shop list ----------
+
+  var shopsList = null, shopsLoading = null;
+  function loadShops() {
+    if (!CONFIGURED) return Promise.resolve([]);
+    if (shopsList) return Promise.resolve(shopsList);
+    if (!shopsLoading) {
+      shopsLoading = backend.listApprovedShops(100).then(function (list) {
+        shopsList = list;
+        list.forEach(function (sh) { rememberShop(sh.id, sh); });
+        return list;
+      }).catch(function (e) { console.warn('Could not load shops', e); shopsLoading = null; return null; });
+    }
+    return shopsLoading;
+  }
+
+  function demoCard(e) {
+    var card = document.createElement('article');
+    card.className = 'frame-card demo-card';
+    var media = document.createElement('div');
+    media.className = 'frame-card-media';
+    var img = document.createElement('img');
+    img.loading = 'lazy'; img.decoding = 'async'; img.width = 260; img.height = 160; img.alt = ''; img.src = e.thumbData;
+    media.appendChild(img);
+    card.appendChild(media);
+    var body = document.createElement('div');
+    body.className = 'frame-card-body';
+    var title = document.createElement('h3');
+    title.className = 'frame-card-title';
+    var link = document.createElement('a');
+    link.className = 'frame-card-link';
+    link.href = hashFor({ name: 'detail', id: e.id });
+    link.textContent = frameName(e);
+    title.appendChild(link);
+    body.appendChild(title);
+    var badge = document.createElement('span');
+    badge.className = 'demo-badge';
+    badge.textContent = t('demo.badge');
+    body.appendChild(badge);
+    card.appendChild(body);
+    var actions = document.createElement('div');
+    actions.className = 'frame-card-actions';
+    var tryBtn = document.createElement('button');
+    tryBtn.type = 'button';
+    tryBtn.className = 'btn secondary frame-card-tryon';
+    tryBtn.textContent = t('card.tryon');
+    tryBtn.setAttribute('aria-label', t('card.tryon.aria', { name: frameName(e) }));
+    tryBtn.addEventListener('click', function () { useSource('demo'); tryOnFrame(e.id, 'auto'); });
+    actions.appendChild(tryBtn);
+    card.appendChild(actions);
+    return card;
+  }
+
+  function renderHome() {
+    homeDemoRow.innerHTML = '';
+    demoEntries().forEach(function (e) { homeDemoRow.appendChild(demoCard(e)); });
+    var first = demoEntries()[0];
+    var tryLink = document.getElementById('homeTryBtn');
+    if (first) tryLink.href = hashFor({ name: 'tryon', id: first.id });
+    homeShopRow.innerHTML = '';
+    if (!CONFIGURED) { homeShopRow.appendChild(emptyLine(t('shops.none'))); return; }
+    loadShops().then(function (list) {
+      if (view.name !== 'home') return;
+      homeShopRow.innerHTML = '';
+      if (!list) { homeShopRow.appendChild(emptyLine(t('shops.error'))); return; }
+      if (!list.length) { homeShopRow.appendChild(emptyLine(t('shops.none'))); return; }
+      list.slice(0, 6).forEach(function (sh) { homeShopRow.appendChild(shopCard(sh, { link: true })); });
+    });
+  }
+  document.getElementById('homeTryBtn').addEventListener('click', function () { useSource('demo'); });
+
+  function emptyLine(text) { var p = document.createElement('p'); p.className = 'hint'; p.textContent = text; return p; }
+
+  function renderShops() {
+    shopsGrid.innerHTML = '';
+    shopsNote.textContent = CONFIGURED ? t('cat.loading') : '';
+    if (!CONFIGURED) { shopsGrid.appendChild(emptyLine(t('shops.none'))); return; }
+    loadShops().then(function (list) {
+      if (view.name !== 'shops') return;
+      shopsGrid.innerHTML = '';
+      if (!list) { shopsNote.textContent = ''; shopsGrid.appendChild(emptyLine(t('shops.error'))); return; }
+      shopsNote.textContent = tn('shops.count', list.length);
+      if (!list.length) { shopsGrid.appendChild(emptyLine(t('shops.none'))); return; }
+      list.forEach(function (sh) { shopsGrid.appendChild(shopCard(sh, { link: true })); });
+    });
+  }
+
+  // ---------- the shop dashboard and the admin dashboard ----------
+  // Both live in their own modules, loaded on first visit. The server rules
+  // decide what each account may do; these pages only offer it.
+
+  function dashboardContext() {
+    return {
+      backend: backend, t: t, tn: tn, getLang: getLang, toast: toast, confirmAction: confirmAction,
+      navigate: navigate, hashFor: hashFor, currentUser: function () { return currentUser; },
+      isAdmin: function () { return account.isAdmin; }, adminChecked: function () { return account.checked; },
+      tagLabel: tagLabel, frameName: frameName, sizeShort: sizeShort, setTitle: setTitle,
+      openPhotoStep: openPhotoStep, previewProduct: previewProduct, productEntry: productEntry,
+      forgetProduct: forgetProduct, legacyImport: legacyImport, demoFrames: DEMO_FRAMES, demoName: function (id) { return frameName(entryMap[id]); },
+      FACETS: FACETS
+    };
+  }
+  var partnerApi = null, adminApi = null;
+  function openPartner(r) {
+    if (!CONFIGURED) { pagePartner.querySelector('#partnerRoot').textContent = t('setup.notConfigured'); return; }
+    loadPartner().then(function (m) {
+      if (!partnerApi) partnerApi = m.initPartner(document.getElementById('partnerRoot'), dashboardContext());
+      if (view.name === 'partner') partnerApi.show(r);
+    }).catch(function (e) { console.error(e); toast(t('common.loadFailed'), 'error'); });
+  }
+  function openAdmin(r) {
+    if (!CONFIGURED) { pageAdmin.querySelector('#adminRoot').textContent = t('setup.notConfigured'); return; }
+    loadAdmin().then(function (m) {
+      if (!adminApi) adminApi = m.initAdmin(document.getElementById('adminRoot'), dashboardContext());
+      if (view.name === 'admin') adminApi.show(r);
+    }).catch(function (e) { console.error(e); toast(t('common.loadFailed'), 'error'); });
+  }
+
+  // A shop's own product as customers will see it (also before it's published).
+  function previewProduct(p) {
+    var e = productEntry(p);
+    entryMap[e.id] = e;
+    delete fullDataCache[e.id];
+    arForget(e.id);
+    previewIds[e.id] = true;
+    navigate({ name: 'detail', id: e.id });
+  }
+  var previewIds = {};
+  function forgetProduct(id) {
+    delete entryMap[id]; delete fullDataCache[id]; arForget(id);
+    catalogIndex = catalogIndex.filter(function (e) { return e.id !== id; });
   }
 
   // ---------- add-frame: source (camera or upload) ----------
@@ -3534,7 +3544,6 @@ function track(eventName, params) {
   bgModeAutoBtn.addEventListener('click', function () { setBgMode('auto'); reprocessIfPending(); });
   bgModeSingleBtn.addEventListener('click', function () { setBgMode('single'); reprocessIfPending(); });
   bgModeTwoShotBtn.addEventListener('click', function () { setBgMode('twoShot'); });
-  bgModeAiBtn.addEventListener('click', function () { setBgMode('ai'); });
   retakeBgBtn.addEventListener('click', clearBackgroundReference);
 
   // Temple (side) photos have no lenses to find, so they use the simple removal.
@@ -3596,37 +3605,12 @@ function track(eventName, params) {
     setTool('none');
     updateUndoState();
     resetTagInputs();
-    if (addTarget.kind === 'replace') prefillFromEntry(findEntry(addTarget.frameId));
+    if (addTarget.product) prefillFromProduct(addTarget.product);
     showFrameCalibSection();
 
-    if (bgRemovalMode === 'ai') {
-      aiRemovalLoading = true;
-      updateFrameCalibBanner();
-      canvas.toBlob(function (blob) {
-        fetch(REMOVEBG_WORKER_URL, { method: 'POST', body: blob })
-          .then(function (resp) {
-            if (!resp.ok) return resp.text().then(function (t) { throw new Error(t || ('Worker returned ' + resp.status)); });
-            return resp.blob();
-          })
-          .then(function (resultBlob) { return createImageBitmap(resultBlob); })
-          .then(function (bitmap) {
-            var aiCanvas = document.createElement('canvas');
-            aiCanvas.width = canvas.width; aiCanvas.height = canvas.height;
-            aiCanvas.getContext('2d').drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-            pendingAiRemovedCanvas = aiCanvas;
-          })
-          .catch(function (e) {
-            console.error('AI background removal failed, falling back to local removal', e);
-            pendingAiRemovedCanvas = null;
-          })
-          .then(function () {
-            aiRemovalLoading = false;
-            processPendingFrame();
-          });
-      }, 'image/png');
-    } else {
-      processPendingFrame();
-    }
+    // quick checks of the photo itself (sharpness, light, size) with advice
+    showPhotoCheck(canvas, naturalW, naturalH);
+    processPendingFrame();
   }
 
   function openAddFrameFromFile(file) {
@@ -3720,13 +3704,15 @@ function track(eventName, params) {
         frameCalibPoints = [res.landmarks.lensL, res.landmarks.lensR].map(function (p) { return { x: Math.round(p.x), y: Math.round(p.y) }; });
       }
       // fill the catalogue's rim tag from the detected rim type, unless chosen already
-      if (res.ok && !pendingTags.rim && addTarget.kind !== 'replace') {
+      if (res.ok && !pendingTags.rim) {
         pendingTags.rim = { full: 'fullrim', semi: 'semirimless', rimless: 'rimless' }[res.rimType] || null;
         renderAddChips();
       }
       if (!res.ok && !auto.calibManual) frameCalibPoints = [];
       renderAutoReview();
       processPendingFrame();
+      renderPhotoCheck();
+      if (!res.ok) recordExtractionFailure(res);
       });
     }, 40);
   }
@@ -3944,7 +3930,7 @@ function track(eventName, params) {
         })
       : Promise.resolve({
           img: snap, p1: pts[0], p2: pts[1], tags: pendingTags, size: readSize(sizeEye, sizeBridge, sizeTemple), side: null,
-          fit: effectiveMode() === 'auto' ? buildFit(auto.result, 0, 0, 1, 1, pts) : null
+          fit: effectiveMode() === 'auto' ? buildFitFrom(auto.result, currentLevel(), 0, 0, 1, 1, pts) : null
         });
     Promise.all([preview.promise, dataPromise]).then(function (res) {
       var r = res[0], data = res[1];
@@ -3988,57 +3974,95 @@ function track(eventName, params) {
   modelPreviewYaw.addEventListener('input', renderPreviewNow);
   [sizeEye, sizeBridge, sizeTemple].forEach(function (el) { el.addEventListener('change', schedulePreview); });
 
-  // ---------- add-frame: update the photo of an existing frame ----------
-  // Re-process the stored original with the current settings (or take a better
-  // photo). The frame keeps its id, tags, size and temple photo.
+  // ---------- add-frame: the photo step for one of the shop's products ----------
+  // Reached from the product in the shop dashboard (#/add/<productId>, or
+  // .../side for a temple photo). The product's details live in the dashboard;
+  // this page makes and saves its photo and try-on asset.
 
-  function prefillFromEntry(entry) {
-    if (!entry) return;
-    var t = entry.tags || {};
-    pendingTags = { shape: t.shape || null, color: t.color || null, gender: t.gender || null, rim: t.rim || null, free: (t.free || []).slice() };
+  function prefillFromProduct(p) {
+    if (!p) return;
+    var tg = p.tags || {};
+    pendingTags = { shape: tg.shape || null, color: tg.color || null, gender: tg.gender || null, rim: tg.rim || null, free: (tg.free || []).slice() };
     renderAddChips(); renderFreeTagList();
-    fillSize(entry.size, sizeEye, sizeBridge, sizeTemple);
-    frameNameInput.value = entry.name || '';
+    fillSize(p.size, sizeEye, sizeBridge, sizeTemple);
+    frameNameInput.value = p.name || '';
   }
 
-  function enterReplaceMode(id) {
-    var entry = findEntry(id);
-    if (!entry) return;
-    showTab('add');
+  // Called by the dashboard: start the photo step for `product`.
+  function openPhotoStep(product, shopStatus, kind) {
+    pendingProducts[product.id] = { product: product, shopStatus: shopStatus };
+    navigate({ name: 'add', id: product.id, sub: kind === 'side' ? 'side' : null });
+  }
+  var pendingProducts = {};
+
+  function openAddRoute(r) {
+    var signedIn = backend.isRealUser(currentUser);
+    addLocked.hidden = signedIn && !!r.id;
+    addContent.hidden = !(signedIn && r.id);
+    if (!signedIn || !r.id) return;
+    var kind = r.sub === 'side' ? 'side' : 'product';
+    if (addTarget.frameId === r.id && addTarget.kind === kind && addTarget.product) { syncProductBar(); return; }
+    var known = pendingProducts[r.id];
+    var load = known ? Promise.resolve(known)
+      : Promise.all([backend.getProduct(r.id), backend.getShop(currentUser.uid)]).then(function (x) { return { product: x[0], shopStatus: x[1] ? x[1].status : null }; });
+    load.then(function (k) {
+      if (view.name !== 'add' || view.id !== r.id) return;
+      if (!k.product || k.product.shopId !== currentUser.uid) { addLocked.hidden = false; addContent.hidden = true; return; }
+      if (kind === 'side' && !(k.product.tryOn && k.product.tryOn.status === 'ready')) { navigate({ name: 'add', id: r.id }, { replace: true }); return; }
+      enterProductMode(k.product, k.shopStatus, kind);
+    }).catch(function (e) {
+      console.error('Could not open the product', e);
+      toast(t('common.loadFailed'), 'error');
+    });
+  }
+
+  function enterProductMode(product, shopStatus, kind) {
     discardPendingFrame();
-    if (addTarget.kind === 'side') exitSideMode();
-    addTarget = { kind: 'replace', frameId: id };
-    sideTargetThumb.innerHTML = '';
-    var img = document.createElement('img');
-    img.src = entry.thumbData; img.alt = '';
-    sideTargetThumb.appendChild(img);
-    sideTarget.style.display = 'flex';
-    replaceTargetHint.style.display = 'block';
-    replaceTargetRow.style.display = entry.hasSource ? 'flex' : 'none';
-    syncAddTargetText();
+    addTarget = { kind: kind, frameId: product.id, product: product, shopStatus: shopStatus, replacingSide: !!(product.images && product.images.side) };
+    pendingProducts[product.id] = { product: product, shopStatus: shopStatus };
+    prefillFromProduct(product);
+    frontOnlySection.style.display = 'none';
+    sideTarget.style.display = 'none';
+    sideTargetHint.style.display = kind === 'side' ? 'block' : 'none';
+    replaceTargetHint.style.display = 'none';
+    var hasSource = !!(product.images && product.images.source);
+    replaceTargetRow.style.display = kind === 'product' && hasSource ? 'flex' : 'none';
     addedMsg.style.display = 'none';
-    if (bgRemovalMode !== 'auto') setBgMode('auto');
+    if (kind === 'side' || bgRemovalMode !== 'auto') setBgMode('auto');
+    syncProductBar();
+    syncAddTargetText();
+    renderPhotoGuide(true);
     advanceForNextCapture();
   }
 
-  function exitReplaceMode() {
-    addTarget = { kind: 'front', frameId: null };
-    sideTarget.style.display = 'none';
-    replaceTargetHint.style.display = 'none';
-    replaceTargetRow.style.display = 'none';
-    syncAddTargetText();
-    updateFrameSourceUI();
+  function syncProductBar() {
+    var p = addTarget.product;
+    addProductBar.hidden = !p;
+    if (!p) return;
+    addProductThumb.innerHTML = '';
+    if (p.images && p.images.thumb && p.images.thumb.url) {
+      var img = document.createElement('img'); img.src = p.images.thumb.url; img.alt = '';
+      addProductThumb.appendChild(img);
+    }
+    addProductName.textContent = (p.name || t('partner.untitled')) + (p.sku ? ' · ' + p.sku : '');
+    addProductBack.href = hashFor({ name: 'partner', id: 'product', sub: p.id });
+  }
+
+  function backToProduct(product) {
+    var id = product ? product.id : addTarget.frameId;
+    if (partnerApi && product) partnerApi.productChanged(product);
+    navigate({ name: 'partner', id: 'product', sub: id });
   }
 
   reprocessBtn.addEventListener('click', function () {
-    if (addTarget.kind !== 'replace' || !currentUser) return;
-    var id = addTarget.frameId;
+    var p = addTarget.product;
+    if (!p || !p.images || !p.images.source) return;
     reprocessBtn.disabled = true;
-    getDoc(doc(db, 'users', currentUser.uid, 'framesSource', id)).then(function (snap) {
-      if (!snap.exists()) throw new Error('No original photo saved for this frame');
-      return loadImage(snap.data().imageData);
+    backend.getSourceBlob(p.images.source.path).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      return loadImage(url).then(function (img) { URL.revokeObjectURL(url); return img; });
     }).then(function (img) {
-      if (addTarget.kind !== 'replace' || addTarget.frameId !== id) return;
+      if (!addTarget.product || addTarget.product.id !== p.id) return;
       pendingSourceIsNew = false;
       beginAddFrameFromSource(img, img.naturalWidth, img.naturalHeight);
     }).catch(function (e) {
@@ -4046,6 +4070,102 @@ function track(eventName, params) {
       showAddSourceError('add.err.original');
     }).then(function () { reprocessBtn.disabled = false; });
   });
+
+  // ---------- add-frame: how to photograph a frame, and checking the photo ----------
+
+  var photoQuality = null;     // checkPhoto() result for the photo on the page
+
+  function renderPhotoGuide(open) {
+    photoGuide.innerHTML = '';
+    var side = addTarget.kind === 'side';
+    var d = document.createElement('details');
+    d.className = 'photo-guide';
+    d.open = !!open;
+    var sm = document.createElement('summary');
+    sm.textContent = t(side ? 'guide.side.title' : 'guide.title');
+    d.appendChild(sm);
+    var ul = document.createElement('ul');
+    ul.className = 'guide-list';
+    (side ? ['guide.side.1', 'guide.side.2', 'guide.side.3'] : ['guide.1', 'guide.2', 'guide.3', 'guide.4', 'guide.5', 'guide.6']).forEach(function (k) {
+      var li = document.createElement('li'); li.textContent = t(k); ul.appendChild(li);
+    });
+    d.appendChild(ul);
+    if (!side) {
+      var fig = document.createElement('div');
+      fig.className = 'guide-examples';
+      [['good', 'guide.ex.good'], ['angled', 'guide.ex.angled'], ['cut', 'guide.ex.cut'], ['busy', 'guide.ex.busy']].forEach(function (ex) {
+        var f = document.createElement('figure');
+        f.className = 'guide-ex guide-ex-' + ex[0];
+        f.innerHTML = guideSvg(ex[0]);
+        var c = document.createElement('figcaption'); c.textContent = t(ex[1]);
+        f.appendChild(c);
+        fig.appendChild(f);
+      });
+      d.appendChild(fig);
+    }
+    photoGuide.appendChild(d);
+  }
+  // Little line drawings of a good photo and three common mistakes.
+  function guideSvg(kind) {
+    var frame = '<g fill="none" stroke="currentColor" stroke-width="5"><rect x="22" y="38" width="62" height="40" rx="12"/><rect x="116" y="38" width="62" height="40" rx="12"/><path d="M84 50q16-10 32 0"/></g>';
+    var mark = kind === 'good' ? '<path d="M168 14l8 8 14-16" fill="none" stroke="#2E7A72" stroke-width="5" stroke-linecap="round"/>' : '<path d="M170 8l16 16M186 8l-16 16" stroke="#B42318" stroke-width="5" stroke-linecap="round"/>';
+    var body = frame;
+    if (kind === 'angled') body = '<g transform="translate(100 58) skewY(-12) scale(0.86 1) translate(-100 -58)">' + frame + '</g>';
+    if (kind === 'cut') body = '<g transform="translate(46 0)">' + frame + '</g>';
+    if (kind === 'busy') body = '<g stroke="#B8BCB6" stroke-width="3"><path d="M0 30l200 40M0 70l200-30M40 0l30 116M140 0l-20 116"/></g>' + frame;
+    return '<svg viewBox="0 0 200 116" aria-hidden="true"><rect x="1" y="1" width="198" height="114" rx="10" fill="var(--display)" stroke="var(--line)"/>' + body + mark + '</svg>';
+  }
+
+  function showPhotoCheck(workCanvas, naturalW, naturalH) {
+    try {
+      var g = workCanvas.getContext('2d', { willReadFrequently: true });
+      photoQuality = checkPhoto(g.getImageData(0, 0, workCanvas.width, workCanvas.height), naturalW, naturalH);
+    } catch (e) { photoQuality = null; }
+    renderPhotoCheck();
+    var gd = photoGuide.querySelector('details');
+    if (gd) gd.open = false;
+  }
+
+  // What's wrong with the photo, and what to do about it: the quick checks
+  // above plus the extraction's own findings that call for a new photo.
+  function renderPhotoCheck() {
+    photoCheck.innerHTML = '';
+    var items = [];
+    if (photoQuality) photoQuality.issues.forEach(function (i) { items.push({ sev: i.severity, text: t('pq.' + i.code) }); });
+    var r = auto.result;
+    if (effectiveMode() === 'auto' && r && !auto.busy) {
+      if (!r.ok) items.push({ sev: 'error', text: t('pq.notFound') });
+      else r.warnings.forEach(function (wn) { if (RETAKE_CODES.indexOf(wn.code) !== -1) items.push({ sev: wn.severity === 'info' ? 'warn' : wn.severity, text: fxWarning(wn) }); });
+    }
+    var needRetake = items.some(function (i) { return i.sev === 'error' || i.sev === 'warn'; });
+    photoCheck.hidden = !items.length && !(photoQuality && !auto.busy);
+    var h = document.createElement('p');
+    h.className = 'photo-check-head ' + (items.some(function (i) { return i.sev === 'error'; }) ? 'bad' : needRetake ? 'warn' : 'ok');
+    h.textContent = !items.length ? t('pq.allGood') : t(needRetake ? 'pq.retakeAdvice' : 'pq.notes');
+    photoCheck.appendChild(h);
+    if (items.length) {
+      var ul = document.createElement('ul');
+      items.forEach(function (i) { var li = document.createElement('li'); li.className = i.sev; li.textContent = i.text; ul.appendChild(li); });
+      photoCheck.appendChild(ul);
+    }
+    if (needRetake) {
+      var row = document.createElement('div');
+      row.className = 'row';
+      var again = document.createElement('button');
+      again.type = 'button'; again.className = 'btn primary small';
+      again.textContent = t('pq.retake');
+      again.addEventListener('click', function () { discardPendingFrame(); advanceForNextCapture(); renderPhotoGuide(true); startFrameCamera(); });
+      var up = document.createElement('button');
+      up.type = 'button'; up.className = 'btn secondary small';
+      up.textContent = t('pq.another');
+      up.addEventListener('click', function () { discardPendingFrame(); advanceForNextCapture(); frameFileInputEl.value = ''; frameFileInputEl.click(); });
+      row.appendChild(again); row.appendChild(up);
+      photoCheck.appendChild(row);
+    }
+    // a frame that can't be extracted can still be listed with its photo, without try-on
+    saveNoTryonBtn.hidden = !(addTarget.kind === 'product' && pendingRawCanvas && effectiveMode() === 'auto' && r && !r.ok && !auto.busy);
+  }
+  var RETAKE_CODES = ['cropped', 'asymmetricStrong', 'lowContrast', 'small', 'wide', 'bridgeRepaired'];
 
   // ---------- add-frame: preview the unsaved frame in the real try-on ----------
 
@@ -4057,7 +4177,7 @@ function track(eventName, params) {
     var c = document.createElement('canvas');
     c.width = pendingProcessedCanvas.width; c.height = pendingProcessedCanvas.height;
     c.getContext('2d').drawImage(pendingProcessedCanvas, 0, 0);
-    var fit = effectiveMode() === 'auto' ? buildFit(auto.result, 0, 0, 1, 1, frameCalibPoints) : null;
+    var fit = effectiveMode() === 'auto' ? buildFitFrom(auto.result, currentLevel(), 0, 0, 1, 1, frameCalibPoints) : null;
     fullDataCache[DRAFT_ID] = { img: c, p1: frameCalibPoints[0], p2: frameCalibPoints[1], fit: fit };
     draftEntry = {
       id: DRAFT_ID, draft: true, thumbData: makeThumbCanvas(c, THUMB_DIM).toDataURL('image/png'),
@@ -4088,43 +4208,110 @@ function track(eventName, params) {
   }
   draftBackBtn.addEventListener('click', function () { endDraftPreview(true); });
 
-  // ---------- add-frame: temple (side) photo for an existing frame ----------
+  // ---------- importing the old single-shop library ----------
+  // Before shops existed, frames were saved under users/{uid}/... with their
+  // pictures inside Firestore. This copies them into the shop's products (as
+  // drafts, so price and tax can be added before publishing) with their
+  // pictures in Storage. Frames imported before are skipped.
 
-  function enterSideMode(id) {
-    var entry = findEntry(id);
-    if (!entry) return;
-    showTab('add');
-    discardPendingFrame();
-    if (addTarget.kind === 'replace') exitReplaceMode();
-    addTarget = { kind: 'side', frameId: id };
-    sideTargetThumb.innerHTML = '';
-    var img = document.createElement('img');
-    img.src = entry.thumbData; img.alt = '';
-    sideTargetThumb.appendChild(img);
-    addTarget.replacingSide = !!entry.hasSide;
-    sideTarget.style.display = 'flex';
-    sideTargetHint.style.display = 'block';
-    frontOnlySection.style.display = 'none';
-    syncAddTargetText();
-    addedMsg.style.display = 'none';
-    advanceForNextCapture();
+  function dataUrlToBlob(u) {
+    var m = /^data:([^;,]+)(;base64)?,(.*)$/.exec(u || '');
+    if (!m) throw new Error('not a data URL');
+    var bin = m[2] ? atob(m[3]) : decodeURIComponent(m[3]), arr = new Uint8Array(bin.length);
+    for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+    return new Blob([arr], { type: m[1] });
   }
 
-  function exitSideMode() {
-    addTarget = { kind: 'front', frameId: null };
-    sideTarget.style.display = 'none';
-    sideTargetHint.style.display = 'none';
-    frontOnlySection.style.display = 'block';
-    syncAddTargetText();
-    updateFrameSourceUI();
+  function legacyImport(onProgress) {
+    if (!currentUser) return Promise.reject(new Error('Not signed in'));
+    var uid = currentUser.uid, shopStatus = null, done = 0, imported = 0, skipped = 0, failed = 0;
+    return Promise.all([backend.getShop(uid), backend.legacyFrames(uid), backend.loadAllMyProducts(uid)]).then(function (r) {
+      shopStatus = r[0] ? r[0].status : null;
+      var already = {};
+      r[2].forEach(function (p) { if (p.legacyId) already[p.legacyId] = true; });
+      var frames = r[1];
+      return frames.reduce(function (chain, f) {
+        return chain.then(function () {
+          if (already[f.id]) { skipped++; done++; if (onProgress) onProgress(done, frames.length); return; }
+          return importOne(uid, f, shopStatus).then(function () { imported++; }).catch(function (e) {
+            console.error('Could not import frame ' + f.id, e); failed++;
+          }).then(function () { done++; if (onProgress) onProgress(done, frames.length); });
+        });
+      }, Promise.resolve()).then(function () { return { total: frames.length, imported: imported, skipped: skipped, failed: failed }; });
+    });
   }
 
-  // Labels that depend on what the add page is doing (new frame, new photo, temple photo).
+  function importOne(uid, f, shopStatus) {
+    var id = backend.newProductId(), v = backend.assetVersion(), uploaded = [];
+    function up(kind, name, blob, extra) {
+      return backend.uploadProductFile(uid, id, kind, name, blob, extra).then(function (info) { uploaded.push(info.path); return info; });
+    }
+    var tg = f.tags || {};
+    var base = {
+      name: typeof f.name === 'string' ? f.name.trim().slice(0, 80) : '',
+      tags: { shape: tg.shape || null, color: tg.color || null, gender: tg.gender || null, rim: tg.rim || null, free: (tg.free || []).slice(0, 12) },
+      size: cleanSize(f.size), legacyId: f.id, status: 'draft', tryOn: { status: 'pending' }
+    };
+    return backend.createProduct(uid, id, base, shopStatus).then(function () {
+      return backend.legacyFull(uid, f.id);
+    }).then(function (L) {
+      var jobs = [];
+      if (f.thumbData) jobs.push(up('assets', 'thumb-' + v, dataUrlToBlob(f.thumbData), { w: THUMB_DIM, h: THUMB_DIM }).then(function (i) { return ['thumb', i]; }));
+      if (L.source && L.source.imageData) jobs.push(up('source', 'source-' + v, dataUrlToBlob(L.source.imageData), { w: L.source.w || null, h: L.source.h || null }).then(function (i) { return ['source', i]; }));
+      var manifestJob = null;
+      if (L.full && L.full.imageData) {
+        manifestJob = loadImage(L.full.imageData).then(function (img) {
+          var m = makeManifest({
+            imgW: img.naturalWidth, imgH: img.naturalHeight,
+            p1: scalePoint(L.full.p1, L.full, img), p2: scalePoint(L.full.p2, L.full, img),
+            fit: fitForImage(L.full, img), side: null
+          });
+          var sideJob = Promise.resolve(null);
+          if (L.side && L.side.imageData && f.hasSide) {
+            sideJob = loadImage(L.side.imageData).then(function (simg) {
+              m.side = { imgW: simg.naturalWidth, imgH: simg.naturalHeight, hinge: scalePoint(L.side.hinge, L.side, simg), tip: scalePoint(L.side.tip, L.side, simg) };
+              return up('assets', 'side-' + v, dataUrlToBlob(L.side.imageData), { w: simg.naturalWidth, h: simg.naturalHeight });
+            });
+          }
+          return Promise.all([
+            up('assets', 'cutout-' + v, dataUrlToBlob(L.full.imageData), { w: img.naturalWidth, h: img.naturalHeight }),
+            sideJob
+          ]).then(function (x) {
+            return up('assets', 'asset-' + v, jsonBlob(m)).then(function (mi) { return { cutout: x[0], side: x[1], manifest: mi, fit: m.fit }; });
+          });
+        });
+      }
+      return Promise.all([Promise.all(jobs), manifestJob]);
+    }).then(function (r) {
+      var images = {};
+      r[0].forEach(function (pair) { images[pair[0]] = pair[1]; });
+      var tryOn = { status: 'none', updatedAt: backend.serverTime() };
+      if (r[1]) {
+        images.cutout = r[1].cutout; images.manifest = r[1].manifest;
+        if (r[1].side) images.side = r[1].side;
+        var fit = r[1].fit;
+        tryOn = {
+          status: 'ready', level: f.level === '2d' ? '2d' : '3d', prepared: f.prepared === 'auto' ? 'auto' : 'manual',
+          quality: fit && fit.quality != null ? fit.quality : null, rimType: f.rimType || null,
+          translucent: f.translucent == null ? null : !!f.translucent, warnings: fit && fit.warnings ? fit.warnings.slice(0, 30) : [],
+          hasSide: !!r[1].side, updatedAt: backend.serverTime()
+        };
+      }
+      var current = { id: id, shopId: uid, name: base.name, status: 'draft', moderation: { state: 'ok' }, tryOn: base.tryOn, tags: base.tags, size: base.size };
+      return backend.saveProduct(current, { images: images, tryOn: tryOn, assetBytes: assetBytesOf(images) }, shopStatus);
+    }).catch(function (e) {
+      backend.deleteFiles(uploaded);
+      throw e;
+    });
+  }
+
+  // ---------- add-frame: labels, discarding, the temple photo ----------
+
+  // Labels that depend on what the page is doing (the frame's photo, or a temple photo).
   function syncAddTargetText() {
-    var kind = addTarget.kind, entry = addTarget.frameId ? findEntry(addTarget.frameId) : null;
+    var kind = addTarget.kind;
     framePhotoLabel.textContent = t(kind === 'side' ? 'add.templePhoto' : 'add.framePhoto');
-    addToLibraryBtn.textContent = t(kind === 'side' ? 'add.saveTemple' : kind === 'replace' ? 'add.saveUpdated' : 'add.save');
-    if (entry) sideTargetText.textContent = t(kind === 'replace' ? 'add.target.replace' : addTarget.replacingSide ? 'add.target.sideReplace' : 'add.target.side', { name: describeFrame(entry) });
+    addToLibraryBtn.textContent = t(kind === 'side' ? 'add.saveTemple' : 'add.saveAsset');
   }
 
   function discardPendingFrame() {
@@ -4134,6 +4321,10 @@ function track(eventName, params) {
     pendingRawCanvas = null;
     pendingAiRemovedCanvas = null;
     aiRemovalLoading = false;
+    pendingSourceIsNew = true;
+    photoQuality = null;
+    photoCheck.hidden = true; photoCheck.innerHTML = '';
+    saveNoTryonBtn.hidden = true;
     frameCalibPoints = [];
     toolHistory = [];
     setTool('none');
@@ -4145,41 +4336,70 @@ function track(eventName, params) {
     showFrameSourceChooser();
   }
 
-  sideTargetCancel.addEventListener('click', function () {
-    discardPendingFrame();
-    if (addTarget.kind === 'replace') exitReplaceMode(); else exitSideMode();
-  });
-  addSideAfterBtn.addEventListener('click', function () { if (lastAddedId) enterSideMode(lastAddedId); });
+  sideTargetCancel.addEventListener('click', function () { discardPendingFrame(); backToProduct(null); });
+  addSideAfterBtn.addEventListener('click', function () { if (addTarget.product) openPhotoStep(addTarget.product, addTarget.shopStatus, 'side'); });
 
   var addedMsgKey = null;
   function setAddedMsg(key) { addedMsgKey = key; addedMsgText.textContent = t(key); }
 
+  function canvasBlob(c, type, quality) {
+    return new Promise(function (resolve, reject) {
+      c.toBlob(function (b) { if (b) resolve(b); else reject(new Error('Could not encode the image')); }, type, quality);
+    });
+  }
+  // WebP where the browser can write it (smaller), PNG otherwise.
+  function thumbBlob(c) {
+    return canvasBlob(c, 'image/webp', 0.86).then(function (b) { return b.type === 'image/webp' ? b : canvasBlob(c, 'image/png'); });
+  }
+  function jsonBlob(o) { return new Blob([JSON.stringify(o)], { type: 'application/json' }); }
+
+  // Uploads the temple photo and rewrites the asset manifest to include it.
   function saveSidePhoto() {
-    var id = addTarget.frameId, entry = findEntry(id);
-    if (!entry || frameCalibPoints.length < 2 || !currentUser) return;
+    var p = addTarget.product;
+    if (!p || frameCalibPoints.length < 2 || !currentUser) return;
+    if (!(p.images && p.images.manifest && p.images.manifest.url)) { toast(t('add.templeNeedsFront'), 'error'); return; }
     addToLibraryBtn.disabled = true;
-    var uid = currentUser.uid;
-    var out = shrinkToBudgetScaled(pendingProcessedCanvas, SIDE_BYTE_BUDGET, 'image/png');
-    var sc = function (p) { return { x: Math.round(p.x * out.sx * 10) / 10, y: Math.round(p.y * out.sy * 10) / 10 }; };
-    setDoc(doc(db, 'users', uid, 'framesSide', id), {
-      imageData: out.dataUrl, hinge: sc(frameCalibPoints[0]), tip: sc(frameCalibPoints[1]),
-      imgW: out.w, imgH: out.h, createdAt: serverTimestamp()
-    }).then(function () {
-      return updateDoc(doc(db, 'users', uid, 'frames', id), { hasSide: true });
-    }).then(function () {
-      entry.hasSide = true;
-      arForget(id);
+    frameCalibBanner.textContent = t('add.saving');
+    var uid = currentUser.uid, v = backend.assetVersion();
+    var box = alphaBox(pendingProcessedCanvas);
+    var c = document.createElement('canvas');
+    c.width = box.w; c.height = box.h;
+    c.getContext('2d').drawImage(pendingProcessedCanvas, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
+    var sc = function (pt) { return { x: Math.round((pt.x - box.x) * 10) / 10, y: Math.round((pt.y - box.y) * 10) / 10 }; };
+    var side = { imgW: c.width, imgH: c.height, hinge: sc(frameCalibPoints[0]), tip: sc(frameCalibPoints[1]) };
+    var uploaded = [];
+    backend.fetchManifest(p.images.manifest.url).then(function (m) {
+      var next = Object.assign({}, m, { side: side });
+      return Promise.all([
+        canvasBlob(c, 'image/png').then(function (b) { return backend.uploadProductFile(uid, p.id, 'assets', 'side-' + v, b, { w: c.width, h: c.height }); }),
+        backend.uploadProductFile(uid, p.id, 'assets', 'asset-' + v, jsonBlob(next))
+      ]);
+    }).then(function (r) {
+      uploaded = [r[0].path, r[1].path];
+      var images = Object.assign({}, p.images, { side: r[0], manifest: r[1] });
+      var tryOn = Object.assign({}, p.tryOn, { hasSide: true });
+      var old = [p.images.side && p.images.side.path, p.images.manifest.path].filter(Boolean);
+      return backend.saveProduct(p, { images: images, tryOn: tryOn, assetBytes: assetBytesOf(images) }, addTarget.shopStatus).then(function (written) {
+        backend.deleteFiles(old);
+        return written;
+      });
+    }).then(function (written) {
+      forgetProduct(p.id);
       discardPendingFrame();
-      exitSideMode();
-      setAddedMsg('add.templeSaved');
-      addSideAfterBtn.style.display = 'none';
-      addedMsg.style.display = 'block';
-      track('temple_photo_added', {});
+      toast(t('add.templeSaved'));
+      backToProduct(written);
     }).catch(function (e) {
       console.error('Failed to save temple photo', e);
+      backend.deleteFiles(uploaded);
       addToLibraryBtn.disabled = false;
       frameCalibBanner.textContent = t('add.templeFail');
     });
+  }
+
+  function assetBytesOf(images) {
+    var n = 0;
+    Object.keys(images || {}).forEach(function (k) { if (images[k] && images[k].bytes) n += images[k].bytes; });
+    return Math.min(50000000, Math.round(n));
   }
 
   function updateFrameCalibBanner() {
@@ -4305,40 +4525,17 @@ function track(eventName, params) {
     updateUndoState();
   });
 
-  function makeThumbCanvas(imgSource, size) {
+  function makeThumbCanvas(imgSource, size, photo) {
     var c = document.createElement('canvas');
     c.width = size; c.height = size;
     var tctx = c.getContext('2d');
     var iw = imgSource.width, ih = imgSource.height;
-    var scale = Math.min(size / iw, size / ih) * 0.92;
+    var scale = Math.min(size / iw, size / ih) * (photo ? 1 : 0.92);
+    if (photo) { tctx.fillStyle = '#ECEEEB'; tctx.fillRect(0, 0, size, size); }
     var dw = iw * scale, dh = ih * scale;
     tctx.imageSmoothingEnabled = true;
     tctx.drawImage(imgSource, (size - dw) / 2, (size - dh) / 2, dw, dh);
     return c;
-  }
-
-  // Fitting metadata for the try-on, in the saved image's pixels (cropped by
-  // x0, y0 and scaled by sx, sy). Only for frames prepared automatically.
-  function buildFit(r, x0, y0, sx, sy, lensPts) {
-    if (!r || !r.ok) return null;
-    x0 = x0 || 0; y0 = y0 || 0; sx = sx || 1; sy = sy || 1;
-    function mp(p) { return { x: Math.round((p.x - x0) * sx * 10) / 10, y: Math.round((p.y - y0) * sy * 10) / 10 }; }
-    function mb(b) { return { minX: Math.round((b.minX - x0) * sx), minY: Math.round((b.minY - y0) * sy), maxX: Math.round((b.maxX - x0) * sx), maxY: Math.round((b.maxY - y0) * sy) }; }
-    var lm = r.landmarks, m = r.measurements, L = lensPts ? lensPts[0] : lm.lensL, R = lensPts ? lensPts[1] : lm.lensR;
-    if (L.x > R.x) { var t = L; L = R; R = t; }
-    return {
-      v: 1, source: 'auto', unmixed: true,
-      rimType: r.rimType, translucent: r.translucent, level: currentLevel(), quality: Math.round(r.quality * 100) / 100,
-      lenses: r.lenses.map(function (ln) { return { side: ln.side, poly: ln.poly.map(mp), centre: mp(ln.centre) }; }),
-      landmarks: { lensL: mp(L), lensR: mp(R), bridge: mp(lm.bridge), bridgeTop: mp(lm.bridgeTop), hingeL: mp(lm.hingeL), hingeR: mp(lm.hingeR), angle: Math.round(lm.angle * 1e4) / 1e4 },
-      measurements: {
-        frameWidthPx: Math.round(m.frameWidthPx * sx), frameHeightPx: Math.round(m.frameHeightPx * sy),
-        lensWidthPx: Math.round(m.lensWidthPx * sx), lensHeightPx: Math.round(m.lensHeightPx * sy),
-        bridgePx: Math.round(m.bridgePx * sx), lensDistPx: Math.round(m.lensDistPx * sx), aspect: Math.round(m.aspect * 100) / 100
-      },
-      warnings: r.warnings.map(function (wn) { return wn.code; }),
-      repaired: r.repaired.map(mb)
-    };
   }
 
   // Bounding box of the cut-out's visible pixels, with a margin.
@@ -4354,18 +4551,9 @@ function track(eventName, params) {
     return { x: x0, y: y0, w: x1 - x0 + 1, h: y1 - y0 + 1 };
   }
 
-  function sourceJpeg() {
-    if (!pendingSourceCanvas) return null;
-    var q = 0.88, url = pendingSourceCanvas.toDataURL('image/jpeg', q);
-    while (url.length > SOURCE_BYTE_BUDGET && q > 0.5) { q -= 0.08; url = pendingSourceCanvas.toDataURL('image/jpeg', q); }
-    return url.length > SOURCE_BYTE_BUDGET ? shrinkToBudget(pendingSourceCanvas, SOURCE_BYTE_BUDGET, 'image/jpeg', 0.7) : url;
-  }
-
   addToLibraryBtn.addEventListener('click', function () {
-    if (frameCalibPoints.length < 2 || !currentUser) return;
+    if (frameCalibPoints.length < 2 || !currentUser || !addTarget.product) return;
     if (addTarget.kind === 'side') { saveSidePhoto(); return; }
-    var replacing = addTarget.kind === 'replace' ? findEntry(addTarget.frameId) : null;
-    if (addTarget.kind === 'replace' && !replacing) return;
     // an extraction with serious problems is never saved without a deliberate yes
     if (effectiveMode() === 'auto' && auto.result && auto.result.ok) {
       var bad = auto.result.warnings.filter(function (wn) { return wn.severity === 'error'; });
@@ -4374,86 +4562,137 @@ function track(eventName, params) {
           title: t('add.attn.title'),
           body: (bad.length ? bad.map(fxWarning) : [t('add.attn.some')]).concat([t('add.attn.check')]),
           ok: t('add.attn.ok'), cancel: t('add.attn.cancel')
-        }).then(function (yes) { if (yes) saveFrame(replacing); });
+        }).then(function (yes) { if (yes) saveProductAsset(); });
         return;
       }
     }
-    saveFrame(replacing);
+    saveProductAsset();
   });
+  saveNoTryonBtn.addEventListener('click', function () { savePhotoOnly(); });
 
-  function saveFrame(replacing) {
-    if (frameCalibPoints.length < 2 || !currentUser) return;
+  // The original photo as a JPEG (kept privately so the asset can be remade).
+  function sourceBlob() {
+    if (!pendingSourceCanvas || !pendingSourceIsNew) return Promise.resolve(null);
+    return canvasBlob(pendingSourceCanvas, 'image/jpeg', 0.9);
+  }
+
+  // Saves the try-on asset for the product: cut-out, thumbnail, fitting data
+  // and (if new) the original photo, then points the product at them.
+  function saveProductAsset() {
+    var p = addTarget.product;
+    if (frameCalibPoints.length < 2 || !currentUser || !p) return;
     addToLibraryBtn.disabled = true;
-    var uid = currentUser.uid;
-    var id = replacing ? replacing.id : 'f' + Date.now() + '_' + Math.floor(Math.random() * 10000);
+    frameCalibBanner.textContent = t('add.saving');
+    var uid = currentUser.uid, v = backend.assetVersion();
 
-    // crop to the frame (smaller documents, more detail per byte)
+    // crop to the frame
     var box = alphaBox(pendingProcessedCanvas);
     var fullCanvas = document.createElement('canvas');
     fullCanvas.width = box.w; fullCanvas.height = box.h;
     fullCanvas.getContext('2d').drawImage(pendingProcessedCanvas, box.x, box.y, box.w, box.h, 0, 0, box.w, box.h);
     var thumbCanvas = makeThumbCanvas(fullCanvas, THUMB_DIM);
-
-    var full = shrinkToBudgetScaled(fullCanvas, FULL_BYTE_BUDGET, 'image/png');
-    var fullData = full.dataUrl;
-    var thumbData = shrinkToBudget(thumbCanvas, THUMB_BYTE_BUDGET, 'image/png');
-
-    // lens centres and fitting metadata in the saved image's pixels
-    var sc = function (p) { return { x: Math.round((p.x - box.x) * full.sx * 10) / 10, y: Math.round((p.y - box.y) * full.sy * 10) / 10 }; };
+    var sc = function (pt) { return { x: Math.round((pt.x - box.x) * 10) / 10, y: Math.round((pt.y - box.y) * 10) / 10 }; };
     var p1 = sc(frameCalibPoints[0]), p2 = sc(frameCalibPoints[1]);
-    var fit = effectiveMode() === 'auto' ? buildFit(auto.result, box.x, box.y, full.sx, full.sy, frameCalibPoints) : null;
-    var level = fit ? fit.level : '3d';
-    var tags = { shape: pendingTags.shape, color: pendingTags.color, gender: pendingTags.gender, rim: pendingTags.rim, free: pendingTags.free.slice() };
-    var size = readSize(sizeEye, sizeBridge, sizeTemple);
-    var source = replacing && !pendingSourceIsNew ? null : sourceJpeg();
-    var name = frameNameInput.value.trim().slice(0, 60) || null;
-    var light = { thumbData: thumbData, tags: tags, size: size, name: name, level: level, rimType: fit ? fit.rimType : null, translucent: fit ? fit.translucent : null, prepared: fit ? 'auto' : 'manual' };
-    if (source) light.hasSource = true;
-    if (!replacing) light.createdAt = serverTimestamp();
-
-    var writes = [
-      replacing ? updateDoc(doc(db, 'users', uid, 'frames', id), light) : setDoc(doc(db, 'users', uid, 'frames', id), light),
-      setDoc(doc(db, 'users', uid, 'framesFull', id), { imageData: fullData, p1: p1, p2: p2, imgW: full.w, imgH: full.h, fit: fit })
-    ];
-    if (source) writes.push(setDoc(doc(db, 'users', uid, 'framesSource', id), { imageData: source, w: pendingSourceCanvas.width, h: pendingSourceCanvas.height, createdAt: serverTimestamp() }));
-
-    Promise.all(writes).then(function () {
-      delete fullDataCache[id];
-      arForget(id);
-      var img = new Image();
-      img.onload = function () { fullDataCache[id] = { img: img, p1: p1, p2: p2, fit: fit }; };
-      img.src = fullData;
-
-      var entry = replacing || { id: id, hasSide: false, createdAt: Date.now() };
-      entry.thumbData = thumbData; entry.tags = tags; entry.size = size; entry.level = level; entry.name = name;
-      entry.rimType = light.rimType; entry.translucent = light.translucent; entry.prepared = light.prepared;
-      if (source) entry.hasSource = true;
-      if (!replacing) catalogIndex.push(entry);
-      catalogLoaded = true;
-      rebuildFilterBar();
-      renderLibrary();
-      renderLiveStrip();
-      track(replacing ? 'frame_photo_updated' : 'frame_added', { shape: tags.shape || 'untagged', color: tags.color || 'untagged', rim: tags.rim || 'untagged', prepared: light.prepared });
-
+    if (p1.x > p2.x) { var tmp = p1; p1 = p2; p2 = tmp; }
+    var autoOk = effectiveMode() === 'auto' && auto.result && auto.result.ok;
+    var fit = autoOk ? buildFitFrom(auto.result, currentLevel(), box.x, box.y, 1, 1, frameCalibPoints) : null;
+    var level = fit ? fit.level : (auto.level || '3d');
+    var manifest = makeManifest({ imgW: box.w, imgH: box.h, p1: p1, p2: p2, fit: fit, side: null });
+    var uploaded = [];
+    function up(kind, name, blob, extra) {
+      return backend.uploadProductFile(uid, p.id, kind, name, blob, extra).then(function (info) { uploaded.push(info.path); return info; });
+    }
+    Promise.all([
+      canvasBlob(fullCanvas, 'image/png').then(function (b) { return up('assets', 'cutout-' + v, b, { w: box.w, h: box.h }); }),
+      thumbBlob(thumbCanvas).then(function (b) { return up('assets', 'thumb-' + v, b, { w: THUMB_DIM, h: THUMB_DIM }); }),
+      up('assets', 'asset-' + v, jsonBlob(manifest)),
+      sourceBlob().then(function (b) { return b ? up('source', 'source-' + v, b, { w: pendingSourceCanvas.width, h: pendingSourceCanvas.height }) : null; })
+    ]).then(function (r) {
+      var old = p.images || {};
+      var images = { cutout: r[0], thumb: r[1], manifest: r[2] };
+      images.source = r[3] || old.source;
+      if (!images.source) delete images.source;
+      var tryOn = {
+        status: 'ready', level: level, prepared: fit ? 'auto' : 'manual', quality: fit ? fit.quality : null,
+        rimType: fit ? fit.rimType : null, translucent: fit ? fit.translucent : null,
+        warnings: fit ? fit.warnings.slice(0, 30) : [], hasSide: false, updatedAt: backend.serverTime()
+      };
+      var changes = { images: images, tryOn: tryOn, assetBytes: assetBytesOf(images) };
+      // fill the rim tag from what was detected, if the shop hasn't chosen one
+      var tg = Object.assign({ shape: null, color: null, gender: null, rim: null, free: [] }, p.tags || {});
+      if (!tg.rim && fit) { tg.rim = { full: 'fullrim', semi: 'semirimless', rimless: 'rimless' }[fit.rimType] || null; changes.tags = tg; }
+      var replaced = ['cutout', 'thumb', 'manifest', 'side'].map(function (k) { return old[k] && old[k].path; })
+        .concat(r[3] && old.source ? [old.source.path] : []).filter(Boolean);
+      return backend.saveProduct(p, changes, addTarget.shopStatus).then(function (written) {
+        backend.deleteFiles(replaced);     // the previous version's files
+        return written;
+      });
+    }).then(function (written) {
+      uploaded = [];
+      forgetProduct(p.id);
       endDraftPreview(false);
       pendingRawCanvas = null;
-      pendingAiRemovedCanvas = null;
       modelPreview.style.display = 'none';
-      if (replacing) exitReplaceMode();
-      advanceForNextCapture();
-      showFrameSourceChooser();
-      lastAddedId = id;
-      setAddedMsg(replacing ? 'add.updated' : 'add.added');
-      addSideAfterBtn.style.display = 'flex';
-      addedMsg.style.display = 'block';
-      toast(t(replacing ? 'add.updated' : 'add.toastAdded'));
-      selectFrame(id);
+      discardPendingFrame();
+      toast(t('add.assetSaved'));
+      backToProduct(written);
     }).catch(function (e) {
-      console.error('Failed to save frame', e);
+      console.error('Failed to save the try-on asset', e);
+      backend.deleteFiles(uploaded);
       addToLibraryBtn.disabled = false;
       frameCalibBanner.textContent = t('add.saveFail');
       toast(t('add.saveFail'), 'error');
     });
+  }
+
+  // When the frame can't be extracted: keep the photo as the product's picture,
+  // with virtual try-on marked as unavailable.
+  function savePhotoOnly() {
+    var p = addTarget.product;
+    if (!p || !pendingRawCanvas || !currentUser) return;
+    saveNoTryonBtn.disabled = true;
+    var uid = currentUser.uid, v = backend.assetVersion();
+    var thumbCanvas = makeThumbCanvas(pendingRawCanvas, THUMB_DIM, true);
+    var uploaded = [];
+    function up(kind, name, blob, extra) {
+      return backend.uploadProductFile(uid, p.id, kind, name, blob, extra).then(function (info) { uploaded.push(info.path); return info; });
+    }
+    Promise.all([
+      thumbBlob(thumbCanvas).then(function (b) { return up('assets', 'thumb-' + v, b, { w: THUMB_DIM, h: THUMB_DIM }); }),
+      sourceBlob().then(function (b) { return b ? up('source', 'source-' + v, b, { w: pendingSourceCanvas.width, h: pendingSourceCanvas.height }) : null; })
+    ]).then(function (r) {
+      var old = p.images || {};
+      var images = { thumb: r[0] };
+      if (r[1] || old.source) images.source = r[1] || old.source;
+      var tryOn = { status: 'none', error: auto.result && auto.result.code ? String(auto.result.code).slice(0, 60) : null, updatedAt: backend.serverTime() };
+      if (!tryOn.error) delete tryOn.error;
+      var replaced = ['cutout', 'thumb', 'manifest', 'side'].map(function (k) { return old[k] && old[k].path; })
+        .concat(r[1] && old.source ? [old.source.path] : []).filter(Boolean);
+      return backend.saveProduct(p, { images: images, tryOn: tryOn, assetBytes: assetBytesOf(images) }, addTarget.shopStatus).then(function (written) {
+        backend.deleteFiles(replaced);
+        return written;
+      });
+    }).then(function (written) {
+      forgetProduct(p.id);
+      discardPendingFrame();
+      toast(t('add.photoOnlySaved'));
+      backToProduct(written);
+    }).catch(function (e) {
+      console.error('Failed to save the photo', e);
+      backend.deleteFiles(uploaded);
+      toast(t('add.saveFail'), 'error');
+    }).then(function () { saveNoTryonBtn.disabled = false; });
+  }
+
+  // A failed extraction is recorded on the product (unless it already has a
+  // working asset), so the shop and the admin can see what needs attention.
+  function recordExtractionFailure(res) {
+    var p = addTarget.product;
+    if (!p || addTarget.kind !== 'product' || !currentUser) return;
+    if (p.tryOn && (p.tryOn.status === 'ready' || p.tryOn.status === 'failed')) return;
+    backend.saveProduct(p, { tryOn: { status: 'failed', error: String(res.code || 'noFrame').slice(0, 60), updatedAt: backend.serverTime() } }, addTarget.shopStatus)
+      .then(function (written) { addTarget.product = written; pendingProducts[p.id] = { product: written, shopStatus: addTarget.shopStatus }; })
+      .catch(function (e) { console.warn('Could not record the failed extraction', e); });
   }
 
   cancelFrameBtn.addEventListener('click', function () {
@@ -4488,13 +4727,12 @@ function track(eventName, params) {
   }
   // Everything drawn by code, redrawn in the new language.
   function rerenderForLanguage() {
-    syncStaffLabels();
-    staffUnlockBtn.textContent = staffUnlockBtn.disabled ? t('staff.dialog.checking') : t('staff.dialog.unlock');
-    if (photoCountDisplay.dataset.count != null) photoCountDisplay.textContent = t('staff.photoCount', { n: photoCountDisplay.dataset.count });
-    if (authErrorKey) authError.textContent = t(authErrorKey);
-    if (staffError.classList.contains('show') && !staffPassword.value) staffError.textContent = '';
+    syncKiosk();
     refreshTitle();
-    if (!currentUser) return;
+    if (view.name === 'home') renderHome();
+    if (view.name === 'shops') renderShops();
+    browseTitle.textContent = sourceTitle();
+    renderBrowseIntro();
     if (catalogLoaded || catalogProblem) { rebuildFilterBar(); renderLibrary(); showCatalogProblem(catalogProblem); }
     else updateCatalogNote();
     if (view.name === 'detail') renderDetail(view.id);
@@ -4512,18 +4750,24 @@ function track(eventName, params) {
     if (pdValue != null && pdSplit.checked) pdTotal.textContent = t('pd.total', { pd: fmtMm(pdValue) });
     syncPdStatus();
     syncShortlistUi();
+    if (view.name === 'shortlist') renderShortlistPage();
     live.statusText = null;          // the live loop writes its status again in the new language
-    // staff screens
-    if (selectMode) { renderBulkChips(); updateBulkCountLabel(); }
-    if (editingFrameId && editPendingTags) { renderEditChips(); renderEditFreeTagList(); syncEditPanelText(); }
+    // the shop's photo step
     if (pendingTags) { renderAddChips(); renderFreeTagList(); }
     syncAddTargetText();
+    syncProductBar();
+    if (addTarget.product) renderPhotoGuide(!pendingRawCanvas);
+    if (pendingRawCanvas) renderPhotoCheck();
     frameSourcePlaceholder.textContent = addSourceText();
     if (bgRemovalMode === 'twoShot') twoShotStepLabel.textContent = t(twoShotStep === 1 ? 'add.two.step1' : 'add.two.step2');
     if (addedMsgKey) addedMsgText.textContent = t(addedMsgKey);
     if (frameCalibSectionEl.style.display !== 'none') updateFrameCalibBanner();
     if (autoReview.style.display !== 'none') renderAutoReview();
     if (modelHint && modelPreview.style.display !== 'none') modelPreviewHint.textContent = modelHint();
+    // the dashboards
+    if (partnerApi && view.name === 'partner') partnerApi.rerender();
+    if (adminApi && view.name === 'admin') adminApi.rerender();
+    if (reportDialog.open) fillReportReasons();
   }
   langBar.addEventListener('click', function (e) {
     var b = e.target.closest('.lang-btn');
@@ -4531,4 +4775,51 @@ function track(eventName, params) {
     useLanguage(b.getAttribute('data-lang'), true);
   });
   useLanguage(initialLang(), false);
+
+  // ---------- reporting a listing ----------
+  var reportEntry = null;
+  function fillReportReasons() {
+    var chosen = reportReasons.querySelector('input:checked');
+    var keep = chosen ? chosen.value : null;
+    reportReasons.querySelectorAll('label').forEach(function (l) { l.parentNode.removeChild(l); });
+    REPORT_REASONS.forEach(function (r) {
+      var l = document.createElement('label');
+      l.className = 'check-row';
+      var i = document.createElement('input');
+      i.type = 'radio'; i.name = 'reportReason'; i.value = r; i.checked = r === keep;
+      l.appendChild(i);
+      var sp = document.createElement('span'); sp.textContent = t('report.r.' + r);
+      l.appendChild(sp);
+      reportReasons.appendChild(l);
+    });
+  }
+  function openReport(entry) {
+    reportEntry = entry;
+    reportNote.value = '';
+    reportError.textContent = ''; reportError.classList.remove('show');
+    fillReportReasons();
+    if (reportDialog.showModal) reportDialog.showModal(); else reportDialog.setAttribute('open', '');
+    var first = reportReasons.querySelector('input');
+    if (first) first.focus();
+  }
+  reportCancel.addEventListener('click', function () { reportDialog.close(); });
+  reportForm.addEventListener('submit', function (e) {
+    e.preventDefault();
+    var chosen = reportReasons.querySelector('input:checked');
+    if (!chosen) { reportError.textContent = t('report.pick'); reportError.classList.add('show'); return; }
+    reportSend.disabled = true;
+    backend.submitReport({ id: reportEntry.id, shopId: reportEntry.shopId }, chosen.value, reportNote.value.trim()).then(function () {
+      reportDialog.close();
+      toast(t('report.thanks'));
+    }).catch(function (err) {
+      console.error('Report failed', err);
+      reportError.textContent = t(err && err.code === 'permission-denied' ? 'report.tooSoon' : 'report.failed');
+      reportError.classList.add('show');
+    }).then(function () { reportSend.disabled = false; });
+  });
+
+  // ---------- start ----------
+  syncKiosk();
+  restoreShortlist();
+  renderRoute(parseHash(), { initial: true });
 })();
