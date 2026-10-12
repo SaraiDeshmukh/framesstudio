@@ -42,7 +42,7 @@ jobs:
             const read = f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '(not run)';
             const pick = (txt) => {
               const lines = txt.split('\n');
-              const keep = lines.filter(l => /^(not ok|ok) |^# (tests|pass|fail)|Error|error:|expected|actual|FirebaseError|PERMISSION|at .*rules\.test|^\s+(failureType|code|message):/.test(l));
+              const keep = lines.filter(l => /^(not ok|ok) |^# (tests|pass|fail)|Error|error:|expected|actual|FirebaseError|PERMISSION|at .*rules\.test|^\s+(failureType|code|message):|@ L\d|for '(create|update|delete|get|list)'|evaluation error|^# DIAG/.test(l));
               return keep.join('\n');
             };
             const unit = read('unit-report.txt'), rules = read('rules-report.txt');
