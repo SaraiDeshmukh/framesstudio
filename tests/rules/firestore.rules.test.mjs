@@ -205,7 +205,7 @@ test('product fields are validated', async function () {
     { size: null },
     { link: 'https://wa.me/919999999999' },
     { link: 'https://shop.example.com/products/steel-frames?size=52' },
-    { images: { thumb: img(A, 'g9', 'thumb-1.webp') } }
+    { images: { thumb: img(A, 'g8', 'thumb-1.webp') } }
   ];
   for (var j = 0; j < good.length; j++) {
     await assertSucceeds(setDoc(doc(db, 'products', 'g' + j), draft(A, good[j])));
