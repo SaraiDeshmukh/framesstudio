@@ -1,0 +1,57 @@
+rules_version = '2';
+
+// Cloud Storage holds retailers' FRAME photos only:
+//   shops/{shopId}/products/{productId}/source/...   the original photo (private)
+//   shops/{shopId}/products/{productId}/assets/...   thumbnail, try-on cut-out,
+//                                                    temple photo, fitting data
+//
+// Customer face photos and camera video are never uploaded anywhere: the
+// try-on runs in the browser and nothing in the site writes them out. There is
+// deliberately no path here they could go to — everything not listed is denied.
+//
+// Customers see a published product's pictures through the download links
+// stored on the product (unguessable tokens), which Firestore only reveals
+// for public products. Reading through the Storage API itself is limited to the
+// owning shop and the admin.
+//
+// These rules read Firestore (shop status, product owner, admin list), so the
+// Firebase console asks once to let Storage read Firestore — allow it.
+// Tests: tests/rules/storage.rules.test.mjs.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function signedIn() { return request.auth != null; }
+    function realUser() { return signedIn() && request.auth.token.firebase.sign_in_provider != 'anonymous'; }
+    function isAdmin() { return realUser() && firestore.exists(/databases/(default)/documents/admins/$(request.auth.uid)); }
+    function isOwner(shopId) { return realUser() && request.auth.uid == shopId; }
+    function shopActive(shopId) {
+      return firestore.get(/databases/(default)/documents/shops/$(shopId)).data.status in ['pending', 'approved'];
+    }
+    function productOf(shopId, productId) {
+      return firestore.get(/databases/(default)/documents/products/$(productId)).data.shopId == shopId;
+    }
+    function okFile(kind, file) {
+      return file.matches('[A-Za-z0-9._-]{1,80}') && (
+        (kind == 'source' && request.resource.contentType.matches('image/(jpeg|png|webp)')
+          && request.resource.size <= 8 * 1024 * 1024)
+        || (kind == 'assets' && request.resource.contentType.matches('image/(png|webp|jpeg)')
+          && request.resource.size <= 4 * 1024 * 1024)
+        || (kind == 'assets' && file.matches('.*[.]json') && request.resource.contentType == 'application/json'
+          && request.resource.size <= 256 * 1024));
+    }
+
+    match /shops/{shopId}/products/{productId}/{kind}/{file} {
+      allow read: if isOwner(shopId) || isAdmin();
+      allow create, update: if isOwner(shopId)
+        && kind in ['source', 'assets']
+        && okFile(kind, file)
+        && shopActive(shopId)
+        && productOf(shopId, productId);
+      allow delete: if isOwner(shopId) || isAdmin();
+    }
+
+    match /{everythingElse=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -1,0 +1,364 @@
+rules_version = '2';
+
+// Frame Try-On Studio: who can read and write what.
+//
+// Three roles, all decided here on the server, never by the page:
+//   Admin     a document admins/{uid} exists. Created only in the Firebase
+//             console (or with scripts/provision-admin.mjs); nothing a signed-in
+//             user can write ever makes them an admin.
+//   Retailer  shops/{uid} belongs to them (a shop's id IS its owner's uid).
+//             'pending' shops can prepare drafts; only 'approved' shops appear
+//             to customers; 'suspended' and 'rejected' shops can't change
+//             their catalogue.
+//   Customer  anyone, signed in or not: reads approved shops and products whose
+//             `public` flag is true. Nothing else.
+//
+// `public` on a product is kept honest by these rules: every write must set it
+// to exactly (published by the shop) AND (not suspended by the admin) AND
+// (complete enough to show) AND (the shop is approved).
+//
+// Tests: tests/rules/firestore.rules.test.mjs (run in the Firebase emulator).
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- helpers ----------
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function isAnonymous() { return request.auth.token.firebase.sign_in_provider == 'anonymous'; }
+    function realUser() { return signedIn() && !isAnonymous(); }
+    function verified() { return realUser() && request.auth.token.email_verified == true; }
+    function isAdmin() { return realUser() && exists(/databases/$(database)/documents/admins/$(uid())); }
+
+    function newData() { return request.resource.data; }
+    function oldData() { return resource.data; }
+    function changed() { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    function str(v, min, max) { return v is string && v.size() >= min && v.size() <= max; }
+    function optStr(m, k, max) { return !(k in m) || m[k] == null || str(m[k], 0, max); }
+    function optHttps(m, k) {
+      return !(k in m) || m[k] == null || m[k] == '' || (str(m[k], 9, 300) && m[k].matches('https://[^\\s<>"]+'));
+    }
+    function phoneLike(m, k) {
+      return !(k in m) || m[k] == null || m[k] == '' || (str(m[k], 6, 20) && m[k].matches('[+0-9 ()-]+'));
+    }
+
+    // Legal documents the platform currently requires (written by the admin).
+    function legal() { return get(/databases/$(database)/documents/config/legal).data; }
+    function acceptanceId(docKey) { return uid() + '_' + docKey + '_' + legal()[docKey].version; }
+    function acceptedNow(docKey) { return exists(/databases/$(database)/documents/acceptances/$(acceptanceId(docKey))); }
+    function acceptedAfter(docKey) { return existsAfter(/databases/$(database)/documents/acceptances/$(acceptanceId(docKey))); }
+
+    function applicationsOpen() {
+      return !exists(/databases/$(database)/documents/config/platform)
+        || get(/databases/$(database)/documents/config/platform).data.get('applicationsOpen', true) != false;
+    }
+
+    function shopStatusNow(shopId) { return get(/databases/$(database)/documents/shops/$(shopId)).data.status; }
+    function shopStatusAfter(shopId) { return getAfter(/databases/$(database)/documents/shops/$(shopId)).data.status; }
+    function isOwner(shopId) { return realUser() && uid() == shopId; }
+
+    // ---------- admins ----------
+    match /admins/{adminId} {
+      allow get: if realUser() && (uid() == adminId || isAdmin());
+      allow list: if isAdmin();
+      allow write: if false;            // console / Admin SDK only
+    }
+
+    // ---------- platform configuration (public to read) ----------
+    match /config/{docId} {
+      allow read: if true;
+      allow write: if isAdmin() && validConfig(docId, newData());
+    }
+    function legalEntry(m, k) {
+      return !(k in m) || (m[k] is map && m[k].keys().hasOnly(['version', 'date'])
+        && str(m[k].version, 1, 32) && m[k].version.matches('[A-Za-z0-9._-]+') && str(m[k].date, 0, 32));
+    }
+    function validConfig(docId, d) {
+      return d.updatedAt == request.time && d.updatedBy == uid() && (
+        (docId == 'legal' && d.keys().hasOnly(['retailerTerms', 'customerTerms', 'privacy', 'updatedAt', 'updatedBy'])
+          && d.keys().hasAll(['retailerTerms', 'privacy'])
+          && legalEntry(d, 'retailerTerms') && legalEntry(d, 'customerTerms') && legalEntry(d, 'privacy'))
+        || (docId == 'platform' && d.keys().hasOnly(['applicationsOpen', 'announcement', 'maxProductsPerShop', 'supportEmail', 'updatedAt', 'updatedBy'])
+          && (!('applicationsOpen' in d) || d.applicationsOpen is bool)
+          && optStr(d, 'announcement', 300) && optStr(d, 'supportEmail', 100)
+          && (!('maxProductsPerShop' in d) || (d.maxProductsPerShop is int && d.maxProductsPerShop >= 1 && d.maxProductsPerShop <= 5000)))
+        || (docId == 'demo' && d.keys().hasOnly(['hidden', 'updatedAt', 'updatedBy'])
+          && d.hidden is list && d.hidden.size() <= 20)
+      );
+    }
+
+    // ---------- legal acceptance records (append-only) ----------
+    // Only for retailers who actually accept; customers never need an account.
+    match /acceptances/{acceptanceDocId} {
+      allow create: if realUser()
+        && newData().keys().hasOnly(['uid', 'doc', 'version', 'acceptedAt'])
+        && newData().uid == uid()
+        && newData().doc in ['retailerTerms', 'privacy']
+        && newData().version == legal()[newData().doc].version
+        && newData().acceptedAt == request.time
+        && acceptanceDocId == uid() + '_' + newData().doc + '_' + newData().version;
+      allow get, list: if signedIn() && (resource.data.uid == uid() || isAdmin());
+      allow update, delete: if false;
+    }
+
+    // ---------- shops: the public profile ----------
+    // The shop's id is its owner's uid, so ownership can't be reassigned.
+    function shopProfileKeys() {
+      return ['name', 'city', 'address', 'phone', 'whatsapp', 'email', 'website', 'about'];
+    }
+    function validShopProfile(d) {
+      return str(d.name, 2, 80) && str(d.city, 1, 60)
+        && optStr(d, 'address', 200) && optStr(d, 'email', 100) && optStr(d, 'about', 500)
+        && phoneLike(d, 'phone') && phoneLike(d, 'whatsapp') && optHttps(d, 'website');
+    }
+    match /shops/{shopId} {
+      allow get: if resource.data.status == 'approved' || isOwner(shopId) || isAdmin();
+      allow list: if resource.data.status == 'approved' || isAdmin();
+
+      // An application: verified email, applications open, current terms and
+      // privacy policy accepted (in the same batch or before).
+      allow create: if verified() && uid() == shopId
+        && newData().keys().hasOnly(shopProfileKeys().concat(['status', 'ownerUid', 'createdAt', 'updatedAt']))
+        && validShopProfile(newData())
+        && newData().status == 'pending'
+        && newData().ownerUid == uid()
+        && newData().createdAt == request.time && newData().updatedAt == request.time
+        && applicationsOpen()
+        && acceptedAfter('retailerTerms') && acceptedAfter('privacy');
+
+      // The owner edits the profile (not while suspended), and may re-apply
+      // after a rejection. Status, review fields and dates are not theirs.
+      allow update: if isOwner(shopId)
+        && oldData().status in ['pending', 'approved', 'rejected']
+        && changed().hasOnly(shopProfileKeys().concat(['updatedAt', 'status', 'statusReason']))
+        && validShopProfile(newData())
+        && newData().updatedAt == request.time
+        && (newData().status == oldData().status
+            || (oldData().status == 'rejected' && newData().status == 'pending' && newData().get('statusReason', '') == ''))
+        && (newData().get('statusReason', '') == oldData().get('statusReason', '') || newData().status == 'pending');
+
+      // The admin reviews: approve, reject, suspend, reactivate (and may
+      // correct the profile).
+      allow update: if isAdmin()
+        && changed().hasOnly(shopProfileKeys().concat(['status', 'statusReason', 'statusAt', 'reviewedBy', 'updatedAt']))
+        && validShopProfile(newData())
+        && newData().status in ['pending', 'approved', 'rejected', 'suspended']
+        && newData().updatedAt == request.time
+        && optStr(newData(), 'statusReason', 300)
+        && (newData().status == oldData().status || (newData().statusAt == request.time && newData().reviewedBy == uid()));
+
+      // Closing a shop: its owner (after removing the catalogue) or the admin.
+      allow delete: if isOwner(shopId) || isAdmin();
+    }
+
+    // ---------- shops: private details (owner and admin only) ----------
+    match /shopPrivate/{shopId} {
+      allow get: if isOwner(shopId) || isAdmin();
+      allow list: if isAdmin();
+      allow create, update: if isOwner(shopId)
+        && newData().keys().hasOnly(['ownerName', 'ownerPhone', 'gstin', 'note', 'createdAt', 'updatedAt'])
+        && str(newData().ownerName, 1, 80) && phoneLike(newData(), 'ownerPhone')
+        && (!('gstin' in newData()) || newData().gstin == '' || (newData().gstin is string && newData().gstin.matches('[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][1-9A-Z]Z[0-9A-Z]')))
+        && optStr(newData(), 'note', 500)
+        && newData().updatedAt == request.time
+        && (request.method == 'update' ? newData().createdAt == oldData().createdAt : newData().createdAt == request.time);
+      allow delete: if isOwner(shopId) || isAdmin();
+    }
+
+    // ---------- products ----------
+    function productKeys() {
+      return ['shopId', 'name', 'sku', 'brand', 'frameType', 'tags', 'colourName', 'material', 'description',
+              'size', 'pricing', 'availability', 'link', 'status', 'moderation', 'public', 'tryOn', 'images',
+              'assetBytes', 'createdAt', 'updatedAt', 'legacyId'];
+    }
+    function enumOrNull(m, k, values) { return !(k in m) || m[k] == null || m[k] in values; }
+    function validTags(p) {
+      return !('tags' in p) || (p.tags is map
+        && p.tags.keys().hasOnly(['shape', 'color', 'gender', 'rim', 'free'])
+        && enumOrNull(p.tags, 'shape', ['round', 'square', 'catseye', 'aviator', 'browline', 'rectangle', 'oval'])
+        && enumOrNull(p.tags, 'color', ['black', 'tortoise', 'gold', 'silver', 'clear', 'navy', 'red'])
+        && enumOrNull(p.tags, 'gender', ['womens', 'mens', 'unisex', 'kids'])
+        && enumOrNull(p.tags, 'rim', ['fullrim', 'semirimless', 'rimless'])
+        && (!('free' in p.tags) || (p.tags.free is list && p.tags.free.size() <= 12)));
+    }
+    function mm(m, k, lo, hi) { return !(k in m) || m[k] == null || (m[k] is number && m[k] >= lo && m[k] <= hi); }
+    function validSize(p) {
+      return !('size' in p) || p.size == null || (p.size is map && p.size.keys().hasOnly(['eye', 'bridge', 'temple'])
+        && mm(p.size, 'eye', 30, 75) && mm(p.size, 'bridge', 10, 30) && mm(p.size, 'temple', 100, 170));
+    }
+    // Prices in paise (whole numbers). The rate is the retailer's choice; nothing
+    // here assumes a GST rate.
+    function validPricing(p) {
+      return !('pricing' in p) || (p.pricing is map
+        && p.pricing.keys().hasOnly(['pricePaise', 'currency', 'taxMode', 'taxRate', 'salePaise', 'hsn', 'confirmed', 'updatedAt'])
+        && p.pricing.keys().hasAll(['pricePaise', 'currency', 'taxMode', 'confirmed', 'updatedAt'])
+        && p.pricing.pricePaise is int && p.pricing.pricePaise >= 100 && p.pricing.pricePaise <= 100000000
+        && p.pricing.currency == 'INR'
+        && p.pricing.taxMode in ['inclusive', 'exclusive', 'none']
+        && (p.pricing.taxMode == 'none'
+              ? (!('taxRate' in p.pricing) || p.pricing.taxRate == null)
+              : (('taxRate' in p.pricing) && p.pricing.taxRate is number && p.pricing.taxRate >= 0 && p.pricing.taxRate <= 50
+                 && math.round(p.pricing.taxRate * 100) == p.pricing.taxRate * 100))
+        && (!('salePaise' in p.pricing) || p.pricing.salePaise == null
+              || (p.pricing.salePaise is int && p.pricing.salePaise >= 100 && p.pricing.salePaise < p.pricing.pricePaise))
+        && optStr(p.pricing, 'hsn', 10)
+        && p.pricing.confirmed is bool
+        && p.pricing.updatedAt is timestamp);
+    }
+    function validModeration(p) {
+      return p.moderation is map && p.moderation.keys().hasOnly(['state', 'reason', 'at', 'by'])
+        && p.moderation.state in ['ok', 'suspended'] && optStr(p.moderation, 'reason', 300);
+    }
+    function validTryOn(p) {
+      return p.tryOn is map
+        && p.tryOn.keys().hasOnly(['status', 'level', 'prepared', 'quality', 'rimType', 'translucent', 'warnings', 'error', 'hasSide', 'updatedAt'])
+        && p.tryOn.status in ['none', 'pending', 'ready', 'failed']
+        && enumOrNull(p.tryOn, 'level', ['3d', '2d'])
+        && enumOrNull(p.tryOn, 'prepared', ['auto', 'manual'])
+        && (!('warnings' in p.tryOn) || (p.tryOn.warnings is list && p.tryOn.warnings.size() <= 30))
+        && optStr(p.tryOn, 'error', 300);
+    }
+    // Every stored file of a product lives under that product's own folder, and
+    // only Firebase Storage links can be shown (no outside images in listings).
+    function validImg(img, shopId, productId, allowUrl) {
+      return img is map && img.keys().hasOnly(['url', 'path', 'w', 'h', 'bytes'])
+        && img.path is string
+        && img.path.matches('shops/' + shopId + '/products/' + productId + '/(assets|source)/[A-Za-z0-9._-]{1,80}')
+        && (!('url' in img) || (allowUrl && str(img.url, 10, 1500)
+              && img.url.matches('(https://firebasestorage\\.googleapis\\.com/|http://(127\\.0\\.0\\.1|localhost):9199/)[^\\s<>"]+')))
+        && (!('bytes' in img) || (img.bytes is int && img.bytes >= 0 && img.bytes <= 20000000));
+    }
+    function validImages(p, productId) {
+      return !('images' in p) || (p.images is map
+        && p.images.keys().hasOnly(['thumb', 'cutout', 'side', 'source', 'manifest'])
+        && (!('thumb' in p.images) || validImg(p.images.thumb, p.shopId, productId, true))
+        && (!('cutout' in p.images) || validImg(p.images.cutout, p.shopId, productId, true))
+        && (!('side' in p.images) || validImg(p.images.side, p.shopId, productId, true))
+        && (!('manifest' in p.images) || validImg(p.images.manifest, p.shopId, productId, true))
+        && (!('source' in p.images) || validImg(p.images.source, p.shopId, productId, false)));
+    }
+    function validProduct(p, productId) {
+      return p.keys().hasOnly(productKeys())
+        && p.keys().hasAll(['shopId', 'name', 'status', 'moderation', 'public', 'tryOn', 'createdAt', 'updatedAt'])
+        && str(p.name, 0, 80)
+        && optStr(p, 'sku', 40) && optStr(p, 'brand', 40) && optStr(p, 'colourName', 40)
+        && optStr(p, 'material', 40) && optStr(p, 'description', 1000) && optStr(p, 'legacyId', 80)
+        && enumOrNull(p, 'frameType', ['eyeglasses', 'sunglasses', 'reading', 'computer', 'sports'])
+        && enumOrNull(p, 'availability', ['in_stock', 'low_stock', 'out_of_stock', 'on_request'])
+        && optHttps(p, 'link')
+        && p.status in ['draft', 'published', 'archived']
+        && p.public is bool
+        && (!('assetBytes' in p) || (p.assetBytes is int && p.assetBytes >= 0 && p.assetBytes <= 50000000))
+        && validTags(p) && validSize(p) && validPricing(p) && validModeration(p) && validTryOn(p)
+        && validImages(p, productId);
+    }
+    // Complete enough to show a customer: a name, a confirmed price and tax
+    // treatment, availability, a photo, and either a ready try-on asset or an
+    // explicit "no try-on" listing.
+    function publishable(p) {
+      return p.status == 'published'
+        && p.moderation.state == 'ok'
+        && p.name.size() >= 2
+        && ('pricing' in p) && p.pricing.confirmed == true
+        && ('availability' in p) && p.availability != null
+        && ('images' in p) && ('thumb' in p.images) && ('url' in p.images.thumb)
+        && (p.tryOn.status == 'none'
+            || (p.tryOn.status == 'ready' && ('cutout' in p.images) && ('manifest' in p.images)));
+    }
+    function shouldBePublic(p) { return publishable(p) && shopStatusAfter(p.shopId) == 'approved'; }
+    function pricingStampOk(n) {
+      return !('pricing' in n) || n.pricing.updatedAt == request.time
+        || (request.method == 'update' && ('pricing' in resource.data) && n.pricing == resource.data.pricing);
+    }
+
+    match /products/{productId} {
+      allow get, list: if resource.data.public == true || isOwner(resource.data.shopId) || isAdmin();
+
+      allow create: if realUser()
+        && newData().shopId == uid()
+        && shopStatusNow(uid()) in ['pending', 'approved']
+        && acceptedNow('retailerTerms')
+        && validProduct(newData(), productId)
+        && newData().moderation == { 'state': 'ok' }
+        && newData().createdAt == request.time && newData().updatedAt == request.time
+        && pricingStampOk(newData())
+        && newData().public == shouldBePublic(newData());
+
+      // The retailer edits their own product. The shop, the admin's moderation
+      // and the creation date can't be changed.
+      allow update: if isOwner(oldData().shopId)
+        && newData().shopId == oldData().shopId
+        && newData().moderation == oldData().moderation
+        && newData().createdAt == oldData().createdAt
+        && shopStatusNow(uid()) in ['pending', 'approved']
+        && acceptedNow('retailerTerms')
+        && validProduct(newData(), productId)
+        && newData().updatedAt == request.time
+        && pricingStampOk(newData())
+        && newData().public == shouldBePublic(newData());
+
+      // The admin suspends or restores a listing, and re-derives `public`
+      // (for example when a shop is approved or suspended).
+      allow update: if isAdmin()
+        && changed().hasOnly(['moderation', 'public', 'updatedAt'])
+        && validModeration(newData())
+        && newData().updatedAt == request.time
+        && newData().public == shouldBePublic(newData());
+
+      allow delete: if isOwner(oldData().shopId) || isAdmin();
+    }
+
+    // ---------- reports of wrong or inappropriate listings ----------
+    // Anyone can report a public listing; a report needs a (possibly anonymous)
+    // sign-in only so that one device can send at most one report a minute.
+    // No name, email or contact details are collected.
+    match /reports/{reportId} {
+      allow create: if signedIn()
+        && newData().keys().hasOnly(['productId', 'shopId', 'reason', 'note', 'createdAt', 'status', 'reporterUid'])
+        && newData().keys().hasAll(['productId', 'shopId', 'reason', 'createdAt', 'status', 'reporterUid'])
+        && newData().reporterUid == uid()
+        && newData().status == 'open'
+        && newData().createdAt == request.time
+        && newData().reason in ['wrong_price', 'wrong_info', 'unavailable', 'inappropriate', 'counterfeit', 'other']
+        && optStr(newData(), 'note', 500)
+        && newData().productId is string
+        && get(/databases/$(database)/documents/products/$(newData().productId)).data.public == true
+        && get(/databases/$(database)/documents/products/$(newData().productId)).data.shopId == newData().shopId
+        && getAfter(/databases/$(database)/documents/limits/$(uid())).data.lastReportAt == request.time;
+      allow get, list: if isAdmin();
+      allow update: if isAdmin()
+        && changed().hasOnly(['status', 'resolution', 'resolvedAt', 'resolvedBy'])
+        && newData().status in ['open', 'resolved', 'dismissed']
+        && optStr(newData(), 'resolution', 300)
+        && newData().resolvedAt == request.time && newData().resolvedBy == uid();
+      allow delete: if isAdmin();
+    }
+    match /limits/{userId} {
+      allow get: if signedIn() && uid() == userId;
+      allow create: if signedIn() && uid() == userId
+        && newData().keys().hasOnly(['lastReportAt']) && newData().lastReportAt == request.time;
+      allow update: if signedIn() && uid() == userId
+        && newData().keys().hasOnly(['lastReportAt']) && newData().lastReportAt == request.time
+        && oldData().lastReportAt < request.time - duration.value(60, 's');
+    }
+
+    // ---------- admin audit log (append-only) ----------
+    match /auditLog/{entryId} {
+      allow create: if isAdmin()
+        && newData().keys().hasOnly(['at', 'actorUid', 'action', 'targetType', 'targetId', 'note'])
+        && newData().at == request.time && newData().actorUid == uid()
+        && str(newData().action, 1, 40) && str(newData().targetType, 1, 20) && str(newData().targetId, 1, 128)
+        && optStr(newData(), 'note', 300);
+      allow get, list: if isAdmin();
+      allow update, delete: if false;
+    }
+
+    // ---------- the original single-shop library (before shops existed) ----------
+    // Kept so a shop can import its old frames. Only the account that owns them
+    // can read or write them.
+    match /users/{userId}/{document=**} {
+      allow read, write: if signedIn() && uid() == userId;
+    }
+  }
+}
