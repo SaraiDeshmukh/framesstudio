@@ -1,0 +1,26 @@
+/* Legal pages: readable long-form text on the site's design tokens. */
+.legal-page { max-width: 780px; margin: 0 auto; padding: 24px var(--gutter) 64px; }
+.legal-page h1 { margin: 8px 0 4px; }
+.legal-page h2 { font-size: var(--text-l); margin: 32px 0 10px; scroll-margin-top: 16px; }
+.legal-page p, .legal-page li { line-height: 1.65; }
+.legal-page p { margin: 0 0 12px; }
+.legal-page ul, .legal-page ol { padding-left: 22px; margin: 0 0 12px; }
+.legal-page li { margin-bottom: 6px; }
+.doc-meta { color: var(--muted); font-size: var(--text-s); }
+.draft-banner { background: var(--brass-tint); border-left: 4px solid var(--brass); border-radius: var(--r-s); padding: 12px 14px; font-size: var(--text-s); color: #5F4A2D; }
+mark.fill { background: #FFF1B8; color: var(--ink); padding: 0 3px; border-radius: 3px; }
+.toc { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-l); padding: 12px 18px; margin: 20px 0; }
+.toc ol { columns: 2 220px; margin: 0; font-size: var(--text-s); }
+.summary-box { background: var(--select-tint); border-radius: var(--r-l); padding: 14px 18px; margin: 16px 0; }
+.summary-box h2 { margin-top: 0; }
+.data-table { width: 100%; border-collapse: collapse; font-size: var(--text-s); margin: 8px 0 16px; }
+.data-table th, .data-table td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.data-table th { background: var(--surface); }
+.legal-nav { display: flex; gap: 14px; flex-wrap: wrap; margin-left: auto; font-size: var(--text-s); }
+.legal-nav a { color: var(--ink-2); text-decoration: none; padding: 6px 0; border-bottom: 2px solid transparent; }
+.legal-nav a[aria-current="page"] { color: var(--ink); border-bottom-color: var(--brand); font-weight: 600; }
+@media print { .site-header, .toc, .draft-banner { display: none; } mark.fill { background: none; } }
+@media (max-width: 640px) {
+  body:has(.legal-page) .header-inner { height: auto; flex-wrap: wrap; padding-top: 8px; padding-bottom: 8px; gap: 6px 20px; }
+  .legal-nav { margin-left: 0; }
+}
