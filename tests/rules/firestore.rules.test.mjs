@@ -99,18 +99,23 @@ test('a retailer reads and lists only their own products', async function () {
 
 // ---------- creating and publishing ----------
 
-// The rest of a product, written onto an existing draft (photos can only be
-// added after the product exists, as in the app).
-function fill(shopId, id, over) {
-  var x = complete(shopId, id, over);
-  delete x.createdAt;
-  return x;
-}
+// As in the app: a product is created, its details and price filled in, and
+// its photos attached once they are uploaded (each step its own write).
 async function freshDraft(db, shopId, id) {
   await assertSucceeds(setDoc(doc(db, 'products', id), draft(shopId)));
   return doc(db, 'products', id);
 }
-
+async function prepared(db, shopId, id, over) {
+  var ref = await freshDraft(db, shopId, id);
+  await assertSucceeds(updateDoc(ref, Object.assign({
+    pricing: pricing(), availability: 'in_stock', size: { eye: 52, bridge: 18, temple: 140 },
+    tags: { shape: 'rectangle', color: 'black', gender: null, rim: 'fullrim', free: [] }, updatedAt: serverTimestamp()
+  }, over || {})));
+  return ref;
+}
+function media(shopId, id, over) {
+  return Object.assign({ images: { thumb: img(shopId, id, 'thumb-1.webp') }, tryOn: { status: 'none' }, updatedAt: serverTimestamp() }, over || {});
+}
 
 test('an approved retailer creates, edits and publishes their own product', async function () {
   var db = as(A, VERIFIED);
@@ -133,25 +138,33 @@ test('an approved retailer creates, edits and publishes their own product', asyn
 
 test('a product is only public when complete: price confirmed, availability, photo, try-on state', async function () {
   var db = as(A, VERIFIED);
+  var pub = { status: 'published', public: true };
   // unconfirmed tax treatment
-  var r1 = await freshDraft(db, A, 'c1');
-  await assertFails(updateDoc(r1, fill(A, 'c1', { status: 'published', public: true, pricing: pricing({ confirmed: false }) })));
-  await assertSucceeds(updateDoc(r1, fill(A, 'c1', { status: 'published', public: false, pricing: pricing({ confirmed: false }) })));
+  var r1 = await prepared(db, A, 'c1', { pricing: pricing({ confirmed: false }) });
+  await assertFails(updateDoc(r1, media(A, 'c1', pub)));
+  await assertSucceeds(updateDoc(r1, media(A, 'c1', { status: 'published', public: false })));
   // no photo
-  var r2 = await freshDraft(db, A, 'c2');
-  await assertFails(updateDoc(r2, fill(A, 'c2', { status: 'published', public: true, images: {} })));
+  var r2 = await prepared(db, A, 'c2');
+  await assertFails(updateDoc(r2, { status: 'published', public: true, updatedAt: serverTimestamp() }));
+  // no availability
+  var r2b = await prepared(db, A, 'c2b', { availability: null });
+  await assertFails(updateDoc(r2b, media(A, 'c2b', pub)));
   // try-on claimed ready but the asset isn't there
-  var r3 = await freshDraft(db, A, 'c3');
-  await assertFails(updateDoc(r3, fill(A, 'c3', { status: 'published', public: true, tryOn: { status: 'ready', level: '3d' } })));
+  var r3 = await prepared(db, A, 'c3');
+  await assertFails(updateDoc(r3, media(A, 'c3', Object.assign({ tryOn: { status: 'ready', level: '3d' } }, pub))));
   // try-on that failed must be fixed or switched to "no try-on" before going public
-  var r4 = await freshDraft(db, A, 'c4');
-  await assertFails(updateDoc(r4, fill(A, 'c4', { status: 'published', public: true, tryOn: { status: 'failed', error: 'noFrame' } })));
+  var r4 = await prepared(db, A, 'c4');
+  await assertFails(updateDoc(r4, media(A, 'c4', Object.assign({ tryOn: { status: 'failed', error: 'noFrame' } }, pub))));
   // ready with its asset
-  var r5 = await freshDraft(db, A, 'c5');
-  await assertSucceeds(updateDoc(r5, fill(A, 'c5', {
-    status: 'published', public: true, tryOn: { status: 'ready', level: '3d', prepared: 'auto', quality: 0.9 },
+  var r5 = await prepared(db, A, 'c5');
+  await assertSucceeds(updateDoc(r5, media(A, 'c5', Object.assign({
+    tryOn: { status: 'ready', level: '3d', prepared: 'auto', quality: 0.9 }, assetBytes: 320000,
     images: { thumb: img(A, 'c5', 'thumb-1.webp'), cutout: img(A, 'c5', 'cutout-1.png'), manifest: img(A, 'c5', 'asset-1.json'), source: img(A, 'c5', 'source-1.jpg', false) }
-  })));
+  }, pub))));
+  // switched to "list without try-on": the cut-out goes, the listing stays public
+  await assertSucceeds(updateDoc(r5, media(A, 'c5', Object.assign({
+    images: { thumb: img(A, 'c5', 'thumb-1.webp'), source: img(A, 'c5', 'source-1.jpg', false) }
+  }, pub))));
 });
 
 test('a new product starts without photos; they are attached once uploaded', async function () {
@@ -198,9 +211,9 @@ test('the fullest product the app can write fits within the rules\' evaluation l
 
 test('a pending retailer can prepare and even publish, but nothing is shown until approval', async function () {
   var db = as(P, VERIFIED);
-  var r = await freshDraft(db, P, 'p2');
-  await assertFails(updateDoc(r, fill(P, 'p2', { status: 'published', public: true })));
-  await assertSucceeds(updateDoc(r, fill(P, 'p2', { status: 'published', public: false })));
+  var r = await prepared(db, P, 'p2');
+  await assertFails(updateDoc(r, media(P, 'p2', { status: 'published', public: true })));
+  await assertSucceeds(updateDoc(r, media(P, 'p2', { status: 'published', public: false })));
   await assertFails(getDoc(doc(guest(), 'products', 'p2')));
 });
 

@@ -221,13 +221,13 @@ service cloud.firestore {
     // only Firebase Storage links can be shown (no outside images in listings).
     // The original photo ('source') never gets a link.
     function imgOk(img, base, allowUrl) {
-      return img is map && img.keys().hasOnly(['url', 'path', 'w', 'h', 'bytes'])
-        && img.path is string && img.path.matches(base + '(assets|source)/[A-Za-z0-9._-]{1,80}')
-        && (!('url' in img) || (allowUrl && img.url is string && img.url.size() <= 1500
-              && img.url.matches('(https://firebasestorage[.]googleapis[.]com/|http://(127[.]0[.]0[.]1|localhost):9199/)[^[:space:]<>"]+')));
+      return img.keys().hasOnly(['url', 'path', 'w', 'h', 'bytes'])
+        && img.path.matches(base + '(assets|source)/[A-Za-z0-9._-]{1,80}')
+        && (!('url' in img) || (allowUrl
+              && img.url.matches('(https://firebasestorage[.]googleapis[.]com/|http://(127[.]0[.]0[.]1|localhost):9199/)[^[:space:]<>"]{1,1400}')));
     }
     function imagesOk(im, base) {
-      return im is map && im.keys().hasOnly(['thumb', 'cutout', 'side', 'source', 'manifest'])
+      return im.keys().hasOnly(['thumb', 'cutout', 'side', 'source', 'manifest'])
         && (!('thumb' in im) || imgOk(im.thumb, base, true))
         && (!('cutout' in im) || imgOk(im.cutout, base, true))
         && (!('side' in im) || imgOk(im.side, base, true))
