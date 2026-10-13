@@ -1,0 +1,56 @@
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions:
+  contents: read
+  checks: write
+
+jobs:
+  unit-and-rules:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - run: npm ci
+      - name: Unit tests (pricing, validation, photo checks, demo frames, extraction, 3D maths)
+        run: set -o pipefail; npm test 2>&1 | tee unit-report.txt
+      - name: Cache Firebase emulators
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/firebase/emulators
+          key: firebase-emulators-${{ hashFiles('package-lock.json') }}
+      - name: Security rules in the Firebase emulators (Firestore + Storage)
+        run: set -o pipefail; npm run test:rules 2>&1 | tee rules-report.txt
+      - name: Publish the test output as a check (readable without log access)
+        if: always()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const read = f => fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '(not run)';
+            const pick = (txt) => {
+              const lines = txt.split('\n');
+              const keep = lines.filter(l => /^(not ok|ok) |^# (tests|pass|fail)|Error|error:|expected|actual|FirebaseError|PERMISSION|at .*rules\.test|^\s+(failureType|code|message):|@ L\d|for '(create|update|delete|get|list)'|evaluation error|DIAG/.test(l));
+              return keep.join('\n');
+            };
+            const unit = read('unit-report.txt'), rules = read('rules-report.txt');
+            const text = ('## Unit\n```\n' + pick(unit).slice(-20000) + '\n```\n## Rules\n```\n' + pick(rules).slice(-40000) + '\n```').slice(0, 65000);
+            const failed = /^not ok /m.test(unit + rules) || /# fail [1-9]/.test(unit + rules);
+            await github.rest.checks.create({
+              owner: context.repo.owner, repo: context.repo.repo,
+              name: 'test-report', head_sha: context.sha, status: 'completed',
+              conclusion: failed ? 'failure' : 'success',
+              output: { title: failed ? 'Some tests failed' : 'All tests passed', summary: (rules.match(/# (tests|pass|fail) \d+/g) || []).join(', ') || 'see text', text }
+            });
