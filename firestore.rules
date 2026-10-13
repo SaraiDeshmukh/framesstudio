@@ -167,91 +167,96 @@ service cloud.firestore {
     }
 
     // ---------- products ----------
+    // Firestore stops evaluating a request after 1,000 expressions, so these
+    // checks are written to be cheap: on an update only the fields that change
+    // are validated, and optional values are read with get(key, default).
     function productKeys() {
       return ['shopId', 'name', 'sku', 'brand', 'frameType', 'tags', 'colourName', 'material', 'description',
               'size', 'pricing', 'availability', 'link', 'status', 'moderation', 'public', 'tryOn', 'images',
               'assetBytes', 'createdAt', 'updatedAt', 'legacyId'];
     }
-    function enumOrNull(m, k, values) { return !(k in m) || m[k] == null || m[k] in values; }
-    function validTags(p) {
-      return !('tags' in p) || (p.tags is map
-        && p.tags.keys().hasOnly(['shape', 'color', 'gender', 'rim', 'free'])
-        && enumOrNull(p.tags, 'shape', ['round', 'square', 'catseye', 'aviator', 'browline', 'rectangle', 'oval'])
-        && enumOrNull(p.tags, 'color', ['black', 'tortoise', 'gold', 'silver', 'clear', 'navy', 'red'])
-        && enumOrNull(p.tags, 'gender', ['womens', 'mens', 'unisex', 'kids'])
-        && enumOrNull(p.tags, 'rim', ['fullrim', 'semirimless', 'rimless'])
-        && (!('free' in p.tags) || (p.tags.free is list && p.tags.free.size() <= 12)));
+    function optS(v, max) { return v == null || (v is string && v.size() <= max); }
+    function optNum(v, lo, hi) { return v == null || (v is number && v >= lo && v <= hi); }
+    function tagsOk(t) {
+      return t is map && t.keys().hasOnly(['shape', 'color', 'gender', 'rim', 'free'])
+        && t.get('shape', null) in [null, 'round', 'square', 'catseye', 'aviator', 'browline', 'rectangle', 'oval']
+        && t.get('color', null) in [null, 'black', 'tortoise', 'gold', 'silver', 'clear', 'navy', 'red']
+        && t.get('gender', null) in [null, 'womens', 'mens', 'unisex', 'kids']
+        && t.get('rim', null) in [null, 'fullrim', 'semirimless', 'rimless']
+        && t.get('free', []) is list && t.get('free', []).size() <= 12;
     }
-    function mm(m, k, lo, hi) { return !(k in m) || m[k] == null || (m[k] is number && m[k] >= lo && m[k] <= hi); }
-    function validSize(p) {
-      return !('size' in p) || p.size == null || (p.size is map && p.size.keys().hasOnly(['eye', 'bridge', 'temple'])
-        && mm(p.size, 'eye', 30, 75) && mm(p.size, 'bridge', 10, 30) && mm(p.size, 'temple', 100, 170));
+    function sizeOk(s) {
+      return s == null || (s is map && s.keys().hasOnly(['eye', 'bridge', 'temple'])
+        && optNum(s.get('eye', null), 30, 75) && optNum(s.get('bridge', null), 10, 30) && optNum(s.get('temple', null), 100, 170));
     }
     // Prices in paise (whole numbers). The rate is the retailer's choice; nothing
     // here assumes a GST rate.
-    function validPricing(p) {
-      return !('pricing' in p) || (p.pricing is map
-        && p.pricing.keys().hasOnly(['pricePaise', 'currency', 'taxMode', 'taxRate', 'salePaise', 'hsn', 'confirmed', 'updatedAt'])
-        && p.pricing.keys().hasAll(['pricePaise', 'currency', 'taxMode', 'confirmed', 'updatedAt'])
-        && p.pricing.pricePaise is int && p.pricing.pricePaise >= 100 && p.pricing.pricePaise <= 100000000
-        && p.pricing.currency == 'INR'
-        && p.pricing.taxMode in ['inclusive', 'exclusive', 'none']
-        && (p.pricing.taxMode == 'none'
-              ? (!('taxRate' in p.pricing) || p.pricing.taxRate == null)
-              : (('taxRate' in p.pricing) && p.pricing.taxRate is number && p.pricing.taxRate >= 0 && p.pricing.taxRate <= 50
-                 && math.round(p.pricing.taxRate * 100) == p.pricing.taxRate * 100))
-        && (!('salePaise' in p.pricing) || p.pricing.salePaise == null
-              || (p.pricing.salePaise is int && p.pricing.salePaise >= 100 && p.pricing.salePaise < p.pricing.pricePaise))
-        && optStr(p.pricing, 'hsn', 10)
-        && p.pricing.confirmed is bool
-        && p.pricing.updatedAt is timestamp);
+    function pricingOk(pr) {
+      return pr is map
+        && pr.keys().hasOnly(['pricePaise', 'currency', 'taxMode', 'taxRate', 'salePaise', 'hsn', 'confirmed', 'updatedAt'])
+        && pr.keys().hasAll(['pricePaise', 'currency', 'taxMode', 'confirmed', 'updatedAt'])
+        && pr.pricePaise is int && pr.pricePaise >= 100 && pr.pricePaise <= 100000000
+        && pr.currency == 'INR' && pr.confirmed is bool && pr.updatedAt is timestamp
+        && optS(pr.get('hsn', null), 10)
+        && (pr.taxMode == 'none'
+              ? pr.get('taxRate', null) == null
+              : (pr.taxMode in ['inclusive', 'exclusive'] && pr.get('taxRate', null) is number
+                 && pr.taxRate >= 0 && pr.taxRate <= 50 && math.round(pr.taxRate * 100) == pr.taxRate * 100))
+        && (pr.get('salePaise', null) == null || (pr.salePaise is int && pr.salePaise >= 100 && pr.salePaise < pr.pricePaise));
     }
-    function validModeration(p) {
-      return p.moderation is map && p.moderation.keys().hasOnly(['state', 'reason', 'at', 'by'])
-        && p.moderation.state in ['ok', 'suspended'] && optStr(p.moderation, 'reason', 300);
+    function moderationOk(m) {
+      return m is map && m.keys().hasOnly(['state', 'reason', 'at', 'by'])
+        && m.state in ['ok', 'suspended'] && optS(m.get('reason', null), 300);
     }
-    function validTryOn(p) {
-      return p.tryOn is map
-        && p.tryOn.keys().hasOnly(['status', 'level', 'prepared', 'quality', 'rimType', 'translucent', 'warnings', 'error', 'hasSide', 'updatedAt'])
-        && p.tryOn.status in ['none', 'pending', 'ready', 'failed']
-        && enumOrNull(p.tryOn, 'level', ['3d', '2d'])
-        && enumOrNull(p.tryOn, 'prepared', ['auto', 'manual'])
-        && (!('warnings' in p.tryOn) || (p.tryOn.warnings is list && p.tryOn.warnings.size() <= 30))
-        && optStr(p.tryOn, 'error', 300);
+    function tryOnOk(t) {
+      return t is map
+        && t.keys().hasOnly(['status', 'level', 'prepared', 'quality', 'rimType', 'translucent', 'warnings', 'error', 'hasSide', 'updatedAt'])
+        && t.status in ['none', 'pending', 'ready', 'failed']
+        && t.get('level', null) in [null, '3d', '2d']
+        && t.get('prepared', null) in [null, 'auto', 'manual']
+        && t.get('warnings', []) is list && t.get('warnings', []).size() <= 30
+        && optS(t.get('error', null), 300);
     }
     // Every stored file of a product lives under that product's own folder, and
     // only Firebase Storage links can be shown (no outside images in listings).
-    function validImg(img, shopId, productId, allowUrl) {
+    // The original photo ('source') never gets a link.
+    function imgOk(img, base, allowUrl) {
       return img is map && img.keys().hasOnly(['url', 'path', 'w', 'h', 'bytes'])
-        && img.path is string
-        && img.path.matches('shops/' + shopId + '/products/' + productId + '/(assets|source)/[A-Za-z0-9._-]{1,80}')
-        && (!('url' in img) || (allowUrl && str(img.url, 10, 1500)
-              && img.url.matches('(https://firebasestorage[.]googleapis[.]com/|http://(127[.]0[.]0[.]1|localhost):9199/)[^[:space:]<>"]+')))
-        && (!('bytes' in img) || (img.bytes is int && img.bytes >= 0 && img.bytes <= 20000000));
+        && img.path is string && img.path.matches(base + '(assets|source)/[A-Za-z0-9._-]{1,80}')
+        && (!('url' in img) || (allowUrl && img.url is string && img.url.size() <= 1500
+              && img.url.matches('(https://firebasestorage[.]googleapis[.]com/|http://(127[.]0[.]0[.]1|localhost):9199/)[^[:space:]<>"]+')));
     }
-    function validImages(p, productId) {
-      return !('images' in p) || (p.images is map
-        && p.images.keys().hasOnly(['thumb', 'cutout', 'side', 'source', 'manifest'])
-        && (!('thumb' in p.images) || validImg(p.images.thumb, p.shopId, productId, true))
-        && (!('cutout' in p.images) || validImg(p.images.cutout, p.shopId, productId, true))
-        && (!('side' in p.images) || validImg(p.images.side, p.shopId, productId, true))
-        && (!('manifest' in p.images) || validImg(p.images.manifest, p.shopId, productId, true))
-        && (!('source' in p.images) || validImg(p.images.source, p.shopId, productId, false)));
+    function imagesOk(im, base) {
+      return im is map && im.keys().hasOnly(['thumb', 'cutout', 'side', 'source', 'manifest'])
+        && (!('thumb' in im) || imgOk(im.thumb, base, true))
+        && (!('cutout' in im) || imgOk(im.cutout, base, true))
+        && (!('side' in im) || imgOk(im.side, base, true))
+        && (!('manifest' in im) || imgOk(im.manifest, base, true))
+        && (!('source' in im) || imgOk(im.source, base, false));
     }
-    function validProduct(p, productId) {
-      return p.keys().hasOnly(productKeys())
-        && p.keys().hasAll(['shopId', 'name', 'status', 'moderation', 'public', 'tryOn', 'createdAt', 'updatedAt'])
-        && str(p.name, 0, 80)
-        && optStr(p, 'sku', 40) && optStr(p, 'brand', 40) && optStr(p, 'colourName', 40)
-        && optStr(p, 'material', 40) && optStr(p, 'description', 1000) && optStr(p, 'legacyId', 80)
-        && enumOrNull(p, 'frameType', ['eyeglasses', 'sunglasses', 'reading', 'computer', 'sports'])
-        && enumOrNull(p, 'availability', ['in_stock', 'low_stock', 'out_of_stock', 'on_request'])
-        && optHttps(p, 'link')
-        && p.status in ['draft', 'published', 'archived']
-        && p.public is bool
-        && (!('assetBytes' in p) || (p.assetBytes is int && p.assetBytes >= 0 && p.assetBytes <= 50000000))
-        && validTags(p) && validSize(p) && validPricing(p) && validModeration(p) && validTryOn(p)
-        && validImages(p, productId);
+    // Validates the fields named in `ks` (all fields on create, the changed
+    // ones on update).
+    function fieldsOk(p, ks, productId) {
+      return ks.hasOnly(productKeys())
+        && (!('name' in ks) || (p.name is string && p.name.size() <= 80))
+        && (!('sku' in ks) || optS(p.sku, 40))
+        && (!('brand' in ks) || optS(p.brand, 40))
+        && (!('colourName' in ks) || optS(p.colourName, 40))
+        && (!('material' in ks) || optS(p.material, 40))
+        && (!('description' in ks) || optS(p.description, 1000))
+        && (!('legacyId' in ks) || optS(p.legacyId, 80))
+        && (!('frameType' in ks) || p.frameType in [null, 'eyeglasses', 'sunglasses', 'reading', 'computer', 'sports'])
+        && (!('availability' in ks) || p.availability in [null, 'in_stock', 'low_stock', 'out_of_stock', 'on_request'])
+        && (!('link' in ks) || p.link == null || p.link == ''
+              || (p.link is string && p.link.size() <= 300 && p.link.matches('https://[^[:space:]<>"]+')))
+        && (!('status' in ks) || p.status in ['draft', 'published', 'archived'])
+        && (!('public' in ks) || p.public is bool)
+        && (!('assetBytes' in ks) || (p.assetBytes is int && p.assetBytes >= 0 && p.assetBytes <= 50000000))
+        && (!('tags' in ks) || tagsOk(p.tags))
+        && (!('size' in ks) || sizeOk(p.size))
+        && (!('pricing' in ks) || (pricingOk(p.pricing) && p.pricing.updatedAt == request.time))
+        && (!('tryOn' in ks) || tryOnOk(p.tryOn))
+        && (!('images' in ks) || imagesOk(p.images, 'shops/' + p.shopId + '/products/' + productId + '/'));
     }
     // Complete enough to show a customer: a name, a confirmed price and tax
     // treatment, availability, a photo, and either a ready try-on asset or an
@@ -260,53 +265,55 @@ service cloud.firestore {
       return p.status == 'published'
         && p.moderation.state == 'ok'
         && p.name.size() >= 2
-        && ('pricing' in p) && p.pricing.confirmed == true
-        && ('availability' in p) && p.availability != null
-        && ('images' in p) && ('thumb' in p.images) && ('url' in p.images.thumb)
+        && p.get('pricing', {}).get('confirmed', false) == true
+        && p.get('availability', null) != null
+        && 'url' in p.get('images', {}).get('thumb', {})
         && (p.tryOn.status == 'none'
-            || (p.tryOn.status == 'ready' && ('cutout' in p.images) && ('manifest' in p.images)));
+            || (p.tryOn.status == 'ready' && 'cutout' in p.images && 'manifest' in p.images));
     }
     function shouldBePublic(p) { return publishable(p) && shopStatusAfter(p.shopId) == 'approved'; }
-    function pricingStampOk(n) {
-      return !('pricing' in n) || n.pricing.updatedAt == request.time
-        || (request.method == 'update' && ('pricing' in resource.data) && n.pricing == resource.data.pricing);
+
+    function productCreateOk(p, productId) {
+      let ks = p.keys();
+      return realUser() && p.shopId == uid()
+        && ks.hasAll(['shopId', 'name', 'status', 'moderation', 'public', 'tryOn', 'createdAt', 'updatedAt'])
+        && p.moderation == { 'state': 'ok' }
+        && p.createdAt == request.time && p.updatedAt == request.time
+        && fieldsOk(p, ks, productId)
+        && shopStatusNow(uid()) in ['pending', 'approved']
+        && acceptedNow('retailerTerms')
+        && p.public == shouldBePublic(p);
+    }
+    // The retailer edits their own product. The shop, the admin's moderation
+    // and the creation date can't be changed; a changed price must carry the
+    // time it changed.
+    function productOwnerUpdateOk(p, old, productId) {
+      let ks = p.diff(old).affectedKeys();
+      return realUser() && old.shopId == uid()
+        && !ks.hasAny(['shopId', 'moderation', 'createdAt'])
+        && p.updatedAt == request.time
+        && fieldsOk(p, ks, productId)
+        && shopStatusNow(uid()) in ['pending', 'approved']
+        && acceptedNow('retailerTerms')
+        && p.public == shouldBePublic(p);
     }
 
     match /products/{productId} {
       allow get, list: if resource.data.public == true || isOwner(resource.data.shopId) || isAdmin();
 
-      allow create: if realUser()
-        && newData().shopId == uid()
-        && shopStatusNow(uid()) in ['pending', 'approved']
-        && acceptedNow('retailerTerms')
-        && validProduct(newData(), productId)
-        && newData().moderation == { 'state': 'ok' }
-        && newData().createdAt == request.time && newData().updatedAt == request.time
-        && pricingStampOk(newData())
-        && newData().public == shouldBePublic(newData());
+      allow create: if productCreateOk(request.resource.data, productId);
 
-      // The retailer edits their own product. The shop, the admin's moderation
-      // and the creation date can't be changed.
-      allow update: if isOwner(oldData().shopId)
-        && newData().shopId == oldData().shopId
-        && newData().moderation == oldData().moderation
-        && newData().createdAt == oldData().createdAt
-        && shopStatusNow(uid()) in ['pending', 'approved']
-        && acceptedNow('retailerTerms')
-        && validProduct(newData(), productId)
-        && newData().updatedAt == request.time
-        && pricingStampOk(newData())
-        && newData().public == shouldBePublic(newData());
+      allow update: if productOwnerUpdateOk(request.resource.data, resource.data, productId);
 
       // The admin suspends or restores a listing, and re-derives `public`
       // (for example when a shop is approved or suspended).
       allow update: if isAdmin()
-        && changed().hasOnly(['moderation', 'public', 'updatedAt'])
-        && validModeration(newData())
-        && newData().updatedAt == request.time
-        && newData().public == shouldBePublic(newData());
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['moderation', 'public', 'updatedAt'])
+        && moderationOk(request.resource.data.moderation)
+        && request.resource.data.updatedAt == request.time
+        && request.resource.data.public == shouldBePublic(request.resource.data);
 
-      allow delete: if isOwner(oldData().shopId) || isAdmin();
+      allow delete: if isOwner(resource.data.shopId) || isAdmin();
     }
 
     // ---------- reports of wrong or inappropriate listings ----------

@@ -136,6 +136,32 @@ test('a product is only public when complete: price confirmed, availability, pho
   })));
 });
 
+test('the fullest product the app can write fits within the rules\' evaluation limits', async function () {
+  // Firestore stops evaluating rules after 1,000 expressions; a product with
+  // every field filled in, created and then rewritten in one go, must still pass.
+  var db = as(A, VERIFIED);
+  function full(id, over) {
+    return complete(A, id, Object.assign({
+      status: 'published', public: true, sku: 'SKU-' + id, brand: 'House brand', frameType: 'eyeglasses',
+      colourName: 'Matte black', material: 'Acetate', description: 'd'.repeat(1000), link: 'https://shop.example.com/p/' + id,
+      legacyId: 'legacy-' + id, assetBytes: 480000,
+      tags: { shape: 'rectangle', color: 'black', gender: 'unisex', rim: 'fullrim', free: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'] },
+      size: { eye: 52, bridge: 18, temple: 140 },
+      pricing: pricing({ taxMode: 'exclusive', taxRate: 12.5, salePaise: 199900, hsn: '9003' }),
+      tryOn: { status: 'ready', level: '3d', prepared: 'auto', quality: 0.92, rimType: 'full', translucent: false,
+        warnings: Array.from({ length: 30 }, function (_, i) { return 'w' + i; }), error: null, hasSide: true, updatedAt: serverTimestamp() },
+      images: {
+        thumb: img(A, id, 'thumb-1.webp'), cutout: img(A, id, 'cutout-1.png'), side: img(A, id, 'side-1.png'),
+        manifest: img(A, id, 'asset-1.json'), source: Object.assign(img(A, id, 'x', false), { path: 'shops/' + A + '/products/' + id + '/source/source-1.jpg' })
+      }
+    }, over || {}));
+  }
+  await assertSucceeds(setDoc(doc(db, 'products', 'm1'), full('m1')));
+  var all = full('m1', { name: 'Renamed', availability: 'low_stock', pricing: pricing({ pricePaise: 259900, taxMode: 'inclusive', taxRate: 18 }) });
+  delete all.createdAt; delete all.shopId; delete all.moderation;
+  await assertSucceeds(updateDoc(doc(db, 'products', 'm1'), all));
+});
+
 test('a pending retailer can prepare and even publish, but nothing is shown until approval', async function () {
   var db = as(P, VERIFIED);
   await assertSucceeds(setDoc(doc(db, 'products', 'p1'), draft(P)));
