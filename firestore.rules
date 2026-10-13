@@ -274,7 +274,7 @@ service cloud.firestore {
     function shouldBePublic(p) { return publishable(p) && shopStatusAfter(p.shopId) == 'approved'; }
 
     function productCreateOk(p, productId) {
-      let ks = p.keys();
+      let ks = p.keys().toSet();      // a set: membership checks stay cheap
       return realUser() && p.shopId == uid()
         && ks.hasAll(['shopId', 'name', 'status', 'moderation', 'public', 'tryOn', 'createdAt', 'updatedAt'])
         && p.moderation == { 'state': 'ok' }
