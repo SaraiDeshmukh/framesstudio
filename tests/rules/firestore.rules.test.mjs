@@ -99,6 +99,19 @@ test('a retailer reads and lists only their own products', async function () {
 
 // ---------- creating and publishing ----------
 
+// The rest of a product, written onto an existing draft (photos can only be
+// added after the product exists, as in the app).
+function fill(shopId, id, over) {
+  var x = complete(shopId, id, over);
+  delete x.createdAt;
+  return x;
+}
+async function freshDraft(db, shopId, id) {
+  await assertSucceeds(setDoc(doc(db, 'products', id), draft(shopId)));
+  return doc(db, 'products', id);
+}
+
+
 test('an approved retailer creates, edits and publishes their own product', async function () {
   var db = as(A, VERIFIED);
   await assertSucceeds(setDoc(doc(db, 'products', 'n1'), draft(A)));
@@ -121,52 +134,73 @@ test('an approved retailer creates, edits and publishes their own product', asyn
 test('a product is only public when complete: price confirmed, availability, photo, try-on state', async function () {
   var db = as(A, VERIFIED);
   // unconfirmed tax treatment
-  await assertFails(setDoc(doc(db, 'products', 'c1'), complete(A, 'c1', { status: 'published', public: true, pricing: pricing({ confirmed: false }) })));
-  await assertSucceeds(setDoc(doc(db, 'products', 'c1'), complete(A, 'c1', { status: 'published', public: false, pricing: pricing({ confirmed: false }) })));
+  var r1 = await freshDraft(db, A, 'c1');
+  await assertFails(updateDoc(r1, fill(A, 'c1', { status: 'published', public: true, pricing: pricing({ confirmed: false }) })));
+  await assertSucceeds(updateDoc(r1, fill(A, 'c1', { status: 'published', public: false, pricing: pricing({ confirmed: false }) })));
   // no photo
-  await assertFails(setDoc(doc(db, 'products', 'c2'), complete(A, 'c2', { status: 'published', public: true, images: {} })));
+  var r2 = await freshDraft(db, A, 'c2');
+  await assertFails(updateDoc(r2, fill(A, 'c2', { status: 'published', public: true, images: {} })));
   // try-on claimed ready but the asset isn't there
-  await assertFails(setDoc(doc(db, 'products', 'c3'), complete(A, 'c3', { status: 'published', public: true, tryOn: { status: 'ready', level: '3d' } })));
+  var r3 = await freshDraft(db, A, 'c3');
+  await assertFails(updateDoc(r3, fill(A, 'c3', { status: 'published', public: true, tryOn: { status: 'ready', level: '3d' } })));
   // try-on that failed must be fixed or switched to "no try-on" before going public
-  await assertFails(setDoc(doc(db, 'products', 'c4'), complete(A, 'c4', { status: 'published', public: true, tryOn: { status: 'failed', error: 'noFrame' } })));
+  var r4 = await freshDraft(db, A, 'c4');
+  await assertFails(updateDoc(r4, fill(A, 'c4', { status: 'published', public: true, tryOn: { status: 'failed', error: 'noFrame' } })));
   // ready with its asset
-  await assertSucceeds(setDoc(doc(db, 'products', 'c5'), complete(A, 'c5', {
+  var r5 = await freshDraft(db, A, 'c5');
+  await assertSucceeds(updateDoc(r5, fill(A, 'c5', {
     status: 'published', public: true, tryOn: { status: 'ready', level: '3d', prepared: 'auto', quality: 0.9 },
     images: { thumb: img(A, 'c5', 'thumb-1.webp'), cutout: img(A, 'c5', 'cutout-1.png'), manifest: img(A, 'c5', 'asset-1.json'), source: img(A, 'c5', 'source-1.jpg', false) }
   })));
 });
 
-test('the fullest product the app can write fits within the rules\' evaluation limits', async function () {
-  // Firestore stops evaluating rules after 1,000 expressions; a product with
-  // every field filled in, created and then rewritten in one go, must still pass.
+test('a new product starts without photos; they are attached once uploaded', async function () {
   var db = as(A, VERIFIED);
-  function full(id, over) {
-    return complete(A, id, Object.assign({
-      status: 'published', public: true, sku: 'SKU-' + id, brand: 'House brand', frameType: 'eyeglasses',
-      colourName: 'Matte black', material: 'Acetate', description: 'd'.repeat(1000), link: 'https://shop.example.com/p/' + id,
-      legacyId: 'legacy-' + id, assetBytes: 480000,
-      tags: { shape: 'rectangle', color: 'black', gender: 'unisex', rim: 'fullrim', free: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'] },
-      size: { eye: 52, bridge: 18, temple: 140 },
-      pricing: pricing({ taxMode: 'exclusive', taxRate: 12.5, salePaise: 199900, hsn: '9003' }),
-      tryOn: { status: 'ready', level: '3d', prepared: 'auto', quality: 0.92, rimType: 'full', translucent: false,
-        warnings: Array.from({ length: 30 }, function (_, i) { return 'w' + i; }), error: null, hasSide: true, updatedAt: serverTimestamp() },
-      images: {
-        thumb: img(A, id, 'thumb-1.webp'), cutout: img(A, id, 'cutout-1.png'), side: img(A, id, 'side-1.png'),
-        manifest: img(A, id, 'asset-1.json'), source: Object.assign(img(A, id, 'x', false), { path: 'shops/' + A + '/products/' + id + '/source/source-1.jpg' })
-      }
-    }, over || {}));
-  }
-  await assertSucceeds(setDoc(doc(db, 'products', 'm1'), full('m1')));
-  var all = full('m1', { name: 'Renamed', availability: 'low_stock', pricing: pricing({ pricePaise: 259900, taxMode: 'inclusive', taxRate: 18 }) });
-  delete all.createdAt; delete all.shopId; delete all.moderation;
-  await assertSucceeds(updateDoc(doc(db, 'products', 'm1'), all));
+  await assertFails(setDoc(doc(db, 'products', 'np1'), draft(A, { images: { thumb: img(A, 'np1', 'thumb-1.webp') } })));
+  await assertSucceeds(setDoc(doc(db, 'products', 'np2'), draft(A, { images: {} })));
+  await assertSucceeds(setDoc(doc(db, 'products', 'np3'), complete(A, 'np3', { images: {}, status: 'published', public: false })));
+});
+
+test('the fullest product the app can write fits within the rules\' evaluation limits', async function () {
+  // Firestore stops evaluating rules after 1,000 expressions. Every field
+  // filled in: created (without photos, as in the app), then its photos and
+  // try-on assets attached and published, then its details and price edited.
+  var db = as(A, VERIFIED);
+  var id = 'm1';
+  var details = {
+    name: 'Matte black rectangle', sku: 'SKU-m1', brand: 'House brand', frameType: 'eyeglasses',
+    colourName: 'Matte black', material: 'Acetate', description: 'd'.repeat(1000), link: 'https://shop.example.com/p/m1',
+    legacyId: 'legacy-m1', availability: 'in_stock',
+    tags: { shape: 'rectangle', color: 'black', gender: 'unisex', rim: 'fullrim', free: ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l'] },
+    size: { eye: 52, bridge: 18, temple: 140 },
+    pricing: pricing({ taxMode: 'exclusive', taxRate: 12.5, salePaise: 199900, hsn: '9003' }),
+    tryOn: { status: 'pending' }
+  };
+  await assertSucceeds(setDoc(doc(db, 'products', id), draft(A, details)));
+  await assertSucceeds(updateDoc(doc(db, 'products', id), {
+    images: {
+      thumb: img(A, id, 'thumb-1.webp'), cutout: img(A, id, 'cutout-1.png'), side: img(A, id, 'side-1.png'),
+      manifest: img(A, id, 'asset-1.json'), source: img(A, id, 'source-1.jpg', false)
+    },
+    tryOn: { status: 'ready', level: '3d', prepared: 'auto', quality: 0.92, rimType: 'full', translucent: false,
+      warnings: Array.from({ length: 30 }, function (_, i) { return 'w' + i; }), error: null, hasSide: true, updatedAt: serverTimestamp() },
+    assetBytes: 480000, status: 'published', public: true, updatedAt: serverTimestamp()
+  }));
+  var edits = Object.assign({}, details, {
+    name: 'Renamed', sku: 'SKU-2', brand: 'Other', frameType: 'computer', colourName: 'Gloss black', material: 'TR90',
+    description: 'e'.repeat(1000), link: 'https://shop.example.com/p/m1b', availability: 'low_stock',
+    tags: { shape: 'square', color: 'navy', gender: 'mens', rim: 'fullrim', free: ['x'] }, size: { eye: 54, bridge: 17, temple: 145 },
+    pricing: pricing({ pricePaise: 259900, taxMode: 'inclusive', taxRate: 18 }), public: true, updatedAt: serverTimestamp()
+  });
+  delete edits.tryOn;
+  await assertSucceeds(updateDoc(doc(db, 'products', id), edits));
 });
 
 test('a pending retailer can prepare and even publish, but nothing is shown until approval', async function () {
   var db = as(P, VERIFIED);
-  await assertSucceeds(setDoc(doc(db, 'products', 'p1'), draft(P)));
-  await assertFails(setDoc(doc(db, 'products', 'p2'), complete(P, 'p2', { status: 'published', public: true })));
-  await assertSucceeds(setDoc(doc(db, 'products', 'p2'), complete(P, 'p2', { status: 'published', public: false })));
+  var r = await freshDraft(db, P, 'p2');
+  await assertFails(updateDoc(r, fill(P, 'p2', { status: 'published', public: true })));
+  await assertSucceeds(updateDoc(r, fill(P, 'p2', { status: 'published', public: false })));
   await assertFails(getDoc(doc(guest(), 'products', 'p2')));
 });
 
@@ -213,9 +247,6 @@ test('product fields are validated', async function () {
     { size: { eye: 120 } },
     { name: 'x'.repeat(81) },
     { description: 'x'.repeat(1001) },
-    { images: { thumb: { path: 'shops/' + A + '/products/v1/assets/t.webp', url: 'https://evil.example.com/pixel.gif' } } },
-    { images: { thumb: { path: '../../etc/passwd', url: 'https://firebasestorage.googleapis.com/v0/b/x/o/y' } } },
-    { images: { source: img(A, 'v1', 'source-1.jpg', true) } },   // the original photo must stay private (no link)
     { unknownField: 1 },
     { createdAt: new Date(2020, 0, 1) }
   ];
@@ -230,12 +261,24 @@ test('product fields are validated', async function () {
     { pricing: pricing({ taxMode: 'exclusive', taxRate: 0 }) },
     { size: null },
     { link: 'https://wa.me/919999999999' },
-    { link: 'https://shop.example.com/products/steel-frames?size=52' },
-    { images: { thumb: img(A, 'g8', 'thumb-1.webp') } }
+    { link: 'https://shop.example.com/products/steel-frames?size=52' }
   ];
   for (var j = 0; j < good.length; j++) {
     await assertSucceeds(setDoc(doc(db, 'products', 'g' + j), draft(A, good[j])));
   }
+  // photos, attached to an existing product
+  var r = await freshDraft(db, A, 'v2');
+  var badImages = [
+    { thumb: { path: 'shops/' + A + '/products/v2/assets/t.webp', url: 'https://evil.example.com/pixel.gif' } },
+    { thumb: { path: '../../etc/passwd', url: 'https://firebasestorage.googleapis.com/v0/b/x/o/y' } },
+    { thumb: img(A, 'someOtherProduct', 'thumb-1.webp') },
+    { source: img(A, 'v2', 'source-1.jpg', true) },   // the original photo must stay private (no link)
+    { poster: img(A, 'v2', 'poster.png') }
+  ];
+  for (var k = 0; k < badImages.length; k++) {
+    await assertFails(updateDoc(r, { images: badImages[k], updatedAt: serverTimestamp() }));
+  }
+  await assertSucceeds(updateDoc(r, { images: { thumb: img(A, 'v2', 'thumb-1.webp'), source: img(A, 'v2', 'source-1.jpg', false) }, updatedAt: serverTimestamp() }));
 });
 
 test('changing the price must record when it changed', async function () {

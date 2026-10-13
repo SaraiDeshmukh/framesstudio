@@ -279,6 +279,10 @@ service cloud.firestore {
         && ks.hasAll(['shopId', 'name', 'status', 'moderation', 'public', 'tryOn', 'createdAt', 'updatedAt'])
         && p.moderation == { 'state': 'ok' }
         && p.createdAt == request.time && p.updatedAt == request.time
+        // Photos are added afterwards: the Storage rules only accept a product's
+        // files once its document exists, so a new product has no images yet.
+        // (This also keeps the check within the evaluation limit.)
+        && p.get('images', {}).size() == 0
         && fieldsOk(p, ks, productId)
         && shopStatusNow(uid()) in ['pending', 'approved']
         && acceptedNow('retailerTerms')
