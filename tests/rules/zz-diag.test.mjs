@@ -50,7 +50,7 @@ test('diag', async function () {
     variant('R0pad100', null, 100),
     variant('R0pad200', null, 200),
     variant('R0pad400', null, 400),
-    variant('noUrlRe', function (r) { return r.replace(/&& img\.url\.matches\('[^\n]*'\)\)\)/, ')))'); }),
+    variant('noUrlRe', function (r) { return r.replace(/&& img\.url\.matches\('[^\n]*'\)\)\)/, '))'); }),
     variant('noPathRe', function (r) { return r.replace("&& img.path.matches(base + '(assets|source)/[A-Za-z0-9._-]{1,80}')", ''); }),
     variant('noImages', function (r) { return r.replace("(!('images' in ks) || imagesOk(p.images, 'shops/' + p.shopId + '/products/' + productId + '/'))", 'true'); }),
     variant('noTryOn', function (r) { return r.replace("(!('tryOn' in ks) || tryOnOk(p.tryOn))", 'true'); }),
