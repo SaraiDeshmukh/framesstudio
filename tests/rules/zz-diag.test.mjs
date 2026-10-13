@@ -11,7 +11,13 @@ var fsHost = (process.env.FIRESTORE_EMULATOR_HOST || '127.0.0.1:8080').split(':'
 var envs = [];
 after(async function () { for (var e of envs) await e.cleanup(); });
 
-function padFn(n) { var t = []; for (var i = 0; i < n; i++) t.push('1 == 1'); return '    function pad() { return ' + (t.join(' && ') || 'true') + '; }\n'; }
+function padFn(n) {
+  var ten = Array(10).fill('1 == 1').join(' && ');
+  var hundred = Array(10).fill('p10()').join(' && ');
+  var k = Math.round(n / 100);
+  return '    function p10() { return ' + ten + '; }\n    function p100() { return ' + hundred + '; }\n'
+    + '    function pad() { return ' + (k ? Array(k).fill('p100()').join(' && ') : 'true') + '; }\n';
+}
 function variant(name, edit, padN) {
   var r = edit ? edit(base) : base;
   r = r.replace('    // ---------- products ----------', padFn(padN || 0) + '    // ---------- products ----------');
