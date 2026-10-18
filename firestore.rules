@@ -217,22 +217,28 @@ service cloud.firestore {
         && t.get('warnings', []) is list && t.get('warnings', []).size() <= 30
         && optS(t.get('error', null), 300);
     }
-    // Every stored file of a product lives under that product's own folder, and
-    // only Firebase Storage links can be shown (no outside images in listings).
-    // The original photo ('source') never gets a link.
-    function imgOk(img, base, allowUrl) {
-      return img.keys().hasOnly(['url', 'path', 'w', 'h', 'bytes'])
+    // Every stored file of a product lives under that product's own folder.
+    // A picture is shown from one of:
+    //   url   a Firebase Storage link (Blaze plan; no outside images in listings)
+    //   data  a small inline data: URL (thumbnail, fitting data; free plan)
+    //   fid   a productFiles document of this product (free plan)
+    // The original photo ('source') is never public: no link and never inline.
+    function imgOk(img, base, productId, isPublicFile) {
+      return img.keys().hasOnly(['url', 'path', 'w', 'h', 'bytes', 'fid', 'data'])
         && img.path.matches(base + '(assets|source)/[A-Za-z0-9._-]{1,80}')
-        && (!('url' in img) || (allowUrl
-              && img.url.matches('(https://firebasestorage[.]googleapis[.]com/|http://(127[.]0[.]0[.]1|localhost):9199/)[^[:space:]<>"]{1,1000}')));
+        && (!('url' in img) || (isPublicFile
+              && img.url.matches('(https://firebasestorage[.]googleapis[.]com/|http://(127[.]0[.]0[.]1|localhost):9199/)[^[:space:]<>"]{1,1000}')))
+        && (!('data' in img) || (isPublicFile && img.data is string && img.data.size() <= 40000
+              && img.data.matches('data:(image/(png|webp|jpeg)|application/json);base64,[A-Za-z0-9+/=]+')))
+        && (!('fid' in img) || (img.fid is string && img.fid.size() <= 200 && img.fid.split('__')[0] == productId));
     }
-    function imagesOk(im, base) {
+    function imagesOk(im, base, productId) {
       return im.keys().hasOnly(['thumb', 'cutout', 'side', 'source', 'manifest'])
-        && (!('thumb' in im) || imgOk(im.thumb, base, true))
-        && (!('cutout' in im) || imgOk(im.cutout, base, true))
-        && (!('side' in im) || imgOk(im.side, base, true))
-        && (!('manifest' in im) || imgOk(im.manifest, base, true))
-        && (!('source' in im) || imgOk(im.source, base, false));
+        && (!('thumb' in im) || imgOk(im.thumb, base, productId, true))
+        && (!('cutout' in im) || imgOk(im.cutout, base, productId, true))
+        && (!('side' in im) || imgOk(im.side, base, productId, true))
+        && (!('manifest' in im) || imgOk(im.manifest, base, productId, true))
+        && (!('source' in im) || imgOk(im.source, base, productId, false));
     }
     // Validates the fields named in `ks` (all fields on create, the changed
     // ones on update).
@@ -256,7 +262,7 @@ service cloud.firestore {
         && (!('size' in ks) || sizeOk(p.size))
         && (!('pricing' in ks) || (pricingOk(p.pricing) && p.pricing.updatedAt == request.time))
         && (!('tryOn' in ks) || tryOnOk(p.tryOn))
-        && (!('images' in ks) || imagesOk(p.images, 'shops/' + p.shopId + '/products/' + productId + '/'));
+        && (!('images' in ks) || imagesOk(p.images, 'shops/' + p.shopId + '/products/' + productId + '/', productId));
     }
     // Complete enough to show a customer: a name, a confirmed price and tax
     // treatment, availability, a photo, and either a ready try-on asset or an
@@ -267,7 +273,7 @@ service cloud.firestore {
         && p.name.size() >= 2
         && p.get('pricing', {}).get('confirmed', false) == true
         && p.get('availability', null) != null
-        && 'url' in p.get('images', {}).get('thumb', {})
+        && ('url' in p.get('images', {}).get('thumb', {}) || 'data' in p.get('images', {}).get('thumb', {}))
         && (p.tryOn.status == 'none'
             || (p.tryOn.status == 'ready' && 'cutout' in p.images && 'manifest' in p.images));
     }
@@ -318,6 +324,56 @@ service cloud.firestore {
         && request.resource.data.public == shouldBePublic(request.resource.data);
 
       allow delete: if isOwner(resource.data.shopId) || isAdmin();
+    }
+
+    // ---------- frame pictures on the free plan ----------
+    // On the Spark plan there is no Cloud Storage, so a product's larger files
+    // (cut-out, temple photo, original photo) are documents here, one per file,
+    // named <productId>__<file name>. They never change: a new version gets a
+    // new name, and the old one is deleted.
+    //   Pictures for customers ('assets') can be read by anyone who knows the
+    //   document's name (it's only on the product, and unguessable), like a
+    //   Storage download link. They can't be listed.
+    //   The original photo ('source') only by its shop and the admin.
+    match /productFiles/{fileId} {
+      allow get: if resource.data.kind == 'assets' || isOwner(resource.data.shopId) || isAdmin();
+      allow list: if isAdmin() || (realUser() && resource.data.shopId == uid());
+      allow create: if realUser()
+        && newData().keys().hasOnly(['shopId', 'productId', 'kind', 'type', 'data', 'bytes', 'w', 'h', 'createdAt'])
+        && newData().keys().hasAll(['shopId', 'productId', 'kind', 'type', 'data', 'createdAt'])
+        && newData().shopId == uid()
+        && newData().productId is string
+        && fileId.split('__')[0] == newData().productId
+        && fileId.matches('[A-Za-z0-9]{1,40}__[A-Za-z0-9._-]{1,90}')
+        && newData().kind in ['assets', 'source']
+        && newData().type in ['image/png', 'image/webp', 'image/jpeg', 'application/json']
+        && newData().data is string && newData().data.size() <= 1000000
+        && newData().data.matches('data:(image/(png|webp|jpeg)|application/json);base64,[A-Za-z0-9+/=]+')
+        && (!('bytes' in newData()) || (newData().bytes is int && newData().bytes >= 0 && newData().bytes <= 1000000))
+        && newData().createdAt == request.time
+        && get(/databases/$(database)/documents/products/$(newData().productId)).data.shopId == uid()
+        && shopStatusNow(uid()) in ['pending', 'approved'];
+      allow update: if false;
+      allow delete: if isOwner(resource.data.shopId) || isAdmin();
+    }
+
+    // ---------- each shop's catalogue index (public) ----------
+    // One document per shop listing its public products in short form, so a
+    // customer's page can search, filter and sort a whole catalogue with one
+    // read. It only decides what is listed: cards and frame pages show the
+    // product documents, which the rules above release only when public. So
+    // the index is written by the shop (in the same batch as its product
+    // writes) and the admin, and only its shape and size are checked here.
+    match /catalogues/{shopId} {
+      allow get: if true;
+      allow list: if isAdmin();
+      allow create, update: if ((isOwner(shopId) && exists(/databases/$(database)/documents/shops/$(shopId))) || isAdmin())
+        && newData().keys().hasOnly(['v', 'items', 'overflow', 'updatedAt'])
+        && newData().updatedAt == request.time
+        && (!('v' in newData()) || newData().v is int)
+        && (!('overflow' in newData()) || newData().overflow is bool)
+        && (!('items' in newData()) || (newData().items is map && newData().items.size() <= 2000));
+      allow delete: if isOwner(shopId) || isAdmin();
     }
 
     // ---------- reports of wrong or inappropriate listings ----------

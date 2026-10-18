@@ -221,7 +221,7 @@ export function initAdmin(root, ctx) {
     var shop = st.shops[p.shopId];
     var v = p.pricing ? priceView(p.pricing) : null;
     var state = p.moderation && p.moderation.state === 'suspended' ? ['suspended', 'bad'] : p.public ? ['live', 'ok'] : [p.status, 'muted'];
-    var thumb = p.images && p.images.thumb && p.images.thumb.url ? h('img', { src: p.images.thumb.url, alt: '', width: '64', height: '64', loading: 'lazy' }) : h('span', { class: 'no-thumb', 'aria-hidden': 'true' });
+    var thumb = p.images && B.imgSrc(p.images.thumb) ? h('img', { src: B.imgSrc(p.images.thumb), alt: '', width: '64', height: '64', loading: 'lazy' }) : h('span', { class: 'no-thumb', 'aria-hidden': 'true' });
     var acts = [];
     if (p.moderation && p.moderation.state === 'suspended') {
       acts.push(h('button', { type: 'button', class: 'btn primary small', text: 'Restore', onclick: function () {

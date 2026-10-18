@@ -10,6 +10,7 @@ import { priceView, formatINR, formatRate } from './pricing.js';
 import { whatsappLink, telLink, REPORT_REASONS } from './validation.js';
 import { buildFit as buildFitFrom, makeManifest, manifestOk } from './asset-build.js';
 import { checkPhoto } from './photo-quality.js';
+import { entryFromItem, isTryOnReady, hasRef, imgSrc } from './catalogue-index.js';
 
 // Heavy parts load only when they're needed, never just because the catalogue
 // was opened: face tracking (MediaPipe, pinned to a tested version; its JS and
@@ -141,7 +142,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   });
 
   // An announcement from the admin (platform settings), shown on every page.
-  backend.getConfig && CONFIGURED && backend.getConfig('platform').then(function (cfg) {
+  backend.getConfigCached && CONFIGURED && backend.getConfigCached('platform').then(function (cfg) {
     if (cfg && cfg.announcement) { announcementEl.textContent = cfg.announcement; announcementEl.hidden = false; }
   }).catch(function () {});
 
@@ -462,6 +463,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   // ---------- browse elements ----------
   var filterBar = document.getElementById('filterBar');
   var libraryRow = document.getElementById('libraryRow');
+  var libraryMore = document.getElementById('libraryMore');
+  var libraryMoreBtn = document.getElementById('libraryMoreBtn');
   var catalogNote = document.getElementById('catalogNote');
   var selectedBanner = document.getElementById('selectedBanner');
   var selectedThumbWrap = document.getElementById('selectedThumbWrap');
@@ -661,8 +664,10 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     catalogSearch.value = ''; sortSelect.value = 'new';
     catalogLoaded = false; catalogProblem = false;
     libraryRow.innerHTML = '';
+    libraryMore.hidden = true;
     filterBar.innerHTML = '';
     noResults.hidden = true; emptyCatalog.hidden = true;
+    shownLimit = PAGE_SIZE;
   }
 
   // Forgets the customer's photo pixels held in memory (the canvases the photo
@@ -1127,16 +1132,22 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   }
 
   // The try-on asset of a frame: its cut-out image and fitting data. Demo frames
-  // ship with the site; shop products load theirs from Storage (download links
-  // on the published product). Loaded with CORS so the 3D renderer may read the
-  // pixels; nothing is sent anywhere.
+  // ship with the site; shop products load theirs when first tried (from
+  // Firestore on the free plan, cached in the browser; or Storage links).
+  // Loaded with CORS so the 3D renderer may read the pixels; nothing is sent
+  // anywhere.
   function getFullFrameData(id) {
     if (fullDataCache[id]) return Promise.resolve(fullDataCache[id]);
     var entry = findEntry(id);
     if (!entry) return Promise.reject(new Error('Unknown frame'));
     if (!entry.tryOnReady) return Promise.reject(Object.assign(new Error('No try-on asset'), { code: 'no-asset' }));
-    var manifestP = entry.manifest ? Promise.resolve(entry.manifest) : backend.fetchManifest(entry.manifestUrl);
-    return Promise.all([manifestP, loadImage(entry.cutoutUrl, true)]).then(function (r) {
+    if (entry.lite) return ensureFull(id).then(function (e) {
+      if (!e || e.lite) throw new Error('Frame not available');
+      return getFullFrameData(id);
+    });
+    var manifestP = entry.manifest ? Promise.resolve(entry.manifest) : backend.loadManifest(entry.manifestRef);
+    var cutoutP = entry.cutoutUrl ? Promise.resolve(entry.cutoutUrl) : backend.fileUrl(entry.cutoutRef);
+    return Promise.all([manifestP, cutoutP.then(function (u) { return loadImage(u, true); })]).then(function (r) {
       var m = r[0], img = r[1];
       if (!manifestOk(m)) throw new Error('Bad try-on data');
       var result = { img: img, p1: scalePoint(m.p1, m, img), p2: scalePoint(m.p2, m, img), fit: fitForImage(m, img), side: m.side || null };
@@ -1236,7 +1247,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     selectedBanner.style.display = 'flex';
     selectedThumbWrap.innerHTML = '';
     var img = document.createElement('img');
-    img.src = entry.thumbData;
+    setThumb(img, entry);
     img.alt = '';
     selectedThumbWrap.appendChild(img);
     selectedText.textContent = describeFrame(entry);
@@ -1265,6 +1276,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var sameColor = active.tags.color ? pool.filter(function (e) { return e.tags.color === active.tags.color && sameShape.indexOf(e) === -1; }) : [];
     var list = sameShape.concat(sameColor);
     if (!list.length) list = pool;
+    // frames already loaded first (within each group), so this rarely reads more
+    var loadedFirst = function (a, b) { return (a.lite ? 1 : 0) - (b.lite ? 1 : 0); };
+    list = sameShape.length || sameColor.length ? sameShape.sort(loadedFirst).concat(sameColor.sort(loadedFirst)) : pool.slice().sort(loadedFirst);
     list = list.slice(0, 10);
 
     if (!list.length) { similarLabel.style.display = 'none'; similarRow.style.display = 'none'; return; }
@@ -1283,7 +1297,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       img.loading = 'lazy';
       img.decoding = 'async';
       img.alt = '';
-      img.src = e.thumbData;
+      setThumb(img, e);
       item.appendChild(img);
       var cap = document.createElement('span');
       cap.textContent = frameName(e);
@@ -1540,12 +1554,16 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   // The temple photo (optional, for the 3D temples), described in the asset.
   function getSideData(id) {
     var entry = findEntry(id);
-    if (!entry || !entry.hasSide || !entry.sideUrl) return Promise.resolve(null);
+    if (entry && entry.lite) {
+      return ensureFull(id).then(function (e) { return e && !e.lite ? getSideData(id) : null; });
+    }
+    if (!entry || !entry.hasSide || !(entry.sideUrl || entry.sideRef)) return Promise.resolve(null);
     if (!sideCache[id]) {
       sideCache[id] = getFullFrameData(id).then(function (full) {
         var sd = full.side;
         if (!sd) return null;
-        return loadImage(entry.sideUrl, true).then(function (img) {
+        var su = entry.sideUrl ? Promise.resolve(entry.sideUrl) : backend.fileUrl(entry.sideRef);
+        return su.then(function (u) { return loadImage(u, true); }).then(function (img) {
           return { img: img, hinge: scalePoint(sd.hinge, sd, img), tip: scalePoint(sd.tip, sd, img) };
         });
       }).catch(function (e) {
@@ -1863,7 +1881,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       var media = document.createElement('span');
       media.className = 'compare-media';
       var img = document.createElement('img');
-      img.alt = ''; img.src = e.thumbData; img.decoding = 'async';
+      img.alt = ''; setThumb(img, e); img.decoding = 'async';
       media.appendChild(img);
       a.appendChild(media);
       var nm = document.createElement('span');
@@ -2256,6 +2274,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     drawFrame(g, live.frame.img, tf);
   }
 
+  var liveLimit = 24;          // frames shown in the try-on picker before "Show more"
   function renderLiveStrip() {
     liveStrip.innerHTML = '';
     var q = normalizeSearch(liveSearch.value);
@@ -2269,6 +2288,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       return q.split(/\s+/).every(function (word) { return hay.indexOf(word) !== -1; });
     });
     if (draftEntry && pickerFilter !== 'shortlist') list = [draftEntry].concat(list);
+    var more = list.length - Math.min(list.length, liveLimit);
+    list = list.slice(0, liveLimit);
     list.forEach(function (e) {
       var item = document.createElement('button');
       item.type = 'button';
@@ -2279,7 +2300,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       img.loading = 'lazy';
       img.decoding = 'async';
       img.alt = '';
-      img.src = e.thumbData;
+      setThumb(img, e);
       item.appendChild(img);
       var cap = document.createElement('span');
       cap.textContent = e.draft ? t('try.unsaved') : frameName(e);
@@ -2290,6 +2311,20 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       item.addEventListener('click', function () { selectFrame(e.id); });
       liveStrip.appendChild(item);
     });
+    if (more > 0) {
+      var moreBtn = document.createElement('button');
+      moreBtn.type = 'button';
+      moreBtn.className = 'similar-item more-item';
+      moreBtn.textContent = tn('cat.more', Math.min(PAGE_SIZE, more));
+      moreBtn.addEventListener('click', function () {
+        var at = liveLimit;
+        liveLimit += PAGE_SIZE;
+        renderLiveStrip();
+        var next = liveStrip.children[at];
+        if (next) next.focus();
+      });
+      liveStrip.appendChild(moreBtn);
+    }
     liveStrip.style.display = list.length ? '' : 'none';
     if (catalogLoaded && !catalogIndex.length && !draftEntry) {
       liveStripEmpty.textContent = t('try.pick.empty');
@@ -2330,7 +2365,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   });
   liveCatalogBtn.addEventListener('click', function () { showInCatalog(activeFrameId); });
   liveSearch.addEventListener('keydown', function (e) { if (e.key === 'Enter') e.preventDefault(); });
-  liveSearch.addEventListener('input', renderLiveStrip);
+  liveSearch.addEventListener('input', function () { liveLimit = PAGE_SIZE; renderLiveStrip(); });
   // Privacy: never keep the camera open while the page is hidden or being closed.
   document.addEventListener('visibilitychange', function () { if (document.hidden) stopLive(); });
   window.addEventListener('pagehide', stopLive);
@@ -2419,14 +2454,15 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     return true;
   }
 
+  // A filter or the search changed: back to the first page of matches.
   function applyFilters() {
-    var cards = libraryRow.querySelectorAll('.frame-card'), shown = 0;
-    for (var i = 0; i < cards.length; i++) {
-      var entry = findEntry(cards[i].dataset.id);
-      var ok = !!entry && frameMatchesFilters(entry);
-      cards[i].style.display = ok ? '' : 'none';
-      if (ok) shown++;
-    }
+    shownLimit = PAGE_SIZE;
+    renderLibrary();
+  }
+
+  // The counts, chips and messages around the cards. `shown` is how many
+  // frames match the search and filters (not just the cards on screen).
+  function updateFilterUi(shown) {
     var total = catalogIndex.length;
     noResults.hidden = !(catalogLoaded && total && shown === 0);
     emptyCatalog.hidden = !(catalogLoaded && total === 0) && !catalogProblem;
@@ -2556,8 +2592,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   catalogSearch.addEventListener('input', function () { activeFilters.search = normalizeSearch(catalogSearch.value).trim(); applyFilters(); });
   catalogSearch.addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); catalogSearch.blur(); } });
-  sortSelect.addEventListener('change', function () { renderLibrary(); });
+  sortSelect.addEventListener('change', function () { shownLimit = PAGE_SIZE; renderLibrary(); });
   clearFiltersBtn.addEventListener('click', clearAllFilters);
+  libraryMoreBtn.addEventListener('click', showMoreFrames);
   noResultsClearBtn.addEventListener('click', function () { clearAllFilters(); catalogSearch.focus(); });
   function setFilterPanel(open) {
     filterPanel.classList.toggle('open', open);
@@ -2630,11 +2667,18 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   function availabilityText(a) { return a ? t('avail.' + a) : ''; }
 
+  // The catalogue's cards: the frames matching the search and filters, in the
+  // chosen order, PAGE_SIZE at a time ("Show more" adds the next page). Only
+  // the cards on screen have their pictures loaded.
   function renderLibrary() {
     libraryRow.innerHTML = '';
     var isShop = sourceKey && sourceKey !== 'demo';
     sortSelect.querySelectorAll('option[data-shop-only]').forEach(function (o) { o.hidden = !isShop; o.disabled = !isShop; });
-    sortedCatalog().forEach(function (entry) {
+    var filtering = activeFilterCount() > 0 || !!activeFilters.search;
+    // without the shop's index, searching, filtering or another order needs every frame
+    if (catalogMode === 'paged' && paged.more && (filtering || sortSelect.value !== 'new')) loadRestPaged();
+    var matches = sortedCatalog().filter(frameMatchesFilters);
+    matches.slice(0, shownLimit).forEach(function (entry) {
       var card = document.createElement('article');
       card.className = 'frame-card' + (entry.demo ? ' demo-card' : '');
       card.dataset.id = entry.id;
@@ -2646,7 +2690,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       img.decoding = 'async';
       img.width = 260; img.height = 160;
       img.alt = '';
-      img.src = entry.thumbData;
+      setThumb(img, entry);
       media.appendChild(img);
       card.appendChild(media);
       var heart = document.createElement('button');
@@ -2723,7 +2767,34 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       card.appendChild(actions);
       libraryRow.appendChild(card);
     });
-    applyFilters();
+    var left = matches.length - Math.min(shownLimit, matches.length);
+    var serverMore = catalogMode === 'paged' && paged.more && !filtering && sortSelect.value === 'new';
+    libraryMore.hidden = !(left > 0 || serverMore);
+    if (!libraryMore.hidden) {
+      libraryMoreBtn.textContent = tn('cat.more', left > 0 ? Math.min(PAGE_SIZE, left) : PAGE_SIZE);
+      libraryMoreBtn.disabled = !!paged.loadingMore;
+    }
+    updateFilterUi(matches.length);
+  }
+
+  function showMoreFrames() {
+    var before = libraryRow.querySelectorAll('.frame-card').length;
+    function after() {
+      renderLibrary();
+      // keep the keyboard where the new cards start
+      var first = libraryRow.querySelectorAll('.frame-card')[before];
+      var link = first && first.querySelector('.frame-card-link');
+      if (link) link.focus({ preventScroll: false });
+    }
+    var filtering = activeFilterCount() > 0 || !!activeFilters.search;
+    var loaded = sortedCatalog().filter(frameMatchesFilters).length;
+    if (shownLimit >= loaded && catalogMode === 'paged' && paged.more && !filtering) {
+      libraryMoreBtn.disabled = true;
+      loadMorePaged().then(function () { shownLimit += PAGE_SIZE; after(); });
+      return;
+    }
+    shownLimit += PAGE_SIZE;
+    after();
   }
 
   function sizeShort(size) {
@@ -2874,6 +2945,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       return;
     }
     detailMissing.hidden = true;
+    if (entry.lite) {
+      ensureFull(id).then(function (e) { if (e && !e.lite && view.name === 'detail' && view.id === id) renderDetail(id); });
+    }
     var name = frameName(entry);
     setTitle(name);
     var tg = entry.tags || {};
@@ -2899,7 +2973,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     media.className = 'detail-media';
     var img = document.createElement('img');
     img.alt = name + (tg.color && entry.name ? ', ' + (en ? tagLabel(tg.color).toLowerCase() : tagLabel(tg.color)) : '');
-    img.src = entry.thumbData;
+    setThumb(img, entry);
     media.appendChild(img);
     grid.appendChild(media);
 
@@ -3146,7 +3220,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     return DEMO_FRAMES.filter(function (f) { return !DEMO_HIDDEN[f.id]; }).map(function (f) { return entryMap[f.id]; });
   }
   if (CONFIGURED) {
-    backend.getConfig('demo').then(function (cfg) {
+    backend.getConfigCached('demo').then(function (cfg) {
       DEMO_HIDDEN = {};
       ((cfg && cfg.hidden) || []).forEach(function (id) { DEMO_HIDDEN[id] = true; });
     }).catch(function () {}).then(function () {
@@ -3157,15 +3231,17 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   }
 
   // A published product as a catalogue entry.
+  // Pictures are references (a Storage link, an inline data: URL, or a
+  // productFiles document read when the frame is tried on).
   function productEntry(p) {
     var im = p.images || {}, tr = p.tryOn || {};
-    var ready = tr.status === 'ready' && im.cutout && im.cutout.url && im.manifest && im.manifest.url;
+    var ready = isTryOnReady(p);
     return {
-      id: p.id, source: 'shop', demo: false, shopId: p.shopId,
+      id: p.id, source: 'shop', demo: false, shopId: p.shopId, lite: false, updatedMs: p.updatedMs || 0,
       name: typeof p.name === 'string' && p.name.trim() ? p.name.trim().slice(0, 80) : null,
-      tags: p.tags || {}, size: cleanSize(p.size), thumbData: im.thumb ? im.thumb.url : '',
-      cutoutUrl: ready ? im.cutout.url : null, manifestUrl: ready ? im.manifest.url : null,
-      sideUrl: im.side && im.side.url ? im.side.url : null, hasSide: !!(ready && im.side && im.side.url),
+      tags: p.tags || {}, size: cleanSize(p.size), thumbData: imgSrc(im.thumb),
+      cutoutRef: ready ? im.cutout : null, manifestRef: ready ? im.manifest : null,
+      sideRef: ready && hasRef(im.side) ? im.side : null, hasSide: !!(ready && hasRef(im.side)),
       tryOnReady: !!ready, level: tr.level || '3d', rimType: tr.rimType || null,
       translucent: tr.translucent == null ? null : !!tr.translucent, prepared: tr.prepared || 'auto',
       createdAt: p.createdMs || 0, pricing: p.pricing || null, priceUpdatedAt: p.priceUpdatedMs || null,
@@ -3177,7 +3253,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   function getShopInfo(shopId) {
     if (!shopCache[shopId]) {
-      shopCache[shopId] = backend.getShop(shopId).catch(function (e) {
+      shopCache[shopId] = backend.getShopCached(shopId).catch(function (e) {
         console.warn('Shop not available', e);
         return null;
       });
@@ -3187,25 +3263,125 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   function shopOf(entry) { return entry && entry.shopId && shopCache[entry.shopId] && shopCache[entry.shopId].value; }
   function rememberShop(shopId, shop) { shopCache[shopId] = Promise.resolve(shop); shopCache[shopId].value = shop; }
 
-  // Makes sure a frame (from a link, the shortlist or a refresh) is known.
-  function ensureEntry(id) {
-    if (!id || id === DRAFT_ID || entryMap[id]) return Promise.resolve(entryMap[id] || null);
-    if (!CONFIGURED || missingIds[id]) return Promise.resolve(null);
-    return backend.getProduct(id).then(function (p) {
-      if (!p || !p.public) { missingIds[id] = true; return null; }
-      var e = productEntry(p);
-      entryMap[id] = e;
-      return getShopInfo(p.shopId).then(function (shop) {
-        if (shop) rememberShop(p.shopId, shop);
-        return e;
+  // ---------- reading only what is shown ----------
+  // A shop's catalogue comes from its index (one read; see catalogue-index.js)
+  // as "lite" entries: enough for cards, search, filters and sorting, but no
+  // pictures or long text. The product documents of the frames actually shown
+  // are read (or taken from the browser's cache) when their cards appear, and
+  // a frame's page or try-on reads its own when opened.
+
+  var fullWaiters = {};       // id -> Promise<entry|null> while loading
+  var fullQueue = [], fullTimer = 0;
+
+  // Fills in a lite entry from its product document. Resolves with the entry
+  // (null if the frame is no longer public).
+  function ensureFull(id) {
+    var e = entryMap[id];
+    if (!e) return ensureEntry(id);
+    if (!e.lite) return Promise.resolve(e);
+    if (!fullWaiters[id]) {
+      fullWaiters[id] = new Promise(function (resolve) {
+        fullQueue.push({ id: id, resolve: resolve });
+        if (!fullTimer) fullTimer = setTimeout(flushFull, 0);
       });
-    }).catch(function () { missingIds[id] = true; return null; });
+    }
+    return fullWaiters[id];
+  }
+  function flushFull() {
+    fullTimer = 0;
+    var batch = fullQueue.splice(0);
+    if (!batch.length) return;
+    var ids = [], known = {};
+    batch.forEach(function (q) { if (ids.indexOf(q.id) === -1) { ids.push(q.id); var e = entryMap[q.id]; if (e && e.updatedMs) known[q.id] = e.updatedMs; } });
+    backend.getPublicProducts(ids, known).then(function (res) {
+      var dropped = false;
+      batch.forEach(function (q) {
+        var p = res[q.id], e = entryMap[q.id];
+        if (p && e) {
+          Object.assign(e, productEntry(p));
+          fillThumbs(e);
+        } else if (p === null) {
+          dropEntry(q.id); dropped = true; e = null;
+        }
+        delete fullWaiters[q.id];
+        q.resolve(e && !e.lite ? e : (p === null ? null : e || null));
+      });
+      if (dropped) scheduleCatalogRefresh();
+    }).catch(function (err) {
+      console.warn('Could not load frames', err);
+      batch.forEach(function (q) { delete fullWaiters[q.id]; q.resolve(entryMap[q.id] || null); });
+    });
+  }
+
+  // Shows the entry's thumbnail in `img`, now or when its product arrives.
+  function setThumb(img, entry) {
+    if (!entry) return;
+    if (entry.thumbData) { img.src = entry.thumbData; return; }
+    img.setAttribute('data-thumb-for', entry.id);
+    img.classList.add('thumb-wait');
+    if (entry.lite) ensureFull(entry.id);
+  }
+  function fillThumbs(entry) {
+    if (!entry.thumbData) return;
+    document.querySelectorAll('img[data-thumb-for]').forEach(function (img) {
+      if (img.getAttribute('data-thumb-for') !== entry.id) return;
+      img.src = entry.thumbData;
+      img.removeAttribute('data-thumb-for');
+      img.classList.remove('thumb-wait');
+    });
+  }
+  // A frame that turned out not to be public any more (or deleted).
+  function dropEntry(id) {
+    missingIds[id] = true;
+    delete entryMap[id];
+    catalogIndex = catalogIndex.filter(function (e) { return e.id !== id; });
+  }
+  var refreshTimer = 0;
+  function scheduleCatalogRefresh() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(function () {
+      rebuildFilterBar();
+      renderLibrary();
+      renderLiveStrip();
+      updateTryOnHint();
+      pruneShortlist(); syncShortlistUi();
+      if (view.name === 'detail' && missingIds[view.id]) renderDetail(view.id);
+    }, 30);
+  }
+
+  // Makes sure a frame (from a link, the shortlist or a refresh) is known,
+  // with its pictures.
+  function ensureEntry(id) {
+    if (!id || id === DRAFT_ID) return Promise.resolve(null);
+    var known = entryMap[id];
+    if (known) return known.lite ? ensureFull(id) : Promise.resolve(known);
+    if (!CONFIGURED || missingIds[id]) return Promise.resolve(null);
+    if (!fullWaiters[id]) {
+      fullWaiters[id] = backend.getPublicProducts([id]).then(function (res) {
+        delete fullWaiters[id];
+        var p = res[id];
+        if (!p) { if (p === null) missingIds[id] = true; return null; }
+        var e = entryMap[id] = productEntry(p);
+        return getShopInfo(p.shopId).then(function (shop) {
+          if (shop) rememberShop(p.shopId, shop);
+          return e;
+        });
+      }).catch(function () { delete fullWaiters[id]; return null; });
+    }
+    return fullWaiters[id];
   }
 
   function sourceTitle() {
     if (sourceKey && sourceKey.indexOf('shop:') === 0) return sourceShop ? sourceShop.name : t('cat.shopFrames');
     return t('cat.demoTitle');
   }
+
+  var PAGE_SIZE = 24;           // frames per "page" of the catalogue (and the try-on picker)
+  var shownLimit = PAGE_SIZE;
+  // How the current shop's catalogue is read: 'index' (the shop's index,
+  // normal) or 'paged' (no usable index: 24 products per query, newest first).
+  var catalogMode = 'demo';
+  var paged = { shopId: null, last: null, more: false, loadingAll: null, loadingMore: false };
 
   var sourceSeq = 0;
   // Shows a source in the catalogue page (and the try-on picker).
@@ -3219,19 +3395,40 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     renderBrowseIntro();
     updateCatalogNote(0);
     if (key === 'demo') {
+      catalogMode = 'demo';
       catalogIndex = demoEntries();
       afterCatalogLoaded();
       return;
     }
     var shopId = key.slice(5);
     if (!CONFIGURED) { showCatalogProblem(true); return; }
-    Promise.all([getShopInfo(shopId), backend.loadPublicCatalogue(shopId, 2000)]).then(function (r) {
-      if (seq !== sourceSeq) return;
-      var shop = r[0];
-      if (!shop || shop.status !== 'approved') { sourceShop = null; catalogIndex = []; catalogLoaded = true; showShopMissing(); return; }
+    Promise.all([getShopInfo(shopId), backend.getCatalogueIndex(shopId)]).then(function (r) {
+      if (seq !== sourceSeq) return null;
+      var shop = r[0], idx = r[1];
+      if (!shop || shop.status !== 'approved') { sourceShop = null; catalogIndex = []; catalogLoaded = true; showShopMissing(); return null; }
       rememberShop(shopId, shop);
       sourceShop = shop;
-      catalogIndex = r[1].map(function (p) { var e = productEntry(p); entryMap[e.id] = e; return e; });
+      if (idx && !idx.overflow) {
+        catalogMode = 'index';
+        catalogIndex = Object.keys(idx.items).filter(function (id) { return !missingIds[id]; }).map(function (id) {
+          var it = idx.items[id], old = entryMap[id];
+          // a full entry already loaded this visit is kept if it hasn't changed since
+          if (old && !old.lite && old.shopId === shopId && old.updatedMs && old.updatedMs === it.u) return old;
+          var e = entryFromItem(id, it, shopId);
+          entryMap[id] = e;
+          return e;
+        });
+        return null;
+      }
+      catalogMode = 'paged';
+      paged = { shopId: shopId, last: null, more: false, loadingAll: null, loadingMore: false };
+      return backend.listPublicProducts(shopId, { pageSize: PAGE_SIZE }).then(function (pg) {
+        if (seq !== sourceSeq) return;
+        paged.last = pg.last; paged.more = pg.more;
+        catalogIndex = pg.items.map(function (p) { var e = productEntry(p); entryMap[e.id] = e; return e; });
+      });
+    }).then(function () {
+      if (seq !== sourceSeq || !sourceShop) return;
       browseTitle.textContent = sourceTitle();
       if (view.name === 'browse') setTitle(sourceTitle());
       renderBrowseIntro();
@@ -3246,8 +3443,44 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     });
   }
 
+  // Paged mode: the next 24 products from the server.
+  function loadMorePaged() {
+    if (catalogMode !== 'paged' || !paged.more || paged.loadingMore) return Promise.resolve();
+    var seq = sourceSeq;
+    paged.loadingMore = true;
+    return backend.listPublicProducts(paged.shopId, { pageSize: PAGE_SIZE, after: paged.last }).then(function (pg) {
+      if (seq !== sourceSeq) return;
+      paged.last = pg.last; paged.more = pg.more;
+      pg.items.forEach(function (p) {
+        if (entryMap[p.id] && catalogIndex.indexOf(entryMap[p.id]) !== -1) return;
+        var e = productEntry(p); entryMap[e.id] = e; catalogIndex.push(e);
+        ((e.tags && e.tags.free) || []).forEach(function (tg) { allFreeTags.add(tg); });
+      });
+    }).catch(function (e) { console.error('Could not load more frames', e); toast(t('common.loadFailed'), 'error'); })
+      .then(function () { paged.loadingMore = false; });
+  }
+  // Paged mode: searching, filtering or sorting needs every frame.
+  function loadRestPaged() {
+    if (catalogMode !== 'paged' || !paged.more) return Promise.resolve();
+    if (!paged.loadingAll) {
+      var seq = sourceSeq;
+      paged.loadingAll = (function next() {
+        return loadMorePaged().then(function () { if (seq === sourceSeq && paged.more) return next(); });
+      })().then(function () {
+        paged.loadingAll = null;
+        if (seq !== sourceSeq) return;
+        rebuildFilterBar();
+        renderLibrary();
+        renderLiveStrip();
+      });
+    }
+    return paged.loadingAll;
+  }
+
   function afterCatalogLoaded() {
     catalogLoaded = true;
+    shownLimit = PAGE_SIZE;
+    liveLimit = PAGE_SIZE;
     catalogIndex.forEach(function (e) { ((e.tags && e.tags.free) || []).forEach(function (tg) { allFreeTags.add(tg); }); });
     rebuildFilterBar();
     renderLibrary();
@@ -3334,10 +3567,20 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   // ---------- home and the shop list ----------
 
-  var shopsList = null, shopsLoading = null;
-  function loadShops() {
+  // The shop list: the home page needs 6, the Shops page all (up to 100).
+  // Both are kept in the browser for a while (see backend.listApprovedShops).
+  var shopsList = null, shopsLoading = null, homeShops = null;
+  function loadShops(max) {
     if (!CONFIGURED) return Promise.resolve([]);
-    if (shopsList) return Promise.resolve(shopsList);
+    if (shopsList) return Promise.resolve(max ? shopsList.slice(0, max) : shopsList);
+    if (max && homeShops) return Promise.resolve(homeShops);
+    if (max) {
+      return backend.listApprovedShops(max).then(function (list) {
+        homeShops = list;
+        list.forEach(function (sh) { rememberShop(sh.id, sh); });
+        return list;
+      }).catch(function (e) { console.warn('Could not load shops', e); return null; });
+    }
     if (!shopsLoading) {
       shopsLoading = backend.listApprovedShops(100).then(function (list) {
         shopsList = list;
@@ -3354,7 +3597,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var media = document.createElement('div');
     media.className = 'frame-card-media';
     var img = document.createElement('img');
-    img.loading = 'lazy'; img.decoding = 'async'; img.width = 260; img.height = 160; img.alt = ''; img.src = e.thumbData;
+    img.loading = 'lazy'; img.decoding = 'async'; img.width = 260; img.height = 160; img.alt = ''; setThumb(img, e);
     media.appendChild(img);
     card.appendChild(media);
     var body = document.createElement('div');
@@ -3393,7 +3636,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (first) tryLink.href = hashFor({ name: 'tryon', id: first.id });
     homeShopRow.innerHTML = '';
     if (!CONFIGURED) { homeShopRow.appendChild(emptyLine(t('shops.none'))); return; }
-    loadShops().then(function (list) {
+    loadShops(6).then(function (list) {
       if (view.name !== 'home') return;
       homeShopRow.innerHTML = '';
       if (!list) { homeShopRow.appendChild(emptyLine(t('shops.error'))); return; }
@@ -4040,8 +4283,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     addProductBar.hidden = !p;
     if (!p) return;
     addProductThumb.innerHTML = '';
-    if (p.images && p.images.thumb && p.images.thumb.url) {
-      var img = document.createElement('img'); img.src = p.images.thumb.url; img.alt = '';
+    if (p.images && backend.imgSrc(p.images.thumb)) {
+      var img = document.createElement('img'); img.src = backend.imgSrc(p.images.thumb); img.alt = '';
       addProductThumb.appendChild(img);
     }
     addProductName.textContent = (p.name || t('partner.untitled')) + (p.sku ? ' · ' + p.sku : '');
@@ -4058,7 +4301,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var p = addTarget.product;
     if (!p || !p.images || !p.images.source) return;
     reprocessBtn.disabled = true;
-    backend.getSourceBlob(p.images.source.path).then(function (blob) {
+    backend.getSourceBlob(p.images.source).then(function (blob) {
       var url = URL.createObjectURL(blob);
       return loadImage(url).then(function (img) { URL.revokeObjectURL(url); return img; });
     }).then(function (img) {
@@ -4244,7 +4487,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   function importOne(uid, f, shopStatus) {
     var id = backend.newProductId(), v = backend.assetVersion(), uploaded = [];
     function up(kind, name, blob, extra) {
-      return backend.uploadProductFile(uid, id, kind, name, blob, extra).then(function (info) { uploaded.push(info.path); return info; });
+      return backend.uploadProductFile(uid, id, kind, name, blob, extra).then(function (info) { uploaded.push(info); return info; });
     }
     var tg = f.tags || {};
     var base = {
@@ -4357,7 +4600,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   function saveSidePhoto() {
     var p = addTarget.product;
     if (!p || frameCalibPoints.length < 2 || !currentUser) return;
-    if (!(p.images && p.images.manifest && p.images.manifest.url)) { toast(t('add.templeNeedsFront'), 'error'); return; }
+    if (!(p.images && backend.hasRef(p.images.manifest))) { toast(t('add.templeNeedsFront'), 'error'); return; }
     addToLibraryBtn.disabled = true;
     frameCalibBanner.textContent = t('add.saving');
     var uid = currentUser.uid, v = backend.assetVersion();
@@ -4368,17 +4611,17 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var sc = function (pt) { return { x: Math.round((pt.x - box.x) * 10) / 10, y: Math.round((pt.y - box.y) * 10) / 10 }; };
     var side = { imgW: c.width, imgH: c.height, hinge: sc(frameCalibPoints[0]), tip: sc(frameCalibPoints[1]) };
     var uploaded = [];
-    backend.fetchManifest(p.images.manifest.url).then(function (m) {
+    backend.loadManifest(p.images.manifest).then(function (m) {
       var next = Object.assign({}, m, { side: side });
       return Promise.all([
         canvasBlob(c, 'image/png').then(function (b) { return backend.uploadProductFile(uid, p.id, 'assets', 'side-' + v, b, { w: c.width, h: c.height }); }),
         backend.uploadProductFile(uid, p.id, 'assets', 'asset-' + v, jsonBlob(next))
       ]);
     }).then(function (r) {
-      uploaded = [r[0].path, r[1].path];
+      uploaded = [r[0], r[1]];
       var images = Object.assign({}, p.images, { side: r[0], manifest: r[1] });
       var tryOn = Object.assign({}, p.tryOn, { hasSide: true });
-      var old = [p.images.side && p.images.side.path, p.images.manifest.path].filter(Boolean);
+      var old = [p.images.side, p.images.manifest].filter(Boolean);
       return backend.saveProduct(p, { images: images, tryOn: tryOn, assetBytes: assetBytesOf(images) }, addTarget.shopStatus).then(function (written) {
         backend.deleteFiles(old);
         return written;
@@ -4600,7 +4843,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var manifest = makeManifest({ imgW: box.w, imgH: box.h, p1: p1, p2: p2, fit: fit, side: null });
     var uploaded = [];
     function up(kind, name, blob, extra) {
-      return backend.uploadProductFile(uid, p.id, kind, name, blob, extra).then(function (info) { uploaded.push(info.path); return info; });
+      return backend.uploadProductFile(uid, p.id, kind, name, blob, extra).then(function (info) { uploaded.push(info); return info; });
     }
     Promise.all([
       canvasBlob(fullCanvas, 'image/png').then(function (b) { return up('assets', 'cutout-' + v, b, { w: box.w, h: box.h }); }),
@@ -4621,8 +4864,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       // fill the rim tag from what was detected, if the shop hasn't chosen one
       var tg = Object.assign({ shape: null, color: null, gender: null, rim: null, free: [] }, p.tags || {});
       if (!tg.rim && fit) { tg.rim = { full: 'fullrim', semi: 'semirimless', rimless: 'rimless' }[fit.rimType] || null; changes.tags = tg; }
-      var replaced = ['cutout', 'thumb', 'manifest', 'side'].map(function (k) { return old[k] && old[k].path; })
-        .concat(r[3] && old.source ? [old.source.path] : []).filter(Boolean);
+      var replaced = ['cutout', 'thumb', 'manifest', 'side'].map(function (k) { return old[k]; })
+        .concat(r[3] && old.source ? [old.source] : []).filter(Boolean);
       return backend.saveProduct(p, changes, addTarget.shopStatus).then(function (written) {
         backend.deleteFiles(replaced);     // the previous version's files
         return written;
@@ -4655,7 +4898,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var thumbCanvas = makeThumbCanvas(pendingRawCanvas, THUMB_DIM, true);
     var uploaded = [];
     function up(kind, name, blob, extra) {
-      return backend.uploadProductFile(uid, p.id, kind, name, blob, extra).then(function (info) { uploaded.push(info.path); return info; });
+      return backend.uploadProductFile(uid, p.id, kind, name, blob, extra).then(function (info) { uploaded.push(info); return info; });
     }
     Promise.all([
       thumbBlob(thumbCanvas).then(function (b) { return up('assets', 'thumb-' + v, b, { w: THUMB_DIM, h: THUMB_DIM }); }),
@@ -4666,8 +4909,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       if (r[1] || old.source) images.source = r[1] || old.source;
       var tryOn = { status: 'none', error: auto.result && auto.result.code ? String(auto.result.code).slice(0, 60) : null, updatedAt: backend.serverTime() };
       if (!tryOn.error) delete tryOn.error;
-      var replaced = ['cutout', 'thumb', 'manifest', 'side'].map(function (k) { return old[k] && old[k].path; })
-        .concat(r[1] && old.source ? [old.source.path] : []).filter(Boolean);
+      var replaced = ['cutout', 'thumb', 'manifest', 'side'].map(function (k) { return old[k]; })
+        .concat(r[1] && old.source ? [old.source] : []).filter(Boolean);
       return backend.saveProduct(p, { images: images, tryOn: tryOn, assetBytes: assetBytesOf(images) }, addTarget.shopStatus).then(function (written) {
         backend.deleteFiles(replaced);
         return written;

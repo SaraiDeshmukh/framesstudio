@@ -89,9 +89,19 @@ export function initPartner(root, ctx) {
     if (st.products && !force) return Promise.resolve(st.products);
     if (st.productsLoading && !force) return st.productsLoading;
     st.productsLoading = B.loadAllMyProducts(st.uid, 5000).then(function (list) {
-      st.products = list; st.productsLoading = null; return list;
+      st.products = list; st.productsLoading = null;
+      checkIndex(list);
+      return list;
     }).catch(function (e) { st.productsLoading = null; throw e; });
     return st.productsLoading;
+  }
+  // Once per visit: make sure the shop's catalogue index (what customers'
+  // pages read first) lists exactly the frames that are public.
+  var indexChecked = {};
+  function checkIndex(list) {
+    if (!st.shop || indexChecked[st.uid]) return;
+    indexChecked[st.uid] = true;
+    B.syncCatalogueIndex(st.uid, list).catch(function (e) { console.warn('Could not check the catalogue index', e); indexChecked[st.uid] = false; });
   }
   function shopStatus() { return st.shop ? st.shop.status : null; }
   function canEdit() { return st.shop && (st.shop.status === 'pending' || st.shop.status === 'approved'); }
@@ -474,7 +484,7 @@ export function initPartner(root, ctx) {
       var stt = productState(p);
       var cb = h('input', { type: 'checkbox', 'aria-label': T('p.bulk.selectOne', { name: p.name || T('partner.untitled') }), onchange: function (e) { if (e.target.checked) st.selected[p.id] = true; else delete st.selected[p.id]; var b = document.getElementById('pBulk'); if (b) b.parentNode.replaceChild(bulkBar(), b); } });
       cb.checked = !!st.selected[p.id];
-      var thumb = p.images && p.images.thumb && p.images.thumb.url ? h('img', { src: p.images.thumb.url, alt: '', loading: 'lazy', width: '64', height: '64' }) : h('span', { class: 'no-thumb', 'aria-hidden': 'true' });
+      var thumb = p.images && B.imgSrc(p.images.thumb) ? h('img', { src: B.imgSrc(p.images.thumb), alt: '', loading: 'lazy', width: '64', height: '64' }) : h('span', { class: 'no-thumb', 'aria-hidden': 'true' });
       tb.appendChild(h('tr', null, [
         h('td', { class: 'col-check' }, [cb]),
         h('td', null, [h('a', { class: 'dash-frame', href: ctx.hashFor({ name: 'partner', id: 'product', sub: p.id }) }, [thumb, h('span', null, [h('strong', { text: p.name || T('partner.untitled') }), p.sku ? h('span', { class: 'mono muted', text: ' ' + p.sku }) : null])])]),
@@ -639,7 +649,7 @@ export function initPartner(root, ctx) {
       ctx.confirmAction({ title: T('p.photo.noTryonTitle'), body: T('p.photo.noTryonBody'), ok: T('p.photo.noTryon'), cancel: T('common.cancel') }).then(function (yes) {
         if (!yes) return;
         var images = Object.assign({}, im);
-        var drop = ['cutout', 'manifest', 'side'].map(function (k) { return images[k] && images[k].path; }).filter(Boolean);
+        var drop = ['cutout', 'manifest', 'side'].map(function (k) { return images[k]; }).filter(Boolean);
         delete images.cutout; delete images.manifest; delete images.side;
         save(false, { images: images, tryOn: { status: 'none', updatedAt: B.serverTime() } }, function () { B.deleteFiles(drop); });
       });

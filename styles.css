@@ -795,3 +795,9 @@ a.stat-tile:hover { border-color: var(--line-strong); }
 /* footer legal links */
 .footer-links { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 12px; font-size: var(--text-s); }
 .footer-links a { color: var(--ink-2); }
+
+/* ---------- loading the catalogue a page at a time ---------- */
+.library-more { display: flex; justify-content: center; margin: 24px 0 8px; }
+/* a card whose picture is still on its way: an empty, quiet tile (no broken-image icon) */
+img.thumb-wait { visibility: hidden; }
+.picker .similar-item.more-item { display: grid; place-items: center; min-height: 96px; padding: 12px; font-size: var(--text-sm); font-weight: 600; color: var(--accent, inherit); text-align: center; }

@@ -9,7 +9,7 @@
 // Local testing against the Firebase emulators: open the site on localhost with
 // ?emulators=1 once (remembered for the tab). Production never connects to them.
 
-import { firebaseConfig } from './firebase-config.js';
+import { firebaseConfig, imageStore } from './firebase-config.js';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/12.18.0/firebase-app.js';
 import {
   getAuth, connectAuthEmulator, setPersistence, browserLocalPersistence, browserSessionPersistence
@@ -30,6 +30,7 @@ function wantsEmulators() {
 }
 
 export var USING_EMULATORS = CONFIGURED && wantsEmulators();
+export var IMAGE_STORE = imageStore === 'storage' ? 'storage' : 'firestore';
 
 export var app = CONFIGURED ? initializeApp(firebaseConfig) : null;
 export var auth = app ? getAuth(app) : null;

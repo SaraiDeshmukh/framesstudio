@@ -119,7 +119,7 @@ export function publishBlockers(p) {
   else if (pricingProblems(p.pricing, true).length) out.push(p.pricing.confirmed === true ? 'publish.needPrice' : 'publish.needTaxConfirm');
   if (!p.availability) out.push('publish.needAvailability');
   var im = p.images || {};
-  if (!im.thumb || !im.thumb.url) out.push('publish.needPhoto');
+  if (!im.thumb || !(im.thumb.url || im.thumb.data)) out.push('publish.needPhoto');
   var st = p.tryOn && p.tryOn.status;
   if (st === 'ready' && (!im.cutout || !im.manifest)) out.push('publish.tryOnIncomplete');
   else if (st === 'failed' || st === 'pending') out.push('publish.tryOnUnresolved');

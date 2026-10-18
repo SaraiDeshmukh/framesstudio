@@ -1392,3 +1392,18 @@ Object.assign(S.mr, {
   'product.sizeInvalid': 'आकार तपासा: लेन्स रुंदी 30–75, ब्रिज 10–30, दांडी 100–170 mm.',
   'edit.removeTag': 'टॅग {tag} काढा'
 });
+
+// Loading the catalogue a page at a time (to stay within the database's free
+// daily reads).
+Object.assign(S.en, {
+  'cat.more.other': 'Show {n} more frames',
+  'cat.more.one': 'Show 1 more frame'
+});
+Object.assign(S.hi, {
+  'cat.more.other': '{n} और फ्रेम दिखाएँ',
+  'cat.more.one': '1 और फ्रेम दिखाएँ'
+});
+Object.assign(S.mr, {
+  'cat.more.other': 'आणखी {n} फ्रेम दाखवा',
+  'cat.more.one': 'आणखी 1 फ्रेम दाखवा'
+});
