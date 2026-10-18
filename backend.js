@@ -502,7 +502,7 @@ export function createProduct(uid, id, data, shopStatus) {
     return b;
   }
   var op = p.public ? commitWithIndex(build(true), function () { return build(false); }, uid, 2) : commit(build(false));
-  return op.then(function () { return id; });
+  return op.then(function () { if (p.public) forgetCatalogueIndex(uid); return id; });
 }
 
 function samePricing(a, b) {
@@ -538,6 +538,7 @@ export function saveProduct(current, changes, shopStatus) {
   var op = touchIndex ? commitWithIndex(build(true), function () { return build(false); }, shopId, 2) : commit(build(false));
   return op.then(function () {
     cacheDelete('p:' + current.id);
+    if (touchIndex) forgetCatalogueIndex(shopId);
     return Object.assign({}, current, out, { public: out.public });
   });
 }
@@ -555,6 +556,7 @@ export function deleteProduct(p) {
   return op.then(function () {
     forgetMine(p.id);
     cacheDelete('p:' + p.id);
+    if (p.public === true) forgetCatalogueIndex(p.shopId);
     return deleteFiles(files);
   });
 }
@@ -865,7 +867,7 @@ export function adminModerateProduct(p, state, reason, shopStatus) {
   }
   var op = touchIndex ? commitWithIndex(build(true), function () { return build(false); }, p.shopId, 2) : commit(build(false));
   return op
-    .then(function () { cacheDelete('p:' + p.id); return adminAudit(state === 'suspended' ? 'product.suspend' : 'product.restore', 'product', p.id, reason); })
+    .then(function () { cacheDelete('p:' + p.id); forgetCatalogueIndex(p.shopId); return adminAudit(state === 'suspended' ? 'product.suspend' : 'product.restore', 'product', p.id, reason); })
     .then(function () { return { public: pub, moderation: mod }; });
 }
 

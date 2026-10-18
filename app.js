@@ -3720,8 +3720,11 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   }
   var previewIds = {};
   function forgetProduct(id) {
+    var e = entryMap[id];
+    // the shop's catalogue is read again (with its fresh index) next time it's shown
+    if (e && e.shopId && sourceKey === 'shop:' + e.shopId) sourceKey = null;
     delete entryMap[id]; delete fullDataCache[id]; arForget(id);
-    catalogIndex = catalogIndex.filter(function (e) { return e.id !== id; });
+    catalogIndex = catalogIndex.filter(function (x) { return x.id !== id; });
   }
 
   // ---------- add-frame: source (camera or upload) ----------
