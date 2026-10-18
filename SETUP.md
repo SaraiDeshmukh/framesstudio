@@ -1,26 +1,32 @@
-# Setting up the multi-shop version
+# Setting up (free Spark plan)
 
-These are the steps only the project owner can do: they need your Google account and, for Storage, a billing account. Nothing here needs anything installed on your computer.
+These steps need your Google account, so only you can do them. Nothing needs installing on your computer, and **no billing account is needed**.
 
-Until the last part ("Go live"), the current live site keeps working as it does today. The new security rules still let the old site read and write its own frames.
-
-Firebase project: **frame-studio-ad5ed**. Live site: **https://saraideshmukh.github.io/framesstudio/**
+- Firebase project used by the site: **frame-studio-ad5ed** (from `firebase-config.js` and `.firebaserc`).
+- Live site: **https://saraideshmukh.github.io/framesstudio/** (stays as it is until you merge the pull request in part D).
+- Never put a service-account key, password or other secret in the repository. The values in `firebase-config.js` are public identifiers, not secrets; the security rules are what protect the data.
 
 ---
 
-## A. In the Firebase console (about 10 minutes of clicking)
+## A. Create the Firestore database (Firebase console, about 5 minutes)
 
-Open https://console.firebase.google.com/project/frame-studio-ad5ed
+Open https://console.firebase.google.com/project/frame-studio-ad5ed and check the bottom of the left sidebar says **Spark**.
 
-1. **Switch to the Blaze (pay as you go) plan.** Click **Upgrade** at the bottom of the left sidebar and link a billing account. Cloud Storage, where shops' frame photos are kept, is not available on the free Spark plan. Small projects like this one usually stay within the free allowance or cost very little (see `COSTS.md`).
-2. **Set a budget alert.** Go to https://console.cloud.google.com/billing → your billing account → **Budgets & alerts** → **Create budget**. Choose project frame-studio-ad5ed, an amount such as ₹500 a month, and alerts at 50%, 90% and 100%. A budget alert only **emails you**. It does **not** stop spending.
-3. **Turn on Storage.** Go to **Build → Storage → Get started**. Pick a location. `us-central1` is included in Google's free Storage allowance. `asia-south1` (Mumbai) is a little faster in India but has no free allowance. Either is fine at this size.
-4. **Sign-in methods.** Go to **Build → Authentication → Sign-in method**:
-   - **Email/Password** must be on. It already is, because the current site uses it.
-   - Turn on **Anonymous**. It's used only so that one device can send at most one "Report this listing" a minute. It collects no personal details.
-5. **Authorised domains.** Go to **Authentication → Settings → Authorised domains** and check that `saraideshmukh.github.io` is listed. It already should be.
+1. **Build → Firestore Database → Create database.**
+2. **Edition:** choose **Standard**.
+3. **Database ID:** leave it as **(default)**. Only one database per project gets the free quota, and the site uses the default one.
+4. **Location:** choose **asia-south1 (Mumbai)**. It's the closest to customers in India (asia-south2, Delhi, is similar). The free quota doesn't depend on the location. **The location can't be changed later.** It doesn't tie you to anything for Cloud Storage: if you add Storage on Blaze later, its bucket location is chosen separately (us-central1 for the free Storage tier).
+5. **Rules:** choose **Start in production mode** (everything locked). The real rules are deployed in part B.
+6. Click **Create** and wait until the empty database appears.
 
-## B. Deploy the rules (Cloud Shell, copy and paste)
+Then, still in the console:
+
+7. **Build → Authentication → Sign-in method:** make sure **Email/Password** is on, and turn on **Anonymous** (used only so one device can send at most one "Report this listing" a minute; it collects nothing about the person).
+8. **Authentication → Settings → Authorised domains:** check that `saraideshmukh.github.io` is listed.
+
+Don't turn on Storage: it isn't available on Spark, and the site doesn't need it there.
+
+## B. Deploy the security rules and indexes (Cloud Shell, copy and paste)
 
 Open Cloud Shell, a free terminal in your browser: https://console.cloud.google.com/?cloudshell=true&project=frame-studio-ad5ed
 
@@ -29,45 +35,59 @@ Paste these lines one at a time:
 ```bash
 git clone -b multi-retailer-platform https://github.com/SaraiDeshmukh/framesstudio.git
 cd framesstudio
-npx -y firebase-tools@15.33.0 deploy --only firestore:rules,firestore:indexes,storage --project frame-studio-ad5ed
-gcloud storage buckets update gs://frame-studio-ad5ed.firebasestorage.app --cors-file=cors.json
+npx -y firebase-tools@15.33.0 deploy --only firestore:rules,firestore:indexes --project frame-studio-ad5ed
 ```
 
-- If the deploy asks you to log in, run `npx -y firebase-tools@15.33.0 login --no-localhost`, follow the link, then run the deploy line again.
-- If it asks whether to let Storage rules read Firestore, answer **Y**. The Storage rules check in Firestore that a shop is active and owns the product before accepting an upload.
-- The last line lets the site load the try-on images into the 3D view.
-- The database indexes can take a few minutes to build. Until then, some lists may show an error.
+- If it asks you to log in, run `npx -y firebase-tools@15.33.0 login --no-localhost`, follow the link, then run the deploy line again.
+- It ends with **Deploy complete!** The indexes then take a few minutes to build; until they're ready, some lists in the dashboards may show an error.
+- Don't add `storage` to the deploy line on Spark: there is no Storage bucket, so that part would fail.
 
 ## C. Make yourself the administrator
 
-The rules only treat someone as the administrator if a document for them exists in `admins`. No one can create that document from the website, so it has to be done here in the console.
+The rules only treat someone as the administrator if a document for them exists in `admins`, and nobody can create one from the website.
 
-1. Go to **Authentication → Users** and copy the **User UID** of your account.
-2. Go to **Firestore Database → Data → Start collection**. Name the collection `admins` and use your UID as the document ID. Add a field `email` (string) with your email address, then click **Save**.
+1. Open the preview, **https://saraideshmukh.github.io/framesstudio/preview/**, click **For shops** and sign up (or sign in) with your email; verify the email if asked.
+2. In the console: **Authentication → Users**, copy your **User UID**.
+3. **Firestore Database → Data → Start collection**. Collection ID `admins`, document ID = your UID, one field `email` (string) = your email. **Save**.
 
-Never put a service-account key or admin password in the repository.
+## D. Try the preview, then go live
 
-## D. Go live
+The new version is published as a preview at **https://saraideshmukh.github.io/framesstudio/preview/**. It uses the same Firebase project, so once A–C are done everything there is real.
 
-1. On GitHub, open the pull request **Multi-retailer platform** and click **Merge**. GitHub Pages updates the live site within a minute or two.
-2. Open the site and click **For shops** (top right) to sign in. Use your existing email and password, and verify your email if you're asked to.
-3. Go to **…/framesstudio/#/admin → Overview → Initialise platform settings**. This records the current versions of the terms and privacy policy and the default settings.
-4. Open **Account → Shop dashboard** and apply for your own shop. Fill in the profile, accept the terms, and submit.
-5. Go to **#/admin → Shops** and **Approve** your shop.
-6. Go to **Shop dashboard → Import → Copy old frames**. Your existing frames come in as drafts. For each one, set the price and GST, tick the confirmation, and publish.
-7. Check **Demo frames**, **Shops** and your shop's page as a customer would, ideally on a phone and on the kiosk.
+1. On the preview, go to **#/admin → Overview → Initialise platform settings** (records the terms and privacy versions and default settings).
+2. **Account → Shop dashboard**: apply for your own shop, fill in the profile, accept the terms, submit.
+3. **#/admin → Shops → Approve** your shop.
+4. **Shop dashboard → Frames → Add a frame**: add one, take or upload its photo, set price and GST, publish. (Or **Import → Copy old frames** if the old site's frames are in this database.)
+5. Check it as a customer: **Shops** → your shop → a frame → try it on, on a phone and on the kiosk.
+6. When happy: on GitHub, open the pull request **Multi-retailer platform** and click **Merge**. GitHub Pages updates the live site in a minute or two.
 
-## Where things are now
+## Where things are
 
 | You want to… | Go to |
 |---|---|
 | Try the demo (no sign-in) | **Demo frames** in the top bar, or `#/demo` |
-| Add or edit frames | **For shops** (sign in) **→ Shop dashboard → Frames → Add a frame** |
+| Add or edit frames | **For shops** (sign in) → **Shop dashboard → Frames → Add a frame** |
 | Approve shops, moderate listings, see reports and acceptance records | **Account → Admin** (`#/admin`), shown only to you |
 | Put a shop's frames on a kiosk | Shop dashboard → **Shop profile** → kiosk link (`#/shop/<id>?kiosk=1`) |
+| See reads, writes and stored data | Firebase console → **Firestore Database → Usage** |
+
+## Moving to Blaze later
+
+Do this when `COSTS.md` says it's time (the database nears 1 GiB, or reads/downloads keep hitting the daily or monthly limits).
+
+1. Firebase console → **Upgrade** (bottom of the sidebar) → link a billing account.
+2. Google Cloud Billing → **Budgets & alerts** → a budget (e.g. ₹500/month) with alerts at 50/90/100%. It only emails you; it does not stop spending.
+3. **Build → Storage → Get started**, location **us-central1** (the free Storage tier is only in us-central1, us-east1 and us-west1).
+4. In Cloud Shell (in the `framesstudio` folder, after `git pull`):
+   ```bash
+   npx -y firebase-tools@15.33.0 deploy --only storage --project frame-studio-ad5ed
+   gcloud storage buckets update gs://frame-studio-ad5ed.firebasestorage.app --cors-file=cors.json
+   ```
+   If asked whether Storage rules may read Firestore, answer **Y**.
+5. In `firebase-config.js`, change `imageStore = 'firestore'` to `imageStore = 'storage'` and commit. New pictures then go to Storage; frames saved before keep loading from Firestore. Moving the existing pictures over is a separate step, only with your go-ahead.
 
 ## Before inviting other shops
 
-- Have a lawyer review `legal/*.html`, and fill in the highlighted blanks such as the operator's name, grievance officer and city. `LEGAL-REVIEW.md` lists what to check.
+- Have a lawyer review `legal/*.html` and fill in the highlighted blanks (operator name, grievance officer, city, and the Firestore location you chose in part A). `LEGAL-REVIEW.md` lists what to check.
 - Have a native speaker read the Hindi and Marathi text.
 - Try the live camera on a real phone and on the kiosk.

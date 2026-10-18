@@ -3313,18 +3313,30 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     });
   }
 
-  // Shows the entry's thumbnail in `img`, now or when its product arrives.
+  // Shows the entry's thumbnail in `img`, now or when its product arrives. A
+  // frame's product is only read once its card is on (or near) the screen, so
+  // a hidden picker or cards further down cost nothing until they're seen.
+  var thumbObserver = typeof IntersectionObserver === 'function' ? new IntersectionObserver(function (seen) {
+    seen.forEach(function (en) {
+      if (!en.isIntersecting) return;
+      thumbObserver.unobserve(en.target);
+      var id = en.target.getAttribute('data-thumb-for');
+      if (id && entryMap[id] && entryMap[id].lite) ensureFull(id);
+    });
+  }, { rootMargin: '300px 300px' }) : null;
   function setThumb(img, entry) {
     if (!entry) return;
     if (entry.thumbData) { img.src = entry.thumbData; return; }
     img.setAttribute('data-thumb-for', entry.id);
     img.classList.add('thumb-wait');
-    if (entry.lite) ensureFull(entry.id);
+    if (!entry.lite) return;
+    if (thumbObserver) thumbObserver.observe(img); else ensureFull(entry.id);
   }
   function fillThumbs(entry) {
     if (!entry.thumbData) return;
     document.querySelectorAll('img[data-thumb-for]').forEach(function (img) {
       if (img.getAttribute('data-thumb-for') !== entry.id) return;
+      if (thumbObserver) thumbObserver.unobserve(img);
       img.src = entry.thumbData;
       img.removeAttribute('data-thumb-for');
       img.classList.remove('thumb-wait');
@@ -3410,7 +3422,10 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       sourceShop = shop;
       if (idx && !idx.overflow) {
         catalogMode = 'index';
-        catalogIndex = Object.keys(idx.items).filter(function (id) { return !missingIds[id]; }).map(function (id) {
+        // newest first, as before (the try-on picker shows them in this order)
+        var ids = Object.keys(idx.items).filter(function (id) { return !missingIds[id]; });
+        ids.sort(function (a, b) { return (idx.items[b].c || 0) - (idx.items[a].c || 0) || (a < b ? -1 : 1); });
+        catalogIndex = ids.map(function (id) {
           var it = idx.items[id], old = entryMap[id];
           // a full entry already loaded this visit is kept if it hasn't changed since
           if (old && !old.lite && old.shopId === shopId && old.updatedMs && old.updatedMs === it.u) return old;
@@ -3573,13 +3588,14 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   function loadShops(max) {
     if (!CONFIGURED) return Promise.resolve([]);
     if (shopsList) return Promise.resolve(max ? shopsList.slice(0, max) : shopsList);
-    if (max && homeShops) return Promise.resolve(homeShops);
     if (max) {
-      return backend.listApprovedShops(max).then(function (list) {
-        homeShops = list;
-        list.forEach(function (sh) { rememberShop(sh.id, sh); });
-        return list;
-      }).catch(function (e) { console.warn('Could not load shops', e); return null; });
+      if (!homeShops) {
+        homeShops = backend.listApprovedShops(max).then(function (list) {
+          list.forEach(function (sh) { rememberShop(sh.id, sh); });
+          return list;
+        }).catch(function (e) { console.warn('Could not load shops', e); homeShops = null; return null; });
+      }
+      return homeShops;
     }
     if (!shopsLoading) {
       shopsLoading = backend.listApprovedShops(100).then(function (list) {

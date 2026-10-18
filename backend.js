@@ -132,7 +132,16 @@ export function getConfig(docId) {
 export function getConfigCached(docId, maxAgeMs) {
   var c = lsGet('config.' + docId, maxAgeMs == null ? 15 * 60000 : maxAgeMs);
   if (c) { stats.cacheHits++; return Promise.resolve(revive(c.d)); }
-  return getConfig(docId);
+  return getConfig(docId).catch(function (e) { return staleOr(lsGet('config.' + docId), e, function (x) { return revive(x.d); }); });
+}
+// When the server can't be reached or the free daily quota is used up
+// (Firestore refuses with 'resource-exhausted' until midnight Pacific time,
+// 13:30 IST), pages carry on with whatever this browser saw last.
+function staleOr(cached, err, map) {
+  if (cached == null || (err && err.code === 'permission-denied')) throw err;
+  console.warn('Using saved data: ' + ((err && err.code) || err));
+  stats.stale = (stats.stale || 0) + 1;
+  return map ? map(cached) : cached;
 }
 export function saveConfig(docId, data) {
   var u = auth.currentUser;
@@ -178,7 +187,8 @@ var SHOP_MAX_AGE = 15 * 60000;
 export function getShopCached(id) {
   var c = lsGet('shop.' + id, SHOP_MAX_AGE);
   if (c) { stats.cacheHits++; return Promise.resolve(revive(c)); }
-  return getShop(id).then(function (s) { if (s && s.status === 'approved') lsSet('shop.' + id, plain(s)); return s; });
+  return getShop(id).then(function (s) { if (s && s.status === 'approved') lsSet('shop.' + id, plain(s)); return s; })
+    .catch(function (e) { return staleOr(lsGet('shop.' + id), e, revive); });
 }
 export function getShopPrivate(id) {
   return gd(doc(db, 'shopPrivate', id)).then(function (s) { return s.exists() ? s.data() : null; });
@@ -199,7 +209,7 @@ export function listApprovedShops(max, opts) {
       lsSet(key, plain(list));
       list.forEach(function (s) { lsSet('shop.' + s.id, plain(s)); });
       return list;
-    });
+    }).catch(function (e) { return staleOr(lsGet(key) || lsGet('shops.100'), e, function (x) { return revive(x).slice(0, max); }); });
 }
 
 // The application: acceptances (if not yet given), the public profile and the
@@ -277,8 +287,13 @@ export function getPublicProducts(ids, known) {
           cacheSet('p:' + id, { u: p.updatedMs, p: cacheableProduct(p) });
           return p;
         }).catch(function (e) {
-          if (e && e.code !== 'permission-denied' && e.code !== 'not-found') console.warn('Could not load product ' + id, e);
-          return e && (e.code === 'permission-denied' || e.code === 'not-found') ? null : undefined;
+          if (e && (e.code === 'permission-denied' || e.code === 'not-found')) return null;
+          // offline or out of quota: an older copy is better than nothing
+          return cacheGet('p:' + id).then(function (old) {
+            if (old) return staleOr(old, e, function (x) { return productFromCache(x.p); });
+            console.warn('Could not load product ' + id, e);
+            return undefined;
+          });
         }).then(function (p) { delete inflight[id]; return p; });
       }
       return inflight[id].then(function (p) { out[id] = p; });
@@ -322,6 +337,8 @@ export function getCatalogueIndex(shopId, maxAgeMs) {
       var out = { items: items, overflow: d.overflow === true, updatedMs: tsMillis(d.updatedAt) };
       cacheSet('idx:' + shopId, out);
       return out;
+    }).catch(function (e) {
+      return cacheGet('idx:' + shopId).then(function (old) { return staleOr(old, e, function (x) { return x.none ? null : x; }); });
     });
   });
 }

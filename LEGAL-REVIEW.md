@@ -13,7 +13,7 @@ should look at, plus the blanks that still have to be filled in.
   under 18 is void, so the partner terms must be in the name of an adult or a
   company/firm.)
 - Support email, grievance officer (name, designation, contact), privacy contact.
-- Firestore and Cloud Storage locations (Firebase console) for the privacy policy.
+- Firestore location (and Cloud Storage's, if turned on later) from the Firebase console, for the privacy policy.
 - Retention periods (accounts after closure, acceptance records, audit log, reports, anonymous reporter accounts).
 - Complaint acknowledgement and resolution times; appeal time for shops.
 - City for courts / choice of arbitration; any liability cap; scope of indemnity.
@@ -48,9 +48,11 @@ them now is still the right call.
   decides, who tells the Board within 72 hours, how shops are told).
 - **Retention and erasure (s.8(7), Rule 8):** fill in periods; set up a yearly
   clean-up of anonymous reporter accounts and resolved reports.
-- **Cross-border transfer (s.16):** data may be stored outside India
-  (Cloud Storage's free tier is US-only). Fine unless the Government restricts
-  that country; record it in the notice (done).
+- **Cross-border transfer (s.16):** on the free plan everything (frame photos
+  included) is in Firestore, recommended in asia-south1 (Mumbai). If Cloud
+  Storage is turned on later, its free tier is US-only, so photos would be
+  stored outside India. Fine unless the Government restricts that country;
+  record it in the notice (done, with a blank to fill).
 - **Rights (ss.11–14, Rule 14):** access, correction, erasure, nomination,
   grievance redressal within 90 days. Account closure is manual (by email) —
   consider a "close my account" button later.

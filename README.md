@@ -6,7 +6,9 @@ A website where customers try eyeglass frames on their face in the browser, usin
 - **Partner shops** sign up, accept the shop terms, and are approved by the admin. They then add frames: details, photos (with automatic quality checks and retake guidance), automatic try-on preparation, price and GST, availability, and publishing.
 - **Admin** (the owner) approves, rejects, suspends and reactivates shops; suspends or removes listings; handles reports; and manages legal versions, acceptance records, settings and the demo.
 
-All permissions are enforced by Firebase security rules on the server (`firestore.rules`, `storage.rules`), not by hiding buttons.
+All permissions are enforced by Firebase security rules on the server (`firestore.rules`, and `storage.rules` once Cloud Storage is used), not by hiding buttons.
+
+It runs on Firebase's free **Spark** plan: frame pictures are kept in Firestore, and customers' pages read a shop's one-document catalogue index and then only the frames on screen. See `COSTS.md`.
 
 **Customer photos are never uploaded or stored.** Face tracking runs in the browser, and the site has no photo capture, download or sharing. See `legal/privacy.html`.
 
@@ -14,8 +16,8 @@ All permissions are enforced by Firebase security rules on the server (`firestor
 
 | File | What it's for |
 |---|---|
-| `SETUP.md` | **Start here.** Firebase steps (Blaze plan, Storage, rules, making yourself admin) and going live |
-| `COSTS.md` | What it costs at about 25 shops × 300 frames, and how to keep it in check |
+| `SETUP.md` | **Start here.** Firebase steps on the free plan (create Firestore, deploy rules, make yourself admin), going live, and moving to Blaze later |
+| `COSTS.md` | Free-plan limits, reads per visit, how far the free plan goes, and when Blaze is worth it |
 | `legal/` | Drafts of the customer terms, partner shop terms and privacy policy, all marked for legal review |
 | `LEGAL-REVIEW.md` | Blanks to fill in and points for the lawyer (DPDP Act 2023 and Rules 2025, IT Rules, consumer law, GST) |
 
@@ -37,7 +39,9 @@ All permissions are enforced by Firebase security rules on the server (`firestor
 - `index.html`, `styles.css`: page structure and styling
 - `app.js`: customer site, routing, try-on and the photo step
 - `partner.js`, `admin.js`: shop and admin dashboards (loaded only when opened)
-- `backend.js`, `firebase-init.js`, `firebase-config.js`: Firebase data layer and configuration. The config values are public identifiers, not secrets.
+- `backend.js`, `firebase-init.js`, `firebase-config.js`: Firebase data layer and configuration. The config values are public identifiers, not secrets. `imageStore` in `firebase-config.js` chooses where frame pictures go (`'firestore'` on Spark, `'storage'` on Blaze).
+- `catalogue-index.js`: each shop's catalogue index (what customers' pages read first)
+- `cache.js`: the browser cache (IndexedDB) that saves repeat reads
 - `firestore.rules`, `storage.rules`, `firestore.indexes.json`, `firebase.json`, `cors.json`: backend rules and settings, deployed as described in `SETUP.md`
 - `pricing.js`: prices in paise, GST inclusive, exclusive or none, at the shop's own rate (no default rate)
 - `validation.js`: the same field checks the rules enforce, so the forms can explain problems
@@ -56,20 +60,26 @@ acceptances/{uid_doc_version}  who accepted which terms version, when (append-on
 shops/{uid}                  public shop profile + status: pending | approved | rejected | suspended
 shopPrivate/{uid}            owner name, phone, GSTIN (shop and admin only)
 products/{id}                shopId, details, tags, size, pricing {pricePaise, taxMode, taxRate, salePaise, confirmed, updatedAt},
-                             availability, status draft|published|archived, moderation, tryOn, images (Storage paths + links),
-                             public (true only when published, complete, not suspended and the shop is approved)
+                             availability, status draft|published|archived, moderation, tryOn, images, public (true only when
+                             published, complete, not suspended and the shop is approved). Each image: {path, w, h, bytes} plus
+                             data (inline data: URL: thumbnail, fitting data), fid (a productFiles doc) or url (Storage)
+productFiles/{productId__name}  free plan: one larger picture each (cut-out, temple photo, original photo) as a data: URL;
+                             never changes (new versions get new names). Customer pictures readable by name, originals private
+catalogues/{shopId}          the shop's public frames in short form {items: {productId: {n, t, z, pr, a, r, c, u, ...}}},
+                             written with each product change; customers' pages read this first (1 read per shop)
 reports/{id}                 "Report this listing" (no personal details), limits/{uid} for the one-a-minute limit
 auditLog/{id}                admin actions (append-only)
 users/{uid}/...              the original single-shop library, kept so it can be copied into a shop
 ```
 
-Files live in Cloud Storage under `shops/{shopId}/products/{productId}/assets/` (cut-out, thumbnail, temple photo, fitting data; publicly viewable once published) and `.../source/` (the original photo; private to the shop and admin).
+On the free plan, pictures are in Firestore (above). With `imageStore: 'storage'` (Blaze), new files go to Cloud Storage under `shops/{shopId}/products/{productId}/assets/` (cut-out, thumbnail, temple photo, fitting data; publicly viewable) and `.../source/` (the original photo; private to the shop and admin). Frames saved either way keep working.
 
 ## Tests
 
 - `npm test`: unit tests (pricing and GST, validation, photo checks, demo frames, extraction, 3D maths)
-- `npm run test:rules`: Firestore and Storage rules in the Firebase emulators. Covers tenant isolation, nobody making themselves admin, publishing honesty, price-change stamps, terms re-acceptance, shop review, moderation, reports and "nowhere for a customer photo to go".
+- `npm run test:rules`: Firestore and Storage rules in the Firebase emulators. Covers tenant isolation, nobody making themselves admin, publishing honesty, price-change stamps, terms re-acceptance, shop review, moderation, reports, "nowhere for a customer photo to go", and the free-plan picture documents and catalogue index.
 - Both run on every push (GitHub Actions, workflow "Tests").
+- `npm run test:e2e`: the site in headless Chromium against an in-memory Firestore that counts reads like Firestore bills them (`tests/e2e/fake-firebase.mjs`): catalogue paging, search, filters, sorting, shop switching, frame page, live try-on, caching, the dashboard's incremental loading, index upkeep, and a frame photographed, cut out, saved to Firestore and tried on. Needs Playwright's Chromium (not run in CI).
 
 ## Preparing frames from ordinary photos
 
@@ -166,7 +176,7 @@ All three load in the try-on, sit on the face from their stored landmarks (photo
 
 ### Privacy
 
-Customer camera frames and photos are processed in the browser tab only. Nothing is recorded, captured, uploaded or stored, and there is no photo capture, download or sharing. A chosen photo is held in memory and cleared when it's replaced, when the try-on page is left, and after 20 minutes without use. The camera stops on Stop, when the try-on page is left, and when the tab is hidden or closed. The try-on loads MediaPipe (`cdn.jsdelivr.net`, pinned to 0.10.35), its face model (`storage.googleapis.com`) and three.js (`cdn.jsdelivr.net`, pinned to 0.186.1). There are no analytics. Frame photos (products, not people) are uploaded by shops to the project's Cloud Storage.
+Customer camera frames and photos are processed in the browser tab only. Nothing is recorded, captured, uploaded or stored, and there is no photo capture, download or sharing. A chosen photo is held in memory and cleared when it's replaced, when the try-on page is left, and after 20 minutes without use. The camera stops on Stop, when the try-on page is left, and when the tab is hidden or closed. The try-on loads MediaPipe (`cdn.jsdelivr.net`, pinned to 0.10.35), its face model (`storage.googleapis.com`) and three.js (`cdn.jsdelivr.net`, pinned to 0.186.1). There are no analytics. Frame photos (products, not people) are uploaded by shops to the project's Firestore database (or Cloud Storage on Blaze).
 
 ### Testing
 

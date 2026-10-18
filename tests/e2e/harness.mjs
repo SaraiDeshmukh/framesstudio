@@ -87,7 +87,16 @@ export async function openBrowser(opts = {}) {
   const stub = stubSource();
   const requests = [];
   context.on('request', (r) => requests.push({ url: r.url(), method: r.method(), postSize: (r.postDataBuffer() || Buffer.alloc(0)).length, type: r.resourceType(), headers: r.headers() }));
+  if (opts.fake) {
+    // in-memory Firestore and Auth (tests/e2e/fake-firebase.mjs), seeded per page
+    const { fakeFirestoreSource, fakeAuthSource } = await import('./fake-firebase.mjs');
+    const fsSrc = fakeFirestoreSource(), authSrc = fakeAuthSource();
+    await context.addInitScript(({ seed, user }) => { window.__fakeSeed = seed; window.__fakeUser = user || null; }, { seed: opts.fake.seed || {}, user: opts.fake.user || null });
+    await context.route('https://www.gstatic.com/firebasejs/*/firebase-firestore.js', (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: fsSrc }));
+    await context.route('https://www.gstatic.com/firebasejs/*/firebase-auth.js', (route) => route.fulfill({ status: 200, contentType: 'text/javascript', body: authSrc }));
+  }
   await context.route('https://www.gstatic.com/firebasejs/**', (route) => {
+    if (opts.fake && /firebase-(firestore|auth)\.js$/.test(route.request().url())) return route.fallback();
     const name = route.request().url().split('/').pop();
     const file = path.join(firebaseDir, name);
     if (!fs.existsSync(file)) return route.fulfill({ status: 404, body: 'missing ' + name });
