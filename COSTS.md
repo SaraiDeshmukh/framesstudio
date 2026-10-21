@@ -32,6 +32,7 @@ Measured in the browser tests (`tests/e2e/`), which count reads the way Firestor
 |---|---|---|
 | opens the home page | 2 settings + 1 per approved shop (25 shops: 27) | 2 settings + 6 shops = **8**; again within 15 minutes: **0** |
 | opens a shop with 300 frames (laptop screen) | **304** | **16** (index 1, shop 1, settings 2, the ~12 cards on screen) |
+| scans a shop's QR code on a phone (40-frame shop) | (every frame of the shop) | **10**; scanning again on the same phone: **0–2** |
 | …the same on a phone | 304 | **10** |
 | scrolls through the first 24 cards | 0 more | up to 12 more (each card's frame is read when it comes into view) |
 | presses "Show 24 more frames" | 0 (already all read) | up to 24 |

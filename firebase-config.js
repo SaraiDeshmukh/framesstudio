@@ -23,3 +23,7 @@ export const firebaseConfig = {
 // Frames saved either way keep working after a switch; only new pictures go
 // to the new place.
 export const imageStore = 'firestore';
+
+// The site's public address. Shops' QR codes and kiosk links always point
+// here, even when made from a preview or test copy of the site.
+export const siteUrl = 'https://saraideshmukh.github.io/framesstudio/';

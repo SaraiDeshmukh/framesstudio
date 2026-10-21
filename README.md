@@ -33,6 +33,7 @@ It runs on Firebase's free **Spark** plan: frame pictures are kept in Firestore,
 | `#/partner` | shops | Sign in or up, apply, frames, shop profile, CSV import |
 | `#/admin` | admin only | Overview, shops, listings, reports, legal, settings, audit log |
 | `#/shop/<id>?kiosk=1` | shop screens | One shop's frames on an in-store screen |
+| `#/shop/<id>?qr=1` | customers' phones | Opened by the shop's QR code: that shop's frames and try-on, staying on that shop |
 
 ## Files
 
@@ -42,6 +43,7 @@ It runs on Firebase's free **Spark** plan: frame pictures are kept in Firestore,
 - `backend.js`, `firebase-init.js`, `firebase-config.js`: Firebase data layer and configuration. The config values are public identifiers, not secrets. `imageStore` in `firebase-config.js` chooses where frame pictures go (`'firestore'` on Spark, `'storage'` on Blaze).
 - `catalogue-index.js`: each shop's catalogue index (what customers' pages read first)
 - `cache.js`: the browser cache (IndexedDB) that saves repeat reads
+- `qr.js`, `vendor/qrcode-generator.mjs` (MIT): each shop's QR code, PNG download and printable poster, drawn in the browser (no outside QR service)
 - `firestore.rules`, `storage.rules`, `firestore.indexes.json`, `firebase.json`, `cors.json`: backend rules and settings, deployed as described in `SETUP.md`
 - `pricing.js`: prices in paise, GST inclusive, exclusive or none, at the shop's own rate (no default rate)
 - `validation.js`: the same field checks the rules enforce, so the forms can explain problems
@@ -79,7 +81,7 @@ On the free plan, pictures are in Firestore (above). With `imageStore: 'storage'
 - `npm test`: unit tests (pricing and GST, validation, photo checks, demo frames, extraction, 3D maths)
 - `npm run test:rules`: Firestore and Storage rules in the Firebase emulators. Covers tenant isolation, nobody making themselves admin, publishing honesty, price-change stamps, terms re-acceptance, shop review, moderation, reports, "nowhere for a customer photo to go", and the free-plan picture documents and catalogue index.
 - Both run on every push (GitHub Actions, workflow "Tests").
-- `npm run test:e2e`: the site in headless Chromium against an in-memory Firestore that counts reads like Firestore bills them (`tests/e2e/fake-firebase.mjs`): catalogue paging, search, filters, sorting, shop switching, frame page, live try-on, caching, the dashboard's incremental loading, index upkeep, and a frame photographed, cut out, saved to Firestore and tried on. Needs Playwright's Chromium (not run in CI).
+- `npm run test:e2e`: the site in headless Chromium against an in-memory Firestore that counts reads like Firestore bills them (`tests/e2e/fake-firebase.mjs`): catalogue paging, search, filters, sorting, shop switching, frame page, live try-on, caching, the dashboard's incremental loading, index upkeep, a frame photographed, cut out, saved to Firestore and tried on, and shops' QR codes (decoded with jsQR from the screen, the PNG and the printed poster; scanning on a phone). Needs Playwright's Chromium (not run in CI).
 
 ## Preparing frames from ordinary photos
 

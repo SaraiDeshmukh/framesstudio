@@ -52,14 +52,26 @@ The rules only treat someone as the administrator if a document for them exists 
 
 ## D. Try the preview, then go live
 
-The new version is published as a preview at **https://saraideshmukh.github.io/framesstudio/preview/**. It uses the same Firebase project, so once A–C are done everything there is real.
+Merge the pull request **Preview of the free-plan version at /preview/** on GitHub; a minute or two later the new version is at **https://saraideshmukh.github.io/framesstudio/preview/**. It uses the same Firebase project, so once A–C are done everything there is real. (The live site at the root doesn't change.)
 
 1. On the preview, go to **#/admin → Overview → Initialise platform settings** (records the terms and privacy versions and default settings).
 2. **Account → Shop dashboard**: apply for your own shop, fill in the profile, accept the terms, submit.
 3. **#/admin → Shops → Approve** your shop.
 4. **Shop dashboard → Frames → Add a frame**: add one, take or upload its photo, set price and GST, publish. (Or **Import → Copy old frames** if the old site's frames are in this database.)
 5. Check it as a customer: **Shops** → your shop → a frame → try it on, on a phone and on the kiosk.
-6. When happy: on GitHub, open the pull request **Multi-retailer platform** and click **Merge**. GitHub Pages updates the live site in a minute or two.
+6. **Shop dashboard → Shop profile → QR code for customers → Open link** on your phone (or scan the *test* address shown under it). The printed code points to the main site, so it shows your frames once step 7 is done.
+7. When happy: on GitHub, open the pull request **Multi-retailer platform** and click **Merge**. GitHub Pages updates the live site in a minute or two.
+
+## E. Give each shop its QR code
+
+Every approved shop has one, in **Shop dashboard → Shop profile → QR code for customers** (you also see it in **#/admin → Shops → Approved → Details**). Customers scan it with their phone camera: the site opens on that shop's frames, they can search, filter and try them on, and that browser tab stays on that shop (no list of other shops). No app, no sign-in, and their camera stays on their phone.
+
+1. **Print poster** gives an A4 page: shop name, the code, "Scan to try on our frames" in English, Hindi and Marathi, three steps and the privacy line. Print it, or choose "Save as PDF" and send it to a print shop. **Download QR (PNG)** is for stickers, WhatsApp or the shop's own designs.
+2. Print the code at least 3 cm wide (5 cm or more scans more easily) and scan it with an Android phone and an iPhone before putting it up.
+3. The code never changes: adding, editing or removing frames needs no new print. It stops working only if the shop is suspended (customers then see "This shop isn't available").
+4. The in-store screen still uses the kiosk link on the same page (`…?kiosk=1`), which behaves the same way.
+
+Making and printing codes costs nothing. A scan is just a visit to the shop's page: about 10 database reads on a phone the first time, and almost none when the same phone scans again.
 
 ## Where things are
 
@@ -68,12 +80,26 @@ The new version is published as a preview at **https://saraideshmukh.github.io/f
 | Try the demo (no sign-in) | **Demo frames** in the top bar, or `#/demo` |
 | Add or edit frames | **For shops** (sign in) → **Shop dashboard → Frames → Add a frame** |
 | Approve shops, moderate listings, see reports and acceptance records | **Account → Admin** (`#/admin`), shown only to you |
+| Get a shop's QR code or poster for customers | Shop dashboard → **Shop profile** → **QR code for customers** (or Admin → Shops → Details) |
 | Put a shop's frames on a kiosk | Shop dashboard → **Shop profile** → kiosk link (`#/shop/<id>?kiosk=1`) |
 | See reads, writes and stored data | Firebase console → **Firestore Database → Usage** |
 
+## How you'll know it's time to upgrade
+
+Check these once a week (Monday morning is enough):
+
+1. **Admin → Overview → "Free plan (Spark): when to upgrade".** A bar shows how much of the free 1 GB the frames and photos use, and roughly how many more frames fit. Green: fine. Amber (60%): plan the move in the next few weeks. Red (80%): move now, before shops can't add frames.
+2. **Firebase console → Firestore Database → Usage** (the admin page links to it). Look at the busiest day of the week:
+   - **Reads** over about **35,000 a day** (free limit 50,000) on ordinary days → upgrade. Roughly: each customer who scans a QR code and browses uses 10–35 reads.
+   - **Downloaded data** over about **7 GB in a month** (free limit 10 GB) → upgrade.
+   - Writes are very unlikely to matter (saving a frame is 2–5 of the 20,000 a day).
+3. **Warning signs from people:** shops or customers saying frames "couldn't load" in the afternoon or evening, or the admin page saying a free daily limit is used up. On Spark nothing is charged: Firestore just refuses until the limit resets (reads daily at about 13:30 IST, downloads monthly). Once that happens on ordinary days, upgrade.
+
+As a rough guide, the free plan covers about **1,000–1,400 customer visits a day**, about **10,000 new phones a month**, and about **1,200–2,500 frames** with their photos (details in `COSTS.md`). Ten busy shops with a QR poster each are likely fine; 25 shops with 300 frames each won't fit the 1 GB, so that's when to move.
+
 ## Moving to Blaze later
 
-Do this when `COSTS.md` says it's time (the database nears 1 GiB, or reads/downloads keep hitting the daily or monthly limits).
+Do this when the checks above say it's time.
 
 1. Firebase console → **Upgrade** (bottom of the sidebar) → link a billing account.
 2. Google Cloud Billing → **Budgets & alerts** → a budget (e.g. ₹500/month) with alerts at 50/90/100%. It only emails you; it does not stop spending.

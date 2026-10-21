@@ -801,3 +801,37 @@ a.stat-tile:hover { border-color: var(--line-strong); }
 /* a card whose picture is still on its way: an empty, quiet tile (no broken-image icon) */
 img.thumb-wait { visibility: hidden; }
 .picker .similar-item.more-item { display: grid; place-items: center; min-height: 96px; padding: 12px; font-size: var(--text-sm); font-weight: 600; color: var(--accent, inherit); text-align: center; }
+
+/* ---------- a shop's QR code (dashboard) and its printable poster ---------- */
+.qr-row { display: flex; gap: 20px; align-items: flex-start; flex-wrap: wrap; }
+.qr-figure { margin: 0; flex: 0 0 auto; width: 188px; padding: 6px; background: #fff; border: 1px solid var(--line); border-radius: var(--r-m); }
+.qr-figure svg { display: block; width: 100%; height: auto; }
+.qr-side { flex: 1 1 260px; min-width: 0; display: flex; flex-direction: column; gap: 10px; }
+.qr-side .row { flex-wrap: wrap; }
+.qr-test a { overflow-wrap: anywhere; }
+
+.qr-poster { display: none; }
+@media print {
+  @page { size: A4 portrait; margin: 14mm; }
+  html.printing-poster body { background: #fff; }
+  html.printing-poster body > *:not(#qrPoster) { display: none !important; }
+  html.printing-poster #qrPoster {
+    display: flex; flex-direction: column; align-items: center; text-align: center; gap: 4mm;
+    color: #000; font-family: var(--font); min-height: 260mm; justify-content: center;
+  }
+  .qr-poster-shop { font-size: 30pt; font-weight: 700; margin: 0; line-height: 1.15; }
+  .qr-poster-city { font-size: 14pt; margin: 0; color: #333; }
+  .qr-poster-heads { margin: 4mm 0 2mm; }
+  .qr-poster-head { font-size: 19pt; font-weight: 600; margin: 1mm 0; line-height: 1.3; }
+  .qr-poster-code { width: 105mm; height: 105mm; }
+  .qr-poster-code svg { width: 100%; height: 100%; }
+  .qr-poster-steps { text-align: left; font-size: 13pt; line-height: 1.5; margin: 2mm auto 0; padding-left: 7mm; max-width: 150mm; }
+  .qr-poster-privacy { font-size: 11pt; color: #333; max-width: 150mm; margin: 2mm 0 0; }
+  .qr-poster-link { font-family: var(--mono); font-size: 9pt; color: #555; overflow-wrap: anywhere; max-width: 170mm; margin: 0; }
+}
+
+/* admin: free-plan storage meter */
+.meter { height: 10px; border-radius: 999px; background: var(--display); overflow: hidden; margin: 8px 0 12px; }
+.meter-fill { display: block; height: 100%; border-radius: inherit; background: #2E7A72; }
+.meter-amber .meter-fill { background: #B7791F; }
+.meter-red .meter-fill { background: #B42318; }

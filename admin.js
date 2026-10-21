@@ -10,6 +10,7 @@
 import { firebaseConfig } from './firebase-config.js';
 import { priceView, formatINR } from './pricing.js';
 import { LEGAL_DOCS } from './legal/versions.js';
+import { qrPanel } from './qr.js';
 
 function h(tag, attrs, kids) {
   var el = document.createElement(tag);
@@ -110,9 +111,10 @@ export function initAdmin(root, ctx) {
         tile('Stored frame images', bytes(c.storageBytes), null, 'as recorded on products')
       ]));
       var pid = firebaseConfig.projectId;
+      kids.push(freePlanPanel(c));
       kids.push(h('section', { class: 'panel' }, [
         h('h2', { class: 'panel-title', text: 'Usage and costs' }),
-        h('p', { class: 'hint', text: 'Exact database reads/writes, storage and download volumes, and the bill are in the Firebase and Google Cloud consoles (this page can’t see them). Set a budget alert there: it emails you when spending passes an amount, but it does not stop spending.' }),
+        h('p', { class: 'hint', text: 'Exact database reads, writes, stored data and downloads are in the Firebase console’s Firestore Usage page (this page can’t see them). On Blaze, also set a budget alert: it emails you when spending passes an amount, but it does not stop spending.' }),
         h('ul', { class: 'link-list' }, [
           h('li', null, [h('a', { href: 'https://console.firebase.google.com/project/' + pid + '/usage', target: '_blank', rel: 'noopener', text: 'Firebase: Usage and billing' })]),
           h('li', null, [h('a', { href: 'https://console.firebase.google.com/project/' + pid + '/firestore/usage', target: '_blank', rel: 'noopener', text: 'Firestore usage (reads, writes, storage)' })]),
@@ -122,9 +124,44 @@ export function initAdmin(root, ctx) {
         h('p', { class: 'hint', text: 'See COSTS.md in the repository for what each service costs at 25 shops.' })
       ]));
       frame(kids);
-    }).catch(function (e) { frame([msg('Could not load the numbers. ' + (e && e.code === 'permission-denied' ? 'Permission denied: is this account in the admins collection, and are the rules deployed?' : ''), 'message error')]); console.error(e); });
+    }).catch(function (e) {
+      var why = e && e.code === 'permission-denied' ? 'Permission denied: is this account in the admins collection, and are the rules deployed?'
+        : e && e.code === 'resource-exhausted' ? QUOTA_OUT : '';
+      frame([msg('Could not load the numbers. ' + why, 'message error')]); console.error(e);
+    });
   }
   function pick(d) { return { version: d.version, date: d.date }; }
+
+  // ---------- the free plan: how full it is, and when to move to Blaze ----------
+  // Firestore's free (Spark) limits, checked 18 Oct 2026 (see COSTS.md).
+  var FREE = { storedBytes: 1073741824, readsPerDay: 50000, writesPerDay: 20000, downloadBytesPerMonth: 10 * 1073741824 };
+  var QUOTA_OUT = 'Firestore refused because a free daily limit is used up (it resets at about 13:30 IST). If this happens on ordinary days, it’s time to move to Blaze (SETUP.md, “Moving to Blaze later”).';
+  function freePlanPanel(c) {
+    var pid = firebaseConfig.projectId;
+    // Pictures are stored as text (base64, about 4/3 of their size) plus each
+    // product's details and its index entry: roughly 1.37 × picture bytes + 3 KB a product.
+    var est = c.storageBytes == null ? null : Math.round(c.storageBytes * 1.37 + (c.products || 0) * 3000);
+    var pct = est == null ? null : Math.min(100, Math.round(est / FREE.storedBytes * 100));
+    var level = pct == null ? 'unknown' : pct >= 80 ? 'red' : pct >= 60 ? 'amber' : 'green';
+    var verdict = { green: 'Fine on the free plan.', amber: 'Plan the move to Blaze in the next few weeks.', red: 'Move to Blaze now: shops will soon be unable to add frames.', unknown: 'Couldn’t estimate.' }[level];
+    var perFrame = c.products ? (est / c.products) : null;
+    var room = perFrame ? Math.max(0, Math.floor((FREE.storedBytes * 0.8 - est) / perFrame)) : null;
+    var bar = h('div', { class: 'meter meter-' + level, role: 'meter', 'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': pct == null ? null : String(pct), 'aria-label': 'Database storage used' }, [h('span', { class: 'meter-fill', style: 'width:' + (pct || 0) + '%' })]);
+    return h('section', { class: 'panel free-plan' }, [
+      h('h2', { class: 'panel-title', text: 'Free plan (Spark): when to upgrade' }),
+      h('p', null, [h('strong', { text: 'Stored data: about ' + bytes(est) + ' of 1 GB' + (pct == null ? '' : ' (' + pct + '%)') + '. ' }), verdict]),
+      bar,
+      room != null ? h('p', { class: 'hint', text: 'At the current average of ' + bytes(Math.round(perFrame)) + ' per frame, about ' + room.toLocaleString('en-IN') + ' more frames fit before the 80% mark.' }) : null,
+      h('p', { class: 'hint', text: 'This page can only see stored data. Check the other limits on the Firestore Usage page once a week:' }),
+      h('ul', { class: 'link-list' }, [
+        h('li', { text: 'Reads: 50,000 a day. Upgrade when the busiest days pass about 35,000.' }),
+        h('li', { text: 'Writes: 20,000 a day (far away: saving a frame is 2–5).' }),
+        h('li', { text: 'Downloads: 10 GB a month (about 1 MB per new visitor). Upgrade when a month passes about 7 GB.' }),
+        h('li', null, [h('a', { href: 'https://console.firebase.google.com/project/' + pid + '/firestore/databases/-default-/usage', target: '_blank', rel: 'noopener', text: 'Open Firestore Usage' })])
+      ]),
+      h('p', { class: 'hint', text: 'On the free plan nothing is ever charged: if a limit is reached, Firestore refuses until it resets (reads and writes daily at about 13:30 IST, downloads monthly), and customers see frames their phone saved earlier, or a “couldn’t load” message.' })
+    ]);
+  }
 
   // ---------- shops ----------
   function shops() {
@@ -194,6 +231,7 @@ export function initAdmin(root, ctx) {
       row('Accepted', acc.map(function (a) { return a.doc + ' v' + a.version + ' (' + when(a.acceptedMs) + ')'; }).join('; ') || 'none on record');
       row('Shop id', s.id);
       el.appendChild(dl);
+      if (s.status === 'approved') el.appendChild(qrPanel(s, ctx.t, ctx.toast));
     }).catch(function (e) { el.innerHTML = ''; el.appendChild(msg('Could not load details.', 'message error')); console.error(e); });
   }
 
