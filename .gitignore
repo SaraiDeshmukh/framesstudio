@@ -1,0 +1,11 @@
+node_modules/
+# Never commit Firebase / Google Cloud service-account keys
+*service-account*.json
+*serviceAccount*.json
+*-firebase-adminsdk-*.json
+.firebase/
+firebase-debug.log
+firestore-debug.log
+storage-debug.log
+ui-debug.log
+test-results/

@@ -14,3 +14,16 @@ export const firebaseConfig = {
   appId: "1:439341097240:web:d3c5265e45d0ce8b247e6d",
   measurementId: "G-0VEBTFPSVY"
 };
+
+// Where shops' frame pictures are kept:
+//   'firestore'  inside the Firestore database. Works on the free Spark plan
+//                (Spark has no access to Cloud Storage at all).
+//   'storage'    Cloud Storage. Needs the Blaze plan, Storage turned on and
+//                storage.rules deployed (see SETUP.md, "Moving to Blaze").
+// Frames saved either way keep working after a switch; only new pictures go
+// to the new place.
+export const imageStore = 'firestore';
+
+// The site's public address. Shops' QR codes and kiosk links always point
+// here, even when made from a preview or test copy of the site.
+export const siteUrl = 'https://saraideshmukh.github.io/framesstudio/';

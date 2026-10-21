@@ -3,14 +3,14 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<meta name="description" content="Browse the shop's frames and see them on your face with the camera or a photo.">
+<meta name="description" content="Try eyeglass frames on your face with your camera or a photo, then find them at a participating optical shop. The camera stays on your device.">
 <meta name="theme-color" content="#FFFFFF">
 <title>Frame Try-On Studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Cg fill='none' stroke='%231C1F23' stroke-width='2.6'%3E%3Ccircle cx='9' cy='17' r='6'/%3E%3Ccircle cx='23' cy='17' r='6'/%3E%3Cpath d='M15 16q1-2 2 0'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Devanagari:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="styles.css?v=7">
+<link rel="stylesheet" href="styles.css?v=8">
 </head>
 <body>
   <a class="skip-link" href="#main" data-i18n="skip">Skip to content</a>
@@ -25,72 +25,132 @@
 
   <header class="site-header">
     <div class="header-inner">
-      <a class="brand" href="#/" aria-label="Frame Try-On Studio, all frames" data-i18n-attr="aria-label:brand.aria">
+      <a class="brand" id="brandLink" href="#/" aria-label="Frame Try-On Studio, home" data-i18n-attr="aria-label:brand.aria">
         <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="2.4"><circle cx="9" cy="17" r="6"/><circle cx="23" cy="17" r="6"/><path d="M15 16q1-2 2 0"/></g></svg>
         <span class="brand-name">Frame Try-On Studio</span>
       </a>
-      <nav class="main-nav" id="mainNav" aria-label="Main" data-i18n-attr="aria-label:nav.label" hidden>
-        <a class="nav-link" id="tabBrowseBtn" href="#/" data-i18n="nav.frames">Frames</a>
+      <nav class="main-nav" id="mainNav" aria-label="Main" data-i18n-attr="aria-label:nav.label">
         <a class="nav-link" id="tabTryOnBtn" href="#/try-on" data-i18n="nav.tryon">Try on</a>
+        <a class="nav-link" id="tabBrowseBtn" href="#/demo" data-i18n="nav.demo">Demo frames</a>
+        <a class="nav-link" id="tabShopsBtn" href="#/shops" data-i18n="nav.shops">Shops</a>
         <a class="nav-link nav-shortlist" id="tabShortlistBtn" href="#/shortlist" aria-label="Shortlist, empty">
           <svg class="nav-heart" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 16.6S3.6 12.9 3.6 8.2A3.3 3.3 0 0 1 10 6.6a3.3 3.3 0 0 1 6.4 1.6c0 4.7-6.4 8.4-6.4 8.4z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
           <span class="nav-text" data-i18n="nav.shortlist">Shortlist</span>
           <span class="nav-count" id="shortlistCount" aria-hidden="true"></span>
         </a>
-        <a class="nav-link staff-only" id="tabAddBtn" href="#/add" data-i18n="nav.add">Add frames</a>
       </nav>
-      <div class="staff-wrap" id="staffWrap" hidden>
-        <button class="staff-btn" id="staffBtn" type="button" aria-haspopup="true" aria-expanded="false">
-          <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="4" y="9" width="12" height="8" rx="2" fill="none" stroke="currentColor" stroke-width="1.6"/><path id="staffLockShackle" d="M7 9V6.5a3 3 0 0 1 6 0V9" fill="none" stroke="currentColor" stroke-width="1.6"/></svg>
-          <span id="staffBtnLabel">Staff</span>
+      <div class="account-wrap" id="accountWrap">
+        <a class="account-cta" id="partnerLink" href="#/partner">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 8.5 4.4 4h11.2L17 8.5M3 8.5h14M3 8.5v7.5h14V8.5M8 16v-4h4v4" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>
+          <span data-i18n="nav.forShops">For shops</span>
+        </a>
+        <button class="account-btn" id="accountBtn" type="button" aria-haspopup="true" aria-expanded="false" hidden>
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="7" r="3.2" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M3.8 17c.8-3.2 3.3-4.8 6.2-4.8s5.4 1.6 6.2 4.8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>
+          <span id="accountLabel" data-i18n="acct.btn">Account</span>
         </button>
-        <div class="staff-menu" id="staffMenu" hidden>
-          <p class="staff-menu-who"><span data-i18n="staff.signedInAs">Signed in as</span> <strong id="userEmailLabel"></strong></p>
-          <p class="staff-menu-stat" id="photoCountDisplay"></p>
-          <a class="menu-item" href="#/add" id="menuAddLink" data-i18n="nav.add">Add frames</a>
-          <button class="menu-item" type="button" id="staffLockBtn" data-i18n="staff.lock">Lock staff tools</button>
-          <button class="menu-item" type="button" id="signOutBtn" data-i18n="staff.signOut">Sign out</button>
+        <div class="account-menu" id="accountMenu" hidden>
+          <p class="account-who"><span data-i18n="acct.signedInAs">Signed in as</span> <strong id="userEmailLabel"></strong></p>
+          <a class="menu-item" href="#/partner" id="menuDashboard" data-i18n="acct.dashboard">Shop dashboard</a>
+          <a class="menu-item" href="#/admin" id="menuAdmin" data-i18n="acct.admin" hidden>Admin</a>
+          <button class="menu-item" type="button" id="signOutBtn" data-i18n="acct.signOut">Sign out</button>
         </div>
       </div>
     </div>
   </header>
 
   <main id="main" tabindex="-1">
-    <!-- shown until firebase-config.js has real values in it -->
-    <div id="setupNotice" class="notice" style="display:none">
-      <strong>Firebase isn't configured yet.</strong> Open <code>firebase-config.js</code> and paste in your own
-      project's config (Firebase Console → Project settings → Your apps → Web app). See <code>README.md</code>
-      for the full walkthrough.
-    </div>
-
-    <!-- ================= SIGN IN ================= -->
-    <section id="authGate" class="auth-wrap" style="display:none" aria-labelledby="authTitle">
-      <h1 id="authTitle" data-i18n="auth.title">Sign in</h1>
-      <p class="lede" data-i18n="auth.lede">Sign in with the shop account to open the frame catalogue.</p>
-      <form id="authForm" novalidate>
-        <div class="field">
-          <label for="authEmail" data-i18n="auth.email">Email</label>
-          <input type="email" id="authEmail" autocomplete="email" required>
-        </div>
-        <div class="field">
-          <label for="authPassword" data-i18n="auth.password">Password</label>
-          <input type="password" id="authPassword" autocomplete="current-password" required aria-describedby="authError">
-        </div>
-        <p class="form-error" id="authError" role="alert"></p>
-        <button type="submit" class="btn primary block" id="signInBtn" data-i18n="auth.signIn">Sign in</button>
-        <p class="auth-alt"><span data-i18n="auth.newShop">Setting up a new shop?</span> <button type="button" class="link-btn" id="signUpBtn" data-i18n="auth.create">Create an account</button> <span class="muted" data-i18n="auth.min">(at least 6 characters)</span></p>
-      </form>
-    </section>
+    <div class="announcement" id="announcement" role="status" hidden></div>
 
     <!-- ================= APP ================= -->
-    <div id="appShell" style="display:none">
+    <div id="appShell">
+
+      <!-- ================= HOME ================= -->
+      <section id="pageHome" class="page home" aria-labelledby="homeTitle">
+        <div class="home-hero">
+          <div class="home-hero-text">
+            <p class="eyebrow" data-i18n="home.eyebrow">Virtual try-on for eyeglasses</p>
+            <h1 id="homeTitle" data-i18n="home.title">See frames on your face before you visit the shop</h1>
+            <p class="lede" data-i18n="home.lede">Use your camera or a photo. It works in this browser, with no app and no account. Your camera stays on your device.</p>
+            <div class="row">
+              <a class="btn primary large" id="homeTryBtn" href="#/try-on/demo-black-rectangle">
+                <svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="5" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m14 9 4-2.5v7L14 11" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+                <span data-i18n="home.tryBtn">Try virtual eyewear</span>
+              </a>
+              <a class="btn secondary large" href="#/shops" data-i18n="home.shopsBtn">Find a shop</a>
+            </div>
+          </div>
+          <div class="home-hero-media" aria-hidden="true"><img id="homeHeroImg" src="demo/demo-tortoise-catseye/cutout.png" alt="" width="898" height="334"></div>
+        </div>
+
+        <section class="home-section" aria-labelledby="homeDemoTitle">
+          <div class="section-head">
+            <h2 id="homeDemoTitle" data-i18n="home.demo.title">Try the demo frames</h2>
+            <a href="#/demo" class="link-more" data-i18n="home.demo.all">See all demo frames</a>
+          </div>
+          <p class="hint" data-i18n="home.demo.note">Six sample frames, made for this demo. They aren't for sale; shops' own frames are under Shops.</p>
+          <div class="library-row demo-row" id="homeDemoRow"></div>
+        </section>
+
+        <section class="home-section" aria-labelledby="homeHowTitle">
+          <h2 id="homeHowTitle" data-i18n="home.how.title">How it works</h2>
+          <ol class="how-steps">
+            <li><strong data-i18n="home.how.1t">Pick a frame</strong><span data-i18n="home.how.1">From the demo or a participating shop.</span></li>
+            <li><strong data-i18n="home.how.2t">Try it on</strong><span data-i18n="home.how.2">Live with your camera, or on a photo. Switch frames without stopping the camera.</span></li>
+            <li><strong data-i18n="home.how.3t">Visit or contact the shop</strong><span data-i18n="home.how.3">Prices and purchases are with the shop. Try the frame on in person to check fit.</span></li>
+          </ol>
+        </section>
+
+        <section class="home-section" aria-labelledby="homeShopsTitle">
+          <div class="section-head">
+            <h2 id="homeShopsTitle" data-i18n="home.shops.title">Participating shops</h2>
+            <a href="#/shops" class="link-more" data-i18n="home.shops.all">All shops</a>
+          </div>
+          <div class="shop-grid" id="homeShopRow"></div>
+        </section>
+
+        <section class="home-section privacy-promise" aria-labelledby="homePrivTitle">
+          <h2 id="homePrivTitle" data-i18n="home.priv.title">Your camera stays on your device</h2>
+          <p data-i18n="home.priv.text">Face tracking runs in your browser. Your camera video and any photo you choose are never uploaded, saved or shared by this site, and the camera turns off when you leave the try-on.</p>
+          <a href="legal/privacy.html" data-i18n="home.priv.link">Read the privacy policy</a>
+        </section>
+
+        <section class="home-section partner-band" aria-labelledby="homePartnerTitle">
+          <div>
+            <h2 id="homePartnerTitle" data-i18n="home.partner.title">Own an optical shop?</h2>
+            <p data-i18n="home.partner.text">List your frames with prices and GST, and let customers try them on from your shop screen or their phone. Photos taken on an ordinary phone are enough.</p>
+          </div>
+          <a class="btn secondary" href="#/partner" data-i18n="home.partner.btn">Join as a partner shop</a>
+        </section>
+      </section>
+
+      <!-- ================= SHOPS ================= -->
+      <section id="pageShops" class="page" style="display:none" aria-labelledby="shopsTitle">
+        <div class="page-head">
+          <h1 id="shopsTitle" data-i18n="shops.title">Participating shops</h1>
+          <p class="page-count" id="shopsNote" aria-live="polite"></p>
+        </div>
+        <p class="lede" data-i18n="shops.lede">Independent optical shops that list their frames here. Each shop sets its own prices and sells its own frames.</p>
+        <div class="shop-grid" id="shopsGrid"></div>
+      </section>
+
+      <!-- ================= SHOP DASHBOARD (retail partners) ================= -->
+      <section id="pagePartner" class="page" style="display:none" aria-labelledby="partnerTitle">
+        <div id="partnerRoot"></div>
+      </section>
+
+      <!-- ================= ADMIN ================= -->
+      <section id="pageAdmin" class="page" style="display:none" aria-labelledby="adminTitle">
+        <div id="adminRoot"></div>
+      </section>
+
 
       <!-- ================= CATALOGUE ================= -->
       <section id="pageBrowse" class="page" aria-labelledby="browseTitle">
         <div class="page-head">
-          <h1 id="browseTitle" data-i18n="cat.title">Frames</h1>
+          <h1 id="browseTitle">Demo frames</h1>
           <p class="page-count" id="catalogNote" aria-live="polite">Loading the catalogue&hellip;</p>
         </div>
+        <div id="browseIntro"></div>
 
         <div class="catalog-tools" id="catalogTools">
           <div class="search-field">
@@ -108,6 +168,8 @@
               <option value="new" data-i18n="cat.sort.new">Newest first</option>
               <option value="old" data-i18n="cat.sort.old">Oldest first</option>
               <option value="eye" data-i18n="cat.sort.eye">Lens width, small to large</option>
+              <option value="price" data-shop-only data-i18n="cat.sort.price">Price, low to high</option>
+              <option value="priceDesc" data-shop-only data-i18n="cat.sort.priceDesc">Price, high to low</option>
             </select>
           </div>
         </div>
@@ -124,28 +186,10 @@
           </div>
 
           <div class="catalog-main">
-            <div class="staff-bar staff-only">
-              <button class="btn secondary small" id="selectModeBtn" type="button" data-i18n="cat.tagSeveral">Tag several frames</button>
-            </div>
-            <div class="panel" id="bulkBar" style="display:none">
-              <h2 class="panel-title" id="bulkCountLabel">0 selected</h2>
-              <p class="hint" data-i18n="bulk.hint">Tap frames to select them, then choose the tags to apply. Only the tags you choose change.</p>
-              <div class="field-label" data-i18n="facet.shape">Shape</div>
-              <div class="chip-row" id="bulkShapeChips"></div>
-              <div class="field-label" data-i18n="facet.color">Colour</div>
-              <div class="chip-row" id="bulkColorChips"></div>
-              <div class="field-label" data-i18n="facet.gender">For</div>
-              <div class="chip-row" id="bulkGenderChips"></div>
-              <div class="field-label" data-i18n="facet.rim">Rim type</div>
-              <div class="chip-row" id="bulkRimChips"></div>
-              <p class="form-error" id="bulkError" role="alert"></p>
-              <div class="row">
-                <button class="btn primary" id="applyBulkBtn" type="button" disabled data-i18n="bulk.apply">Apply to selected</button>
-                <button class="btn secondary" id="exitSelectModeBtn" type="button" data-i18n="common.done">Done</button>
-              </div>
-            </div>
-
             <div class="library-row" id="libraryRow"></div>
+            <div class="library-more" id="libraryMore" hidden>
+              <button class="btn secondary" id="libraryMoreBtn" type="button">Show more frames</button>
+            </div>
             <div class="empty-state" id="noResults" hidden>
               <h2 data-i18n="cat.none.title">No frames match</h2>
               <p data-i18n="cat.none.text">Try a different search or fewer filters.</p>
@@ -153,7 +197,7 @@
             </div>
             <div class="empty-state" id="emptyCatalog" hidden>
               <h2 data-i18n="cat.empty.title">No frames yet</h2>
-              <p id="emptyCatalogText">Frames added by staff will appear here.</p>
+              <p id="emptyCatalogText">This shop hasn't published any frames yet.</p>
             </div>
           </div>
         </div>
@@ -167,51 +211,6 @@
           <h1 id="detailMissingTitle" data-i18n="detail.missing.title">This frame isn't in the catalogue</h1>
           <p data-i18n="detail.missing.text">It may have been removed. Browse the other frames instead.</p>
           <a class="btn primary" href="#/" data-i18n="detail.missing.btn">See all frames</a>
-        </div>
-
-        <div class="panel staff-only" id="editTagsPanel" style="display:none">
-          <h2 class="panel-title" data-i18n="edit.title">Edit frame details</h2>
-          <div class="edit-panel-head"><span id="editThumbWrap"></span></div>
-          <div class="field">
-            <label for="editNameInput"><span data-i18n="edit.name">Name or model</span> <span class="optional" data-i18n="common.optional">optional</span></label>
-            <input type="text" id="editNameInput" maxlength="60" autocomplete="off">
-          </div>
-          <div class="field-label" data-i18n="facet.shape">Shape</div>
-          <div class="chip-row" id="editShapeChips"></div>
-          <div class="field-label" data-i18n="facet.color">Colour</div>
-          <div class="chip-row" id="editColorChips"></div>
-          <div class="field-label" data-i18n="facet.gender">For</div>
-          <div class="chip-row" id="editGenderChips"></div>
-          <div class="field-label" data-i18n="facet.rim">Rim type</div>
-          <div class="chip-row" id="editRimChips"></div>
-          <div class="field">
-            <label for="editFreeTagInput"><span data-i18n="edit.otherTags">Other tags</span> <span class="optional" data-i18n="edit.enterHint">press Enter to add</span></label>
-            <input type="text" id="editFreeTagInput" list="tagSuggestions" autocomplete="off">
-          </div>
-          <div class="tag-chip-list" id="editFreeTagList"></div>
-          <fieldset class="size-set">
-            <legend><span data-i18n="edit.sizeLegend">Frame size in mm</span> <span class="optional" data-i18n="edit.sizeHint">optional, printed inside the temple</span></legend>
-            <div class="size-row">
-              <label><span data-i18n="size.input.eye">Lens width</span> <input type="number" id="editSizeEye" min="30" max="75" step="0.5" inputmode="decimal"></label>
-              <label><span data-i18n="size.input.bridge">Bridge</span> <input type="number" id="editSizeBridge" min="10" max="30" step="0.5" inputmode="decimal"></label>
-              <label><span data-i18n="size.input.temple">Temple</span> <input type="number" id="editSizeTemple" min="100" max="170" step="1" inputmode="numeric"></label>
-            </div>
-          </fieldset>
-          <div class="field-label" data-i18n="edit.framePhoto">Frame photo</div>
-          <div class="row">
-            <span class="hint inline" id="editPhotoStatus"></span>
-            <button class="btn secondary small" id="editPhotoBtn" type="button" data-i18n="staffTools.photo">Update photo</button>
-          </div>
-          <div class="field-label" data-i18n="edit.templePhoto">Temple photo (3D)</div>
-          <div class="row">
-            <span class="hint inline" id="editSideStatus"></span>
-            <button class="btn secondary small" id="editSideBtn" type="button">Add temple photo</button>
-          </div>
-          <p class="form-error" id="editError" role="alert"></p>
-          <div class="row">
-            <button class="btn primary" id="saveTagsBtn" type="button" data-i18n="edit.save">Save changes</button>
-            <button class="btn secondary" id="cancelEditTagsBtn" type="button" data-i18n="common.cancel">Cancel</button>
-          </div>
         </div>
 
         <h2 class="section-title" id="similarLabel" style="display:none">Similar frames</h2>
@@ -243,10 +242,9 @@
                 <div class="start-photo">
                   <span class="start-photo-label" data-i18n="try.photo.label">Or use a photo</span>
                   <div class="row center">
-                    <button class="btn secondary" id="uploadBtn" type="button" data-i18n="try.photo.upload">Upload a photo</button>
-                    <button class="btn secondary" id="cameraBtn" type="button" data-i18n="try.photo.take">Take a photo</button>
+                    <button class="btn secondary" id="uploadBtn" type="button" data-i18n="try.photo.choose">Choose a photo</button>
                   </div>
-                  <p class="fine" data-i18n="try.photo.formats">JPEG, PNG or WebP. A clear, front-facing photo works best.</p>
+                  <p class="fine" data-i18n="try.photo.formats2">JPEG, PNG or WebP. A clear, front-facing photo works best. It stays on this device and is forgotten when you leave.</p>
                 </div>
                 <input type="file" id="fileInput" accept="image/jpeg,image/png,image/webp" hidden>
               </div>
@@ -262,7 +260,6 @@
                 <div class="placeholder" id="placeholder" style="display:none"></div>
                 <video id="video" autoplay playsinline muted style="display:none"></video>
                 <div class="photo-stage" id="photoStage"><canvas id="canvas" style="display:none" aria-label="Your photo with the frame" data-i18n-attr="aria-label:try.photo.aria"></canvas></div>
-                <button class="btn primary capture-btn" id="captureBtn" type="button" style="display:none" data-i18n="try.capture">Take photo</button>
               </div>
             </div>
 
@@ -379,13 +376,19 @@
       <!-- ================= ADD FRAMES (staff) ================= -->
       <section id="pageAdd" class="page" style="display:none" aria-labelledby="addTitle">
         <div class="page-head">
-          <h1 id="addTitle" data-i18n="add.title">Add frames</h1>
+          <h1 id="addTitle" data-i18n="add.titleProduct">Frame photo and try-on</h1>
         </div>
         <div class="staff-locked" id="addLocked" hidden>
-          <p data-i18n="add.locked">Adding and editing frames is for shop staff.</p>
-          <button class="btn primary" id="addUnlockBtn" type="button" data-i18n="add.unlock">Unlock staff tools</button>
+          <p data-i18n="add.lockedPartner">Adding frame photos is for signed-in partner shops, from a product in the shop dashboard.</p>
+          <a class="btn primary" id="addUnlockBtn" href="#/partner" data-i18n="add.toDashboard">Go to the shop dashboard</a>
         </div>
         <div id="addContent">
+        <div class="add-product-bar" id="addProductBar" hidden>
+          <span class="add-product-thumb" id="addProductThumb"></span>
+          <span class="add-product-text"><span class="current-label" data-i18n="add.forProduct">Photo for</span> <strong id="addProductName"></strong></span>
+          <a class="btn secondary small" id="addProductBack" href="#/partner" data-i18n="add.backToProduct">Back to the product</a>
+        </div>
+        <div id="photoGuide"></div>
         <div class="selected-banner side-target" id="sideTarget">
           <span id="sideTargetThumb"></span>
           <span class="sel-text" id="sideTargetText">Temple photo</span>
@@ -401,7 +404,7 @@
           <button class="seg-btn active" id="bgModeAutoBtn" type="button" data-i18n="add.mode.auto">Automatic</button>
           <button class="seg-btn" id="bgModeSingleBtn" type="button" data-i18n="add.mode.simple">Simple removal</button>
           <button class="seg-btn" id="bgModeTwoShotBtn" type="button" data-i18n="add.mode.two">Two photos</button>
-          <button class="seg-btn" id="bgModeAiBtn" type="button">remove.bg</button>
+          <button class="seg-btn" id="bgModeAiBtn" type="button" hidden>remove.bg</button>
         </div>
         <p class="hint" id="bgModeAutoHint" data-i18n="add.mode.autoHint">Recommended. Photograph the glasses straight on, filling most of the picture. Lying on a table or on a display stand is fine; no special background needed. The frame, lens openings and fitting points are found automatically and you check them before saving.</p>
         <p class="hint" id="bgModeHint" style="display:none" data-i18n="add.mode.twoHint">First photograph the empty surface alone, then place the frame and photograph again without moving the camera. The saved surface photo carries over for the next frame too, so you only need to retake it if the camera moves.</p>
@@ -422,7 +425,7 @@ Use your camera or upload a photo of a frame.</div>
             <video id="frameVideo" autoplay playsinline muted style="display:none"></video>
             <button class="btn primary capture-btn" id="frameCaptureBtn" type="button" style="display:none" data-i18n="add.capture">Take photo</button>
           </div>
-          <div class="added-msg" id="addedMsg" role="status"><span id="addedMsgText">Added to the catalogue.</span>
+          <div class="added-msg" id="addedMsg" role="status"><span id="addedMsgText">Saved.</span>
             <button class="btn secondary small" id="addSideAfterBtn" type="button" data-i18n="add.addSideAfter">Add a temple photo (optional, for 3D)</button>
           </div>
         </div>
@@ -446,6 +449,7 @@ Use your camera or upload a photo of a frame.</div>
             <canvas id="frameCalibCanvas"></canvas>
           </div>
           <p class="calib-banner" id="frameCalibBanner" style="display:block">Tap one lens centre, then the other.</p>
+          <div class="photo-check" id="photoCheck" hidden></div>
 
           <div class="panel auto-review" id="autoReview" style="display:none">
             <div class="auto-status" id="autoStatus" role="status" aria-live="polite"></div>
@@ -518,7 +522,8 @@ Use your camera or upload a photo of a frame.</div>
           </div>
 
           <div class="row">
-            <button class="btn primary" id="addToLibraryBtn" type="button" disabled>Add to catalogue</button>
+            <button class="btn primary" id="addToLibraryBtn" type="button" disabled>Save try-on asset</button>
+            <button class="btn secondary" id="saveNoTryonBtn" type="button" hidden data-i18n="add.saveNoTryon">Use as product photo only (no try-on)</button>
             <button class="btn secondary" id="cancelFrameBtn" type="button" data-i18n="common.cancel">Cancel</button>
           </div>
         </div>
@@ -532,26 +537,34 @@ Use your camera or upload a photo of a frame.</div>
       <p data-i18n="footer.preview">Virtual try-on is a visual preview, not a fitting. Try frames on in the shop to check fit and comfort.</p>
       <details>
         <summary data-i18n="footer.privacy.title">How the camera and photos are used</summary>
-        <p data-i18n="footer.privacy.text">Face tracking runs in this browser. Camera video and photos stay on this device: they are not recorded, saved or sent anywhere, and the camera turns off when you leave the try-on page. Your shortlist and PD are kept only until you leave the screen for a while. The shop uses Google Analytics to count how the site is used, for example how often frames are tried on; no photos, video or face data are included.</p>
+        <p data-i18n="footer.privacy.text2">Face tracking runs in this browser. Camera video and any photo you choose stay on this device: they are not recorded, uploaded, saved or shared, and the camera turns off when you leave the try-on page. Your shortlist and PD are kept only in this browser tab and cleared after a while without use. There is no advertising or analytics tracking.</p>
       </details>
+      <nav class="footer-links" aria-label="Legal" data-i18n-attr="aria-label:footer.legal">
+        <a href="legal/customer-terms.html" data-i18n="footer.customerTerms">Terms of use</a>
+        <a href="legal/privacy.html" data-i18n="footer.privacyPolicy">Privacy policy</a>
+        <a href="legal/retailer-terms.html" data-i18n="footer.retailerTerms">Partner shop terms</a>
+        <a href="#/partner" data-i18n="footer.partner">For shops</a>
+      </nav>
     </div>
   </footer>
 
-  <!-- staff unlock -->
-  <dialog class="dialog" id="staffDialog" aria-labelledby="staffDialogTitle">
-    <form id="staffForm" novalidate>
-      <h2 id="staffDialogTitle" data-i18n="staff.dialog.title">Staff tools</h2>
-      <p data-i18n="staff.dialog.text">Enter the shop account password to add, edit or delete frames.</p>
+  <!-- report a listing -->
+  <dialog class="dialog" id="reportDialog" aria-labelledby="reportTitle">
+    <form id="reportForm" novalidate>
+      <h2 id="reportTitle" data-i18n="report.title">Report this listing</h2>
+      <p class="hint" data-i18n="report.text">Tell the platform about a wrong price, wrong details or something that shouldn't be here. No name or contact details are needed.</p>
+      <fieldset class="radio-set" id="reportReasons">
+        <legend data-i18n="report.reason">What's wrong?</legend>
+      </fieldset>
       <div class="field">
-        <label for="staffPassword" data-i18n="staff.dialog.password">Password</label>
-        <input type="password" id="staffPassword" autocomplete="current-password" required aria-describedby="staffError">
+        <label for="reportNote"><span data-i18n="report.note">More details</span> <span class="optional" data-i18n="common.optional">optional</span></label>
+        <textarea id="reportNote" maxlength="500" rows="3"></textarea>
+        <p class="hint" data-i18n="report.noteHint">Please don't include personal details.</p>
       </div>
-      <p class="form-error" id="staffError" role="alert"></p>
-      <label class="check-row"><input type="checkbox" id="staffKeep"> <span data-i18n="staff.dialog.keep">Keep staff tools unlocked on this device</span></label>
-      <p class="hint" data-i18n="staff.dialog.hint">Leave this off on a shared shop screen: the tools then lock again after 15 minutes without use.</p>
+      <p class="form-error" id="reportError" role="alert"></p>
       <div class="dialog-actions">
-        <button type="submit" class="btn primary" id="staffUnlockBtn" data-i18n="staff.dialog.unlock">Unlock</button>
-        <button type="button" class="btn secondary" id="staffCancelBtn" data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn primary" id="reportSend" data-i18n="report.send">Send report</button>
+        <button type="button" class="btn secondary" id="reportCancel" data-i18n="common.cancel">Cancel</button>
       </div>
     </form>
   </dialog>
@@ -568,6 +581,6 @@ Use your camera or upload a photo of a frame.</div>
 
   <div class="toast-region" id="toastRegion" role="status" aria-live="polite"></div>
 
-  <script type="module" src="app.js?v=9"></script>
+  <script type="module" src="app.js?v=10"></script>
 </body>
 </html>
