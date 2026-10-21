@@ -2,27 +2,31 @@
 
 These steps need your Google account, so only you can do them. Nothing needs installing on your computer, and **no billing account is needed**.
 
-- Firebase project used by the site: **frame-studio-ad5ed** (from `firebase-config.js` and `.firebaserc`).
-- Live site: **https://saraideshmukh.github.io/framesstudio/** (stays as it is until you merge the pull request in part D).
+- Live site: **https://saraideshmukh.github.io/framesstudio/** (the multi-shop version has been live since 21 Oct 2026). Until parts A–C are done, the demo frames work but shops, sign-in and the dashboards can't load.
+- Firebase project the site is connected to: **frame-studio-ad5ed** (set in `firebase-config.js` and `.firebaserc`).
 - Never put a service-account key, password or other secret in the repository. The values in `firebase-config.js` are public identifiers, not secrets; the security rules are what protect the data.
 
 ---
 
-## A. Create the Firestore database (Firebase console, about 5 minutes)
+## A. Check the connection, then create the Firestore database (Firebase console, about 10 minutes)
 
-Open https://console.firebase.google.com/project/frame-studio-ad5ed and check the bottom of the left sidebar says **Spark**.
+Open https://console.firebase.google.com/project/frame-studio-ad5ed and check the bottom of the left sidebar says **Spark** (free).
+
+**Check the site points at this project.** Click the gear → **Project settings → General → Your apps**. There should be a web app (`</>`). Under **SDK setup and configuration → Config**, the `apiKey`, `projectId` and `appId` should match `firebase-config.js` (`AIzaSyAgni5…`, `frame-studio-ad5ed`, `1:439341097240:web:d3c5265e…`). If there's no web app, or the values differ, add one with **Add app → Web**, and send me the new config (it's safe to share) so I can update `firebase-config.js`.
+
+**Create the database:**
 
 1. **Build → Firestore Database → Create database.**
 2. **Edition:** choose **Standard**.
 3. **Database ID:** leave it as **(default)**. Only one database per project gets the free quota, and the site uses the default one.
-4. **Location:** choose **asia-south1 (Mumbai)**. It's the closest to customers in India (asia-south2, Delhi, is similar). The free quota doesn't depend on the location. **The location can't be changed later.** It doesn't tie you to anything for Cloud Storage: if you add Storage on Blaze later, its bucket location is chosen separately (us-central1 for the free Storage tier).
+4. **Location:** choose **asia-south1 (Mumbai)**. It's the closest to customers in India (asia-south2, Delhi, is similar). The free quota doesn't depend on the location. **The location can't be changed later.** It doesn't tie you to anything for Cloud Storage: if you add Storage on Blaze later, its bucket location is chosen separately.
 5. **Rules:** choose **Start in production mode** (everything locked). The real rules are deployed in part B.
 6. Click **Create** and wait until the empty database appears.
 
-Then, still in the console:
+**Sign-in:**
 
-7. **Build → Authentication → Sign-in method:** make sure **Email/Password** is on, and turn on **Anonymous** (used only so one device can send at most one "Report this listing" a minute; it collects nothing about the person).
-8. **Authentication → Settings → Authorised domains:** check that `saraideshmukh.github.io` is listed.
+7. **Build → Authentication → Get started** (if shown) **→ Sign-in method:** turn on **Email/Password** (only the first switch, not "Email link"), and turn on **Anonymous** (used only so one device can send at most one "Report this listing" a minute; it collects nothing about the person).
+8. **Authentication → Settings → Authorised domains:** check that `saraideshmukh.github.io` is listed; if not, **Add domain** and enter it.
 
 Don't turn on Storage: it isn't available on Spark, and the site doesn't need it there.
 
@@ -33,34 +37,37 @@ Open Cloud Shell, a free terminal in your browser: https://console.cloud.google.
 Paste these lines one at a time:
 
 ```bash
-git clone -b multi-retailer-platform https://github.com/SaraiDeshmukh/framesstudio.git
+git clone https://github.com/SaraiDeshmukh/framesstudio.git
 cd framesstudio
 npx -y firebase-tools@15.33.0 deploy --only firestore:rules,firestore:indexes --project frame-studio-ad5ed
 ```
 
-- If it asks you to log in, run `npx -y firebase-tools@15.33.0 login --no-localhost`, follow the link, then run the deploy line again.
-- It ends with **Deploy complete!** The indexes then take a few minutes to build; until they're ready, some lists in the dashboards may show an error.
+- If it asks you to log in, run `npx -y firebase-tools@15.33.0 login --no-localhost`, follow the link, sign in with the same Google account, paste the code back, then run the deploy line again.
+- If it asks whether to delete indexes that aren't in the file, answer **N**.
+- It ends with **Deploy complete!** The indexes then take a few minutes to build (Firestore Database → **Indexes** shows "Building" then "Enabled"); until they're ready, some lists in the dashboards may show an error.
 - Don't add `storage` to the deploy line on Spark: there is no Storage bucket, so that part would fail.
+- Run the same three lines again whenever the rules change in the repository (`git pull` instead of `git clone` the second time).
 
 ## C. Make yourself the administrator
 
 The rules only treat someone as the administrator if a document for them exists in `admins`, and nobody can create one from the website.
 
-1. Open the preview, **https://saraideshmukh.github.io/framesstudio/preview/**, click **For shops** and sign up (or sign in) with your email; verify the email if asked.
-2. In the console: **Authentication → Users**, copy your **User UID**.
-3. **Firestore Database → Data → Start collection**. Collection ID `admins`, document ID = your UID, one field `email` (string) = your email. **Save**.
+1. Open **https://saraideshmukh.github.io/framesstudio/**, click **For shops**, and **sign up** with your email and a password. Open the verification email and click the link, then go back to the site and press **I’ve confirmed it**.
+2. In the Firebase console: **Authentication → Users**, find your email and copy its **User UID**.
+3. **Firestore Database → Data → Start collection**. Collection ID `admins` → **Next**. Document ID: paste your UID. Add one field: `email`, type string, value your email. **Save**.
+4. Reload the site. **Account** (top right) now shows **Admin**.
 
-## D. Try the preview, then go live
+## D. First run on the live site
 
-Merge the pull request **Preview of the free-plan version at /preview/** on GitHub; a minute or two later the new version is at **https://saraideshmukh.github.io/framesstudio/preview/**. It uses the same Firebase project, so once A–C are done everything there is real. (The live site at the root doesn't change.)
-
-1. On the preview, go to **#/admin → Overview → Initialise platform settings** (records the terms and privacy versions and default settings).
+1. **Account → Admin → Overview → Initialise platform settings** (records the terms and privacy versions and default settings; shops can't apply before this).
 2. **Account → Shop dashboard**: apply for your own shop, fill in the profile, accept the terms, submit.
-3. **#/admin → Shops → Approve** your shop.
-4. **Shop dashboard → Frames → Add a frame**: add one, take or upload its photo, set price and GST, publish. (Or **Import → Copy old frames** if the old site's frames are in this database.)
-5. Check it as a customer: **Shops** → your shop → a frame → try it on, on a phone and on the kiosk.
-6. **Shop dashboard → Shop profile → QR code for customers → Open link** on your phone (or scan the *test* address shown under it). The printed code points to the main site, so it shows your frames once step 7 is done.
-7. When happy: on GitHub, open the pull request **Multi-retailer platform** and click **Merge**. GitHub Pages updates the live site in a minute or two.
+3. **Admin → Shops → Waiting for review → Approve** your shop.
+4. **Shop dashboard → Frames → Add a frame**: fill in the details, take or upload its photo, set price and GST, tick the confirmation, publish. (Or **Import → Copy old frames** if old-site frames exist in this database.)
+5. Check it as a customer, on your phone: **Shops** → your shop → a frame → **Try on**.
+6. **Shop dashboard → Shop profile → QR code for customers**: scan it with your phone, then **Print poster** (part E).
+7. **Admin → Overview**: the "Free plan" bar should show a tiny amount used.
+
+If something doesn't load, see "If something goes wrong" at the end.
 
 ## E. Give each shop its QR code
 
@@ -117,3 +124,16 @@ Do this when the checks above say it's time.
 - Have a lawyer review `legal/*.html` and fill in the highlighted blanks (operator name, grievance officer, city, and the Firestore location you chose in part A). `LEGAL-REVIEW.md` lists what to check.
 - Have a native speaker read the Hindi and Marathi text.
 - Try the live camera on a real phone and on the kiosk.
+
+## If something goes wrong
+
+| What you see | Usually means | Fix |
+|---|---|---|
+| Shops page says shops couldn't load; sign-up works but nothing else | Rules not deployed yet, or the database isn't created | Parts A and B |
+| "Missing or insufficient permissions" in a dashboard | Rules not deployed, or you're not in `admins` | Part B; part C step 3 (document ID must be exactly your UID) |
+| A list shows an error that mentions an index | Indexes still building | Wait 5–10 minutes (Firestore → Indexes) |
+| Sign-up says the operation isn't allowed | Email/Password sign-in is off | Part A step 7 |
+| Sign-in fails with "unauthorised domain" | `saraideshmukh.github.io` missing | Part A step 8 |
+| "Report this listing" fails | Anonymous sign-in is off | Part A step 7 |
+| Frames "couldn't load" in the afternoon/evening on a busy day | A free daily limit was reached | Resets about 13:30 IST; see "How you'll know it's time to upgrade" |
+
