@@ -14,7 +14,9 @@ Open https://console.firebase.google.com/project/frame-studio-ad5ed and check th
 
 **Check the site points at this project.** Click the gear → **Project settings → General → Your apps**. There should be a web app (`</>`). Under **SDK setup and configuration → Config**, the `apiKey`, `projectId` and `appId` should match `firebase-config.js` (`AIzaSyAgni5…`, `frame-studio-ad5ed`, `1:439341097240:web:d3c5265e…`). If there's no web app, or the values differ, add one with **Add app → Web**, and send me the new config (it's safe to share) so I can update `firebase-config.js`.
 
-**Create the database:**
+**The database:** the project already has a **(default)** Firestore database from the earlier single-shop site (with `users/<uid>/frames` and `framesFull` inside). Keep it: don't create a second one or delete anything. Only the (default) database gets the free quota, and the old frames can be copied into your shop later (**Shop dashboard → Import → Copy old frames**). Its location is shown under **Firestore Database → (default) → database details**; note it for the privacy policy. Then go straight to step 7.
+
+If a project ever has no database yet:
 
 1. **Build → Firestore Database → Create database.**
 2. **Edition:** choose **Standard**.
@@ -53,7 +55,7 @@ npx -y firebase-tools@15.33.0 deploy --only firestore:rules,firestore:indexes --
 The rules only treat someone as the administrator if a document for them exists in `admins`, and nobody can create one from the website.
 
 1. Open **https://saraideshmukh.github.io/framesstudio/**, click **For shops**, and **sign up** with your email and a password. Open the verification email and click the link, then go back to the site and press **I’ve confirmed it**.
-2. In the Firebase console: **Authentication → Users**, find your email and copy its **User UID**.
+2. In the Firebase console: **Authentication → Users**, find your email and copy its **User UID**. (If you used the old site, your account is already there; its UID is also the document name under `users` in Firestore.)
 3. **Firestore Database → Data → Start collection**. Collection ID `admins` → **Next**. Document ID: paste your UID. Add one field: `email`, type string, value your email. **Save**.
 4. Reload the site. **Account** (top right) now shows **Admin**.
 
