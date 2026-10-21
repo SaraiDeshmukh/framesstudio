@@ -1407,3 +1407,59 @@ Object.assign(S.mr, {
   'cat.more.other': 'आणखी {n} फ्रेम दाखवा',
   'cat.more.one': 'आणखी 1 फ्रेम दाखवा'
 });
+
+// A shop's QR code for customers (shop dashboard, admin, printed poster).
+Object.assign(S.en, {
+  'qr.title': 'QR code for customers',
+  'qr.text': 'Customers scan this with their phone camera. It opens your frames on their phone, and they can try them on there. No app, no sign-in, and their camera stays on their phone. Put it on the counter, the display shelves or the window.',
+  'qr.afterApproval': 'Your QR code for customers appears here once your shop is approved.',
+  'qr.alt': 'QR code: {shop} frames and try-on',
+  'qr.download': 'Download QR (PNG)',
+  'qr.print': 'Print poster',
+  'qr.copy': 'Copy link',
+  'qr.copied': 'Link copied.',
+  'qr.open': 'Open link',
+  'qr.tips': 'Print it at least 3 cm wide (5 cm or more is easier to scan) and test it with a phone before putting it up. The code never changes, so a printed poster keeps working when you add or edit frames.',
+  'qr.testHere': 'Testing this copy of the site? Use this address instead (don’t print it):',
+  'qr.poster.head.en': 'Scan to try on our frames',
+  'qr.poster.head.hi': 'हमारे फ्रेम पहनकर देखने के लिए स्कैन करें',
+  'qr.poster.head.mr': 'आमच्या फ्रेम घालून पाहण्यासाठी स्कॅन करा',
+  'qr.poster.step1': 'Open your phone camera and point it at the code.',
+  'qr.poster.step2': 'Tap the link that appears, then choose a frame.',
+  'qr.poster.step3': 'Press “Try on” to see it on your face. Ask us about any frame you like.',
+  'qr.poster.privacy': 'Your camera stays on your phone. No photos are taken, sent or saved.'
+});
+Object.assign(S.hi, {
+  'qr.title': 'ग्राहकों के लिए QR कोड',
+  'qr.text': 'ग्राहक इसे अपने फ़ोन के कैमरे से स्कैन करते हैं। इससे उनके फ़ोन पर आपके फ्रेम खुलते हैं, और वे वहीं उन्हें पहनकर देख सकते हैं। कोई ऐप या साइन इन नहीं, और उनका कैमरा उनके फ़ोन पर ही रहता है। इसे काउंटर, डिस्प्ले शेल्फ़ या खिड़की पर लगाएँ।',
+  'qr.afterApproval': 'आपकी दुकान स्वीकृत होने के बाद ग्राहकों के लिए आपका QR कोड यहाँ दिखेगा।',
+  'qr.alt': 'QR कोड: {shop} के फ्रेम और ट्राय-ऑन',
+  'qr.download': 'QR डाउनलोड करें (PNG)',
+  'qr.print': 'पोस्टर प्रिंट करें',
+  'qr.copy': 'लिंक कॉपी करें',
+  'qr.copied': 'लिंक कॉपी हो गया।',
+  'qr.open': 'लिंक खोलें',
+  'qr.tips': 'इसे कम से कम 3 सेमी चौड़ा प्रिंट करें (5 सेमी या उससे बड़ा स्कैन करने में आसान है) और लगाने से पहले फ़ोन से जाँच लें। कोड कभी नहीं बदलता, इसलिए फ्रेम जोड़ने या बदलने पर भी छपा पोस्टर काम करता रहेगा।',
+  'qr.testHere': 'साइट की इस कॉपी को जाँच रहे हैं? इसकी जगह यह पता इस्तेमाल करें (इसे प्रिंट न करें):',
+  'qr.poster.step1': 'अपने फ़ोन का कैमरा खोलें और कोड की तरफ़ करें।',
+  'qr.poster.step2': 'दिखने वाले लिंक पर टैप करें, फिर कोई फ्रेम चुनें।',
+  'qr.poster.step3': 'अपने चेहरे पर देखने के लिए “पहनकर देखें” दबाएँ। पसंद आए किसी भी फ्रेम के बारे में हमसे पूछें।',
+  'qr.poster.privacy': 'आपका कैमरा आपके फ़ोन पर ही रहता है। कोई फ़ोटो न ली जाती है, न भेजी जाती है, न सेव होती है।'
+});
+Object.assign(S.mr, {
+  'qr.title': 'ग्राहकांसाठी QR कोड',
+  'qr.text': 'ग्राहक हा त्यांच्या फोनच्या कॅमेऱ्याने स्कॅन करतात. त्यामुळे त्यांच्या फोनवर तुमच्या फ्रेम उघडतात आणि ते तिथेच त्या घालून पाहू शकतात. कोणतेही ॲप किंवा साइन इन नाही, आणि त्यांचा कॅमेरा त्यांच्या फोनवरच राहतो. हा काउंटर, डिस्प्ले शेल्फ किंवा खिडकीवर लावा.',
+  'qr.afterApproval': 'तुमचे दुकान मंजूर झाल्यावर ग्राहकांसाठी तुमचा QR कोड इथे दिसेल.',
+  'qr.alt': 'QR कोड: {shop} च्या फ्रेम आणि ट्राय-ऑन',
+  'qr.download': 'QR डाउनलोड करा (PNG)',
+  'qr.print': 'पोस्टर प्रिंट करा',
+  'qr.copy': 'लिंक कॉपी करा',
+  'qr.copied': 'लिंक कॉपी झाली.',
+  'qr.open': 'लिंक उघडा',
+  'qr.tips': 'हा किमान 3 सेमी रुंद प्रिंट करा (5 सेमी किंवा मोठा स्कॅन करायला सोपा) आणि लावण्याआधी फोनने तपासा. कोड कधीच बदलत नाही, त्यामुळे फ्रेम जोडल्या किंवा बदलल्या तरी छापलेले पोस्टर चालू राहील.',
+  'qr.testHere': 'साइटची ही प्रत तपासत आहात? त्याऐवजी हा पत्ता वापरा (हा प्रिंट करू नका):',
+  'qr.poster.step1': 'तुमच्या फोनचा कॅमेरा उघडा आणि कोडकडे धरा.',
+  'qr.poster.step2': 'दिसणाऱ्या लिंकवर टॅप करा, मग एखादी फ्रेम निवडा.',
+  'qr.poster.step3': 'तुमच्या चेहऱ्यावर पाहण्यासाठी “घालून पाहा” दाबा. आवडलेल्या कोणत्याही फ्रेमबद्दल आम्हाला विचारा.',
+  'qr.poster.privacy': 'तुमचा कॅमेरा तुमच्या फोनवरच राहतो. कोणताही फोटो घेतला, पाठवला किंवा सेव्ह केला जात नाही.'
+});

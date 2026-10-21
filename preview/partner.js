@@ -13,6 +13,7 @@ import {
 } from './validation.js';
 import { cleanSize, sizeLabel } from './frame-size.js';
 import { LEGAL_DOCS } from './legal/versions.js';
+import { qrPanel, siteBase } from './qr.js';
 
 var MATERIALS = ['Acetate', 'Metal', 'Stainless steel', 'Titanium', 'TR90', 'Aluminium', 'Wood', 'Mixed'];
 
@@ -877,10 +878,12 @@ export function initPartner(root, ctx) {
       }).catch(function (e2) { console.error(e2); err.textContent = T('p.saveFailed'); err.classList.add('show'); }).then(function () { btn.disabled = false; });
     } }, [shopFields(s, st.priv, { note: true }), err, h('div', { class: 'row' }, [btn,
       s.status === 'approved' ? h('a', { class: 'btn secondary', href: ctx.hashFor({ name: 'browse', source: 'shop:' + s.id }), text: T('p.shop.view') }) : null])]);
+    var qr = s.status === 'approved' ? qrPanel(s, T, ctx.toast)
+      : h('section', { class: 'panel' }, [h('h2', { class: 'panel-title', text: T('qr.title') }), h('p', { class: 'hint', text: T('qr.afterApproval') })]);
     var kiosk = s.status === 'approved' ? h('div', { class: 'panel' }, [
       h('h2', { class: 'panel-title', text: T('p.kiosk.title') }),
       h('p', { class: 'hint', text: T('p.kiosk.text') }),
-      h('p', null, [h('code', { class: 'kiosk-link', text: location.origin + location.pathname + '#/shop/' + s.id + '?kiosk=1' })])
+      h('p', null, [h('code', { class: 'kiosk-link', text: siteBase() + '#/shop/' + encodeURIComponent(s.id) + '?kiosk=1' })])
     ]) : null;
     var acc = h('div', { class: 'panel' }, [
       h('h2', { class: 'panel-title', text: T('p.legal.title') }),
@@ -888,7 +891,7 @@ export function initPartner(root, ctx) {
       h('p', null, [h('a', { href: 'legal/retailer-terms.html', target: '_blank', rel: 'noopener', text: T('footer.retailerTerms') }), ' · ', h('a', { href: 'legal/privacy.html', target: '_blank', rel: 'noopener', text: T('footer.privacyPolicy') })]),
       h('p', { class: 'hint', text: T('p.legal.deletion') })
     ]);
-    page(T('p.tab.shop'), [statusBanner(), form, kiosk, acc], { tabs: true, sub: s.name });
+    page(T('p.tab.shop'), [statusBanner(), qr, form, kiosk, acc], { tabs: true, sub: s.name });
   }
 
   // ---------- import: a spreadsheet (CSV), or the old single-shop library ----------

@@ -254,6 +254,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       var m = /(?:^|&)pd=([0-9]+(?:[.,][0-9]+)?)/.exec(query);
       if (m) r.pd = parseFloat(m[1].replace(',', '.'));
       if (/(?:^|&)kiosk=1(?:&|$)/.test(query)) r.kiosk = true;
+      // a shop's QR code (scanned on a customer's own phone): the same "stay on
+      // this shop" mode as the in-store kiosk, for that browser tab
+      if (/(?:^|&)qr=1(?:&|$)/.test(query)) r.kiosk = true;
       r.hadQuery = true;
     }
     return r;
@@ -287,8 +290,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   window.addEventListener('popstate', onAddressChange);
   window.addEventListener('hashchange', onAddressChange);
 
-  // Kiosk: a shop's screen opened at #/shop/<id>?kiosk=1 stays on that shop
-  // (the logo and "Frames" lead back to it) for this browser tab.
+  // Kiosk: a shop's screen opened at #/shop/<id>?kiosk=1, or a customer's phone
+  // that scanned the shop's QR code (?qr=1), stays on that shop (the logo and
+  // "Frames" lead back to it, other shops aren't offered) for this browser tab.
   var kioskSource = null;
   try { kioskSource = sessionStorage.getItem('fts.kiosk') || null; } catch (e) { kioskSource = null; }
   function setKiosk(source) {
