@@ -410,7 +410,7 @@ export function initAdmin(root, ctx) {
       body.appendChild(h('section', { class: 'panel' }, [
         h('h2', { class: 'panel-title', text: 'Document versions' }),
         h('p', { class: 'hint', text: 'The text lives in the repository (legal/*.html, versions in legal/versions.js). After publishing a new version, require it here: partner shops must then accept it before changing their catalogue. Acceptance records are kept per version and can’t be edited or deleted.' }),
-        t,
+        h('div', { class: 'table-wrap' }, [t]),
         differs ? h('button', { type: 'button', class: 'btn primary', text: 'Require the versions on this site', onclick: function () {
           ask('Require new versions', 'Every partner shop will be asked to accept the new versions before they can change their catalogue.', 'Require', false, false).then(function (ok) {
             if (ok == null) return;

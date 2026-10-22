@@ -511,14 +511,14 @@ export function initPartner(root, ctx) {
       return;
     }
     if (!list.length) { wrap.appendChild(h('p', { class: 'hint', text: T('p.products.noMatch') })); return; }
-    var table = h('table', { class: 'dash-table' });
+    var table = h('table', { class: 'dash-table stack' });
     var all = h('input', { type: 'checkbox', 'aria-label': T('p.bulk.selectAll'), onchange: function (e) {
       list.slice(0, st.shown).forEach(function (p) { if (e.target.checked) st.selected[p.id] = true; else delete st.selected[p.id]; });
       redrawList();
     } });
     all.checked = list.slice(0, st.shown).every(function (p) { return st.selected[p.id]; });
     table.appendChild(h('thead', null, [h('tr', null, [
-      h('th', { scope: 'col', class: 'col-check' }, [all]), h('th', { scope: 'col', text: T('p.col.frame') }), h('th', { scope: 'col', text: T('p.col.price') }),
+      h('th', { scope: 'col', class: 'col-check', 'data-label': T('p.bulk.selectAll') }, [all]), h('th', { scope: 'col', text: T('p.col.frame') }), h('th', { scope: 'col', text: T('p.col.price') }),
       h('th', { scope: 'col', text: T('p.col.state') }), h('th', { scope: 'col', text: T('p.col.tryon') }), h('th', { scope: 'col', text: T('p.col.avail') }), h('th', { scope: 'col', class: 'visually-hidden', text: T('p.col.actions') })
     ])]));
     var tb = h('tbody');
@@ -530,11 +530,11 @@ export function initPartner(root, ctx) {
       tb.appendChild(h('tr', null, [
         h('td', { class: 'col-check' }, [cb]),
         h('td', null, [h('a', { class: 'dash-frame', href: ctx.hashFor({ name: 'partner', id: 'product', sub: p.id }) }, [thumb, h('span', null, [h('strong', { text: p.name || T('partner.untitled') }), p.sku ? h('span', { class: 'mono muted', text: ' ' + p.sku }) : null])])]),
-        h('td', { class: 'mono', text: payText(p) }),
+        h('td', { class: 'mono', text: payText(p), 'data-label': T('p.col.price') }),
         h('td', null, [h('span', { class: 'pill ' + stt.cls, text: T('p.state.' + stt.key) })]),
         h('td', null, [tryOnLabel(p), triedOn(p) ? h('span', { class: 'hint block', text: T('p.tryons.frame', { n: triedOn(p) }) }) : null]),
-        h('td', { text: p.availability ? T('avail.' + p.availability) : '—' }),
-        h('td', null, [h('a', { class: 'btn secondary small', href: ctx.hashFor({ name: 'partner', id: 'product', sub: p.id }), text: T('p.edit'), 'aria-label': T('p.editAria', { name: p.name || T('partner.untitled') }) })])
+        h('td', { text: p.availability ? T('avail.' + p.availability) : '—', 'data-label': T('p.col.avail') }),
+        h('td', { class: 'col-act' }, [h('a', { class: 'btn secondary small', href: ctx.hashFor({ name: 'partner', id: 'product', sub: p.id }), text: T('p.edit'), 'aria-label': T('p.editAria', { name: p.name || T('partner.untitled') }) })])
       ]));
     });
     table.appendChild(tb);
