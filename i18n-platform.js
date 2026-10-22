@@ -1463,3 +1463,53 @@ Object.assign(S.mr, {
   'qr.poster.step3': 'तुमच्या चेहऱ्यावर पाहण्यासाठी “घालून पाहा” दाबा. आवडलेल्या कोणत्याही फ्रेमबद्दल आम्हाला विचारा.',
   'qr.poster.privacy': 'तुमचा कॅमेरा तुमच्या फोनवरच राहतो. कोणताही फोटो घेतला, पाठवला किंवा सेव्ह केला जात नाही.'
 });
+
+// The admin managing a shop's frames; adding many frames from a photo package;
+// prices being optional when publishing.
+Object.assign(S.en, {
+  'p.acting.title': 'Admin: managing {shop}.',
+  'p.acting.text': 'Frames you add or change here belong to this shop.',
+  'p.acting.stop': 'Back to admin',
+  'p.acting.profile': 'The shop’s profile and private details are edited from the shop’s own account.',
+  'p.chk.optional': 'Optional:',
+  'p.chk.priceLater': '(optional: can be added later; customers see “Ask the shop for the price”)',
+  'p.pkg.title': 'Add many frames from a photo package',
+  'p.pkg.text': 'Choose the .zip of frame photos (with its frames.json), or all of its files. Each frame is added with its photo, details and, where prepared, its try-on cut-out. Frames already added from the same package are skipped.',
+  'p.pkg.publish': 'Publish them straight away (prices and GST can be added later; marked “in stock”)',
+  'p.pkg.choose': 'Choose package',
+  'p.pkg.reading': 'Reading the package…',
+  'p.pkg.found': '{n} frames found, {t} with try-on ready.',
+  'p.pkg.bad': '{n} frames are missing their photo files and will be skipped.',
+  'p.pkg.go': 'Add {n} frames',
+  'p.pkg.working': 'Adding {done} of {total}…',
+  'p.pkg.done': 'Done: {added} added ({tryOn} with try-on, {published} published), {skipped} already there, {failed} failed.',
+  'p.pkg.doneShort': '{added} frames added.',
+  'p.pkg.noIndex': 'This package has no frames.json, so it can’t be read.',
+  'p.pkg.unreadable': 'That file couldn’t be read as a photo package.'
+});
+Object.assign(S.hi, {
+  'p.chk.optional': 'वैकल्पिक:',
+  'p.chk.priceLater': '(वैकल्पिक: बाद में जोड़ सकते हैं; ग्राहकों को “कीमत के लिए दुकान से पूछें” दिखता है)',
+  'p.pkg.title': 'फ़ोटो पैकेज से कई फ्रेम जोड़ें',
+  'p.pkg.text': 'फ्रेम फ़ोटो की .zip फ़ाइल (frames.json सहित) या उसकी सभी फ़ाइलें चुनें। हर फ्रेम उसकी फ़ोटो, जानकारी और जहाँ तैयार हो, ट्राई-ऑन कट-आउट के साथ जुड़ता है। उसी पैकेज से पहले जोड़े गए फ्रेम छोड़ दिए जाते हैं।',
+  'p.pkg.publish': 'तुरंत प्रकाशित करें (कीमत और GST बाद में जोड़ सकते हैं; “स्टॉक में” के रूप में)',
+  'p.pkg.choose': 'पैकेज चुनें',
+  'p.pkg.reading': 'पैकेज पढ़ा जा रहा है…',
+  'p.pkg.found': '{n} फ्रेम मिले, {t} का ट्राई-ऑन तैयार।',
+  'p.pkg.go': '{n} फ्रेम जोड़ें',
+  'p.pkg.working': '{total} में से {done} जोड़े जा रहे हैं…',
+  'p.pkg.doneShort': '{added} फ्रेम जोड़े गए।'
+});
+Object.assign(S.mr, {
+  'p.chk.optional': 'पर्यायी:',
+  'p.chk.priceLater': '(पर्यायी: नंतर जोडता येईल; ग्राहकांना “किमतीसाठी दुकानात विचारा” दिसते)',
+  'p.pkg.title': 'फोटो पॅकेजमधून अनेक फ्रेम जोडा',
+  'p.pkg.text': 'फ्रेम फोटोंची .zip फाइल (frames.json सह) किंवा तिच्या सर्व फाइल निवडा. प्रत्येक फ्रेम तिचा फोटो, माहिती आणि तयार असल्यास ट्राय-ऑन कट-आउटसह जोडली जाते. त्याच पॅकेजमधून आधी जोडलेल्या फ्रेम वगळल्या जातात.',
+  'p.pkg.publish': 'लगेच प्रकाशित करा (किंमत आणि GST नंतर जोडता येईल; “स्टॉकमध्ये” म्हणून)',
+  'p.pkg.choose': 'पॅकेज निवडा',
+  'p.pkg.reading': 'पॅकेज वाचत आहे…',
+  'p.pkg.found': '{n} फ्रेम सापडल्या, {t} चे ट्राय-ऑन तयार.',
+  'p.pkg.go': '{n} फ्रेम जोडा',
+  'p.pkg.working': '{total} पैकी {done} जोडत आहे…',
+  'p.pkg.doneShort': '{added} फ्रेम जोडल्या.'
+});

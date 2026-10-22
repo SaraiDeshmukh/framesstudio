@@ -191,6 +191,9 @@ export function initAdmin(root, ctx) {
           if (!details.hidden && !details.dataset.loaded) loadShopDetails(s, details);
         } }),
         h('a', { class: 'btn secondary small', href: '#/admin/products', onclick: function () { st.prodFilter = 'shop:' + s.id; }, text: 'Listings' }),
+        s.status === 'approved' || s.status === 'pending' ? h('button', { type: 'button', class: 'btn primary small', text: 'Manage frames', onclick: function () {
+          ctx.setActingShop(s.id); ctx.navigate({ name: 'partner', id: 'products' });
+        } }) : null,
         s.status === 'approved' ? h('a', { class: 'btn secondary small', href: '#/shop/' + encodeURIComponent(s.id), text: 'Public page' }) : null
       ])),
       details

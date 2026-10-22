@@ -31,7 +31,7 @@ It runs on Firebase's free **Spark** plan: frame pictures are kept in Firestore,
 | `#/frame/<id>`, `#/try-on/<id>` | everyone | Frame page (price, GST, availability, shop contact) and try-on |
 | `#/shortlist` | everyone | Compare up to 6 frames (kept in that tab only) |
 | `#/partner` | shops | Sign in or up, apply, frames, shop profile, CSV import |
-| `#/admin` | admin only | Overview, shops, listings, reports, legal, settings, audit log |
+| `#/admin` | admin only | Overview, shops (and managing a shop's frames), listings, reports, legal, settings, audit log |
 | `#/shop/<id>?kiosk=1` | shop screens | One shop's frames on an in-store screen |
 | `#/shop/<id>?qr=1` | customers' phones | Opened by the shop's QR code: that shop's frames and try-on, staying on that shop |
 
@@ -43,6 +43,7 @@ It runs on Firebase's free **Spark** plan: frame pictures are kept in Firestore,
 - `backend.js`, `firebase-init.js`, `firebase-config.js`: Firebase data layer and configuration. The config values are public identifiers, not secrets. `imageStore` in `firebase-config.js` chooses where frame pictures go (`'firestore'` on Spark, `'storage'` on Blaze).
 - `catalogue-index.js`: each shop's catalogue index (what customers' pages read first)
 - `cache.js`: the browser cache (IndexedDB) that saves repeat reads
+- `photo-import.js`, `vendor/fflate.mjs` (MIT): adding many frames at once from a photo package (.zip); `scripts/prep-shop-photos.mjs` prepares one
 - `qr.js`, `vendor/qrcode-generator.mjs` (MIT): each shop's QR code, PNG download and printable poster, drawn in the browser (no outside QR service)
 - `firestore.rules`, `storage.rules`, `firestore.indexes.json`, `firebase.json`, `cors.json`: backend rules and settings, deployed as described in `SETUP.md`
 - `pricing.js`: prices in paise, GST inclusive, exclusive or none, at the shop's own rate (no default rate)

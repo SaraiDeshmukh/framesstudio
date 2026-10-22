@@ -82,12 +82,24 @@ Every approved shop has one, in **Shop dashboard → Shop profile → QR code fo
 
 Making and printing codes costs nothing. A scan is just a visit to the shop's page: about 10 database reads on a phone the first time, and almost none when the same phone scans again.
 
+## F. Adding many frames at once (photo package)
+
+A photo package is a `.zip` of frame photos with a `frames.json` listing each frame's name, brand, model, size and tags, and, where prepared, a try-on cut-out. Claude can prepare one from photos of a shop's display (`scripts/prep-shop-photos.mjs` makes the cut-outs with the site's own extraction).
+
+1. Sign in. As the **admin**: **Account → Admin → Shops → Approved → Manage frames** on the shop (a banner says which shop you're managing). As the **shop**: just open the Shop dashboard.
+2. Go to **Import → Add many frames from a photo package → Choose package**, pick the `.zip`, check the preview, and press **Add N frames**.
+3. "Publish them straight away" is ticked by default. Frames go live without a price ("Ask the shop for the price"); add prices and GST later in **Frames → a frame → 3. Price and GST**. Untick it to add them as drafts.
+4. Running the same package again only adds frames that are missing.
+
+Frames without a try-on cut-out are listed with their photo. To give one a try-on later: open the frame → **Replace or re-process photo** → use the original photo (kept privately) or take a new one.
+
 ## Where things are
 
 | You want to… | Go to |
 |---|---|
 | Try the demo (no sign-in) | **Demo frames** in the top bar, or `#/demo` |
-| Add or edit frames | **For shops** (sign in) → **Shop dashboard → Frames → Add a frame** |
+| Add or edit frames | **For shops** (sign in) → **Shop dashboard → Frames → Add a frame** (the admin: **Admin → Shops → Manage frames**) |
+| Add many frames from photos | **Shop dashboard → Import → Add many frames from a photo package** (part F) |
 | Approve shops, moderate listings, see reports and acceptance records | **Account → Admin** (`#/admin`), shown only to you |
 | Get a shop's QR code or poster for customers | Shop dashboard → **Shop profile** → **QR code for customers** (or Admin → Shops → Details) |
 | Put a shop's frames on a kiosk | Shop dashboard → **Shop profile** → kiosk link (`#/shop/<id>?kiosk=1`) |
