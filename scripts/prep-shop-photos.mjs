@@ -2,7 +2,10 @@
 // pipeline (as the Add-a-frame page does): extraction at 1000 px, cut-out,
 // fitting data, thumbnail. Used to bulk-load a shop's frames as drafts.
 //
-//   node scripts/prep-shop-photos.mjs <inDir of .png> <outDir>
+//   node scripts/prep-shop-photos.mjs <inDir of .png> <outDir> [settings.json]
+//
+// settings.json (optional): { <id>: { sens, rim, tr } } per photo, e.g. the
+// best settings found by scripts/sweep-extract.mjs.
 //
 // Writes <id>.cutout.png, <id>.thumb.png, <id>.photo-thumb.png, <id>.json
 // (manifest + extraction summary) for each photo, and summary.json.
@@ -33,6 +36,7 @@ function thumbnail(img, photo) {
 }
 
 var inDir = process.argv[2], outDir = process.argv[3];
+var settings = process.argv[4] ? JSON.parse(fs.readFileSync(process.argv[4], 'utf8')) : {};
 fs.mkdirSync(outDir, { recursive: true });
 var summary = [];
 fs.readdirSync(inDir).filter(function (f) { return f.endsWith('.png'); }).sort().forEach(function (f) {
@@ -40,7 +44,8 @@ fs.readdirSync(inDir).filter(function (f) { return f.endsWith('.png'); }).sort()
   var photo = readPNG(path.join(inDir, f));
   fs.writeFileSync(path.join(outDir, id + '.photo-thumb.png'), encodePNG(thumbnail(photo, true)));
   var r;
-  try { r = extractFrame(photo, { rimType: 'auto', translucent: 'auto' }); } catch (e) { r = { ok: false, code: 'error', reason: String(e && e.message || e) }; }
+  var o = settings[id] || {};
+  try { r = extractFrame(photo, { sensitivity: o.sens || 1, rimType: o.rim || 'auto', translucent: o.tr == null ? 'auto' : o.tr }); } catch (e) { r = { ok: false, code: 'error', reason: String(e && e.message || e) }; }
   var rec = { id: id, ok: !!r.ok, code: r.code || null, reason: r.reason || null };
   if (r.ok) {
     var level = r.representation.level;

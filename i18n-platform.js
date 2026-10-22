@@ -1513,3 +1513,20 @@ Object.assign(S.mr, {
   'p.pkg.working': '{total} पैकी {done} जोडत आहे…',
   'p.pkg.doneShort': '{added} फ्रेम जोडल्या.'
 });
+
+// Try-on counts (shop dashboard)
+Object.assign(S.en, {
+  'p.tryons.summary': 'Tried on {today} times today, {d30} in the last 30 days, {total} in all',
+  'p.tryons.frame': 'tried on {n}×',
+  'p.sort.tryons': 'Most tried on'
+});
+Object.assign(S.hi, {
+  'p.tryons.summary': 'आज {today} बार, पिछले 30 दिनों में {d30} बार, कुल {total} बार पहनकर देखा गया',
+  'p.tryons.frame': '{n} बार पहनकर देखा',
+  'p.sort.tryons': 'सबसे ज़्यादा पहनकर देखे गए'
+});
+Object.assign(S.mr, {
+  'p.tryons.summary': 'आज {today} वेळा, गेल्या 30 दिवसांत {d30} वेळा, एकूण {total} वेळा घालून पाहिले',
+  'p.tryons.frame': '{n} वेळा घालून पाहिले',
+  'p.sort.tryons': 'सर्वाधिक घालून पाहिलेले'
+});

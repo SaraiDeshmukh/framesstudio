@@ -111,6 +111,7 @@ export function initAdmin(root, ctx) {
         tile('Stored frame images', bytes(c.storageBytes), null, 'as recorded on products')
       ]));
       var pid = firebaseConfig.projectId;
+      kids.push(tryOnPanel());
       kids.push(freePlanPanel(c));
       kids.push(h('section', { class: 'panel' }, [
         h('h2', { class: 'panel-title', text: 'Usage and costs' }),
@@ -131,6 +132,68 @@ export function initAdmin(root, ctx) {
     });
   }
   function pick(d) { return { version: d.version, date: d.date }; }
+
+  // ---------- try-ons per shop ----------
+  function shopName(id) {
+    if (id === 'demo') return Promise.resolve('Demo frames');
+    if (st.shops[id]) return Promise.resolve(st.shops[id].name);
+    return B.getShop(id).then(function (s) { if (s) st.shops[id] = s; return s ? s.name : id; }).catch(function () { return id; });
+  }
+  function tryOnPanel() {
+    var box = h('section', { class: 'panel' }, [h('h2', { class: 'panel-title', text: 'Try-ons per shop' }), msg('Loading…')]);
+    B.adminListTryOns().then(function (list) {
+      return Promise.all(list.map(function (t) { return shopName(t.shopId).then(function (n) { t.name = n; return t; }); }));
+    }).then(function (list) {
+      box.innerHTML = '';
+      box.appendChild(h('h2', { class: 'panel-title', text: 'Try-ons per shop' }));
+      box.appendChild(h('p', { class: 'hint', text: 'A try-on is counted once per frame per visit, when the frame is first shown on a customer’s face (camera or photo). Shops’ own previews and yours aren’t counted. Days are India time.' }));
+      if (!list.length) { box.appendChild(h('p', { class: 'hint', text: 'No try-ons counted yet.' })); return; }
+      list.sort(function (a, b) { return b.last30 - a.last30 || b.total - a.total; });
+      var sum = { today: 0, last7: 0, last30: 0, total: 0 };
+      var tb = h('tbody');
+      list.forEach(function (t) {
+        ['today', 'last7', 'last30', 'total'].forEach(function (k) { sum[k] += t[k]; });
+        tb.appendChild(h('tr', null, [h('th', { scope: 'row', text: t.name }), h('td', { class: 'num', text: String(t.today) }), h('td', { class: 'num', text: String(t.last7) }),
+          h('td', { class: 'num', text: String(t.last30) }), h('td', { class: 'num', text: String(t.total) + (t.before ? ' (incl. ' + t.before + ' earlier)' : '') })]));
+      });
+      tb.appendChild(h('tr', { class: 'sum-row' }, [h('th', { scope: 'row', text: 'All' }), h('td', { class: 'num', text: String(sum.today) }), h('td', { class: 'num', text: String(sum.last7) }), h('td', { class: 'num', text: String(sum.last30) }), h('td', { class: 'num', text: String(sum.total) })]));
+      box.appendChild(h('div', { class: 'table-wrap' }, [h('table', { class: 'data-table tryon-table' }, [
+        h('thead', null, [h('tr', null, [h('th', { scope: 'col', text: 'Shop' }), h('th', { scope: 'col', class: 'num', text: 'Today' }), h('th', { scope: 'col', class: 'num', text: '7 days' }), h('th', { scope: 'col', class: 'num', text: '30 days' }), h('th', { scope: 'col', class: 'num', text: 'Total' })])]),
+        tb])]));
+      box.appendChild(h('p', { class: 'hint', text: 'Most-tried frames and earlier counts: Shops → Details.' }));
+    }).catch(function (e) { console.error(e); box.innerHTML = ''; box.appendChild(h('h2', { class: 'panel-title', text: 'Try-ons per shop' })); box.appendChild(msg('Couldn’t load try-on counts (are the latest rules deployed?).', 'message error')); });
+    return box;
+  }
+  // On a shop's details: its numbers, its most-tried frames, and try-ons counted before.
+  function shopTryOns(s) {
+    var box = h('div', { class: 'shop-tryons' }, [msg('Loading try-ons…')]);
+    Promise.all([B.getTryOnStats(s.id), B.getCatalogueIndex(s.id).catch(function () { return null; })]).then(function (r) {
+      var t = r[0], idx = r[1];
+      box.innerHTML = '';
+      box.appendChild(h('h3', { text: 'Try-ons' }));
+      box.appendChild(h('p', null, ['Today ' + t.today + ' · 7 days ' + t.last7 + ' · 30 days ' + t.last30 + ' · total ' + t.total + (t.before ? ' (incl. ' + t.before + ' counted earlier)' : '')]));
+      var top = Object.keys(t.frames).map(function (id) { return { id: id, n: t.frames[id] }; }).sort(function (a, b) { return b.n - a.n; }).slice(0, 10);
+      if (top.length) {
+        var ol = h('ol', { class: 'top-frames' });
+        top.forEach(function (f) {
+          var name = idx && idx.items && idx.items[f.id] ? idx.items[f.id].n : (ctx.demoName && /^demo-/.test(f.id) ? ctx.demoName(f.id) : f.id);
+          ol.appendChild(h('li', null, [h('a', { href: ctx.hashFor({ name: 'detail', id: f.id }), text: name || f.id }), ' — ' + f.n]));
+        });
+        box.appendChild(h('p', { class: 'hint', text: 'Most tried on:' }));
+        box.appendChild(ol);
+      }
+      var inp = h('input', { type: 'number', min: '0', max: '1000000', step: '1', value: String(t.before || 0), id: 'before-' + s.id, class: 'num-input' });
+      box.appendChild(h('div', { class: 'row' }, [
+        h('label', { for: 'before-' + s.id, text: 'Try-ons counted before this counter (e.g. from the old site’s analytics): ' }), inp,
+        h('button', { type: 'button', class: 'btn secondary small', text: 'Save', onclick: function () {
+          var n = parseInt(inp.value, 10);
+          if (!(n >= 0)) { ctx.toast('Enter a number.', 'error'); return; }
+          B.adminSetEarlierTryOns(s.id, n).then(function () { ctx.toast('Saved.'); }).catch(fail);
+        } })
+      ]));
+    }).catch(function (e) { console.error(e); box.innerHTML = ''; box.appendChild(msg('Couldn’t load try-ons.', 'message error')); });
+    return box;
+  }
 
   // ---------- the free plan: how full it is, and when to move to Blaze ----------
   // Firestore's free (Spark) limits, checked 18 Oct 2026 (see COSTS.md).
@@ -234,6 +297,7 @@ export function initAdmin(root, ctx) {
       row('Accepted', acc.map(function (a) { return a.doc + ' v' + a.version + ' (' + when(a.acceptedMs) + ')'; }).join('; ') || 'none on record');
       row('Shop id', s.id);
       el.appendChild(dl);
+      el.appendChild(shopTryOns(s));
       if (s.status === 'approved') el.appendChild(qrPanel(s, ctx.t, ctx.toast));
     }).catch(function (e) { el.innerHTML = ''; el.appendChild(msg('Could not load details.', 'message error')); console.error(e); });
   }

@@ -20,7 +20,7 @@ import {
 } from 'https://www.gstatic.com/firebasejs/12.18.0/firebase-auth.js';
 import {
   doc, getDoc, getDocs, setDoc, updateDoc, deleteDoc, collection, query, where, orderBy, limit, startAfter,
-  writeBatch, serverTimestamp, getCountFromServer, getAggregateFromServer, sum, count, deleteField, FieldPath, Timestamp
+  writeBatch, serverTimestamp, getCountFromServer, getAggregateFromServer, sum, count, deleteField, FieldPath, Timestamp, increment
 } from 'https://www.gstatic.com/firebasejs/12.18.0/firebase-firestore.js';
 import {
   ref, uploadBytes, getDownloadURL, deleteObject, getBlob
@@ -756,6 +756,60 @@ export function fetchManifest(url) {
 }
 // The fitting data of a product, wherever it is stored.
 export function loadManifest(info) { return fileUrl(info).then(fetchManifest); }
+
+// ---------- try-on counts ----------
+// One document per shop (tryons/{shopId}; 'demo' for the demo frames) with
+// the number of try-ons in total, per day and per frame. A try-on is counted
+// once per frame per page visit, when the frame is first shown on a face
+// (live camera or photo). Nothing about the customer is stored: no account,
+// no device id, no cookie. One write each (the free plan allows 20,000 a day).
+
+function dayKey(d) {
+  // the shop's day: India time
+  var t = new Date((d || Date.now()) + 5.5 * 3600000);
+  return t.getUTCFullYear() + '-' + String(t.getUTCMonth() + 1).padStart(2, '0') + '-' + String(t.getUTCDate()).padStart(2, '0');
+}
+export { dayKey };
+var counted = {};
+export function recordTryOn(shopId, productId) {
+  if (!db || !shopId || !productId) return Promise.resolve(false);
+  var key = shopId + '/' + productId;
+  if (counted[key]) return Promise.resolve(false);
+  counted[key] = true;
+  var day = dayKey(), days = {}, frames = {};
+  days[day] = increment(1); frames[productId] = increment(1);
+  return setDoc(doc(db, 'tryons', shopId), { total: increment(1), days: days, frames: frames, lastDay: day, lastFrame: productId, updatedAt: serverTimestamp() }, { merge: true })
+    .then(function () { stats.writes++; return true; })
+    .catch(function (e) { console.warn('Try-on not counted', e && e.code); return false; });
+}
+function tryOnSummary(id, d) {
+  d = d || {};
+  var days = d.days || {}, today = dayKey(), now = Date.now();
+  function sinceDays(n) {
+    var s = 0;
+    for (var i = 0; i < n; i++) s += days[dayKey(now - i * 86400000)] || 0;
+    return s;
+  }
+  return {
+    shopId: id, total: (d.total || 0) + (d.before || 0), counted: d.total || 0, before: d.before || 0,
+    today: days[today] || 0, last7: sinceDays(7), last30: sinceDays(30), frames: d.frames || {}, days: days,
+    updatedMs: tsMillis(d.updatedAt)
+  };
+}
+// The shop's own numbers (the shop and the admin).
+export function getTryOnStats(shopId) {
+  return gd(doc(db, 'tryons', shopId)).then(function (s) { return tryOnSummary(shopId, s.exists() ? s.data() : null); });
+}
+// Every shop's numbers (admin): one read per shop.
+export function adminListTryOns() {
+  return gq(collection(db, 'tryons')).then(function (snap) { return snap.docs.map(function (d) { return tryOnSummary(d.id, d.data()); }); });
+}
+// Try-ons counted before this counter existed (e.g. by the old site's
+// analytics), added to the shop's total. Admin only.
+export function adminSetEarlierTryOns(shopId, n) {
+  return setDoc(doc(db, 'tryons', shopId), { before: Math.max(0, Math.min(1000000, Math.round(n) || 0)), updatedAt: serverTimestamp() }, { merge: true })
+    .then(function () { stats.writes++; return adminAudit('tryons.before', 'shop', shopId, String(n)); });
+}
 
 // ---------- reports of wrong or inappropriate listings ----------
 

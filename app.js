@@ -1106,6 +1106,18 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   // ---------- face photo / try-on (session-only, never persisted) ----------
 
+  // A frame shown on a face (live camera or photo) counts as one try-on for
+  // its shop: once per frame per page visit, never the shop's own previews.
+  function countTryOn(id) {
+    if (!CONFIGURED || !id || id === DRAFT_ID) return;
+    var e = findEntry(id);
+    if (!e || e.draft || previewIds[id]) return;
+    var shopId = e.demo ? 'demo' : e.shopId;
+    if (!shopId || (!e.demo && e.isPublic === false)) return;
+    if (!e.demo && currentUser && !currentUser.isAnonymous && (currentUser.uid === shopId || account.isAdmin)) return;
+    backend.recordTryOn(shopId, id);
+  }
+
   function redrawFacePreview() {
     if (!faceHasImage) { hidePhotoAr(); return; }
     ctx.setTransform(1, 0, 0, 1, 0, 0);
@@ -1118,6 +1130,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     }
     if (!activeFrameId || !photoOverlayOn) { hidePhotoAr(); return; }
     var thisId = activeFrameId;
+    countTryOn(thisId);
     var draw2d = function () {
       hidePhotoAr();
       getFullFrameData(thisId).then(function (full) {
@@ -2256,7 +2269,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (!live.overlayOn) { if (r3) r3.clear(); setLiveStatus(t('live.hidden')); return; }
 
     // 3D path: full head pose (turns, nods, tilts), perspective, occlusion
-    if (r3 && ar.failedKey !== activeFrameId) {
+    // (not for a frame prepared as a flat overlay: that one goes straight to 2D)
+    var flat = (findEntry(activeFrameId) || {}).level === '2d';
+    if (r3 && !flat && ar.failedKey !== activeFrameId) {
       if (ar.frameKey !== activeFrameId) {
         r3.clear();
         arUseFrame(activeFrameId);
@@ -2274,6 +2289,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       var sm = live.filter.update(pose3, now);
       r3.setSize(v.videoWidth, v.videoHeight);
       r3.renderFace(sm, lm);
+      countTryOn(activeFrameId);
       var turn = Math.abs(eulerFromMatrix(sm.R).yaw);
       setLiveStatus(turn > 1.0 ? t('live.turnBack') : '');
       return;
@@ -2288,6 +2304,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var tf = frameTransform(live.frame, pose, liveFit.value / 100 * trueSizeFactor(activeFrameId));
     if (!tf) { setLiveStatus(t('live.cantShow')); return; }
     setLiveStatus('');
+    countTryOn(activeFrameId);
     drawFrame(g, live.frame.img, tf);
   }
 

@@ -402,6 +402,46 @@ service cloud.firestore {
       allow delete: if isOwner(shopId) || isAdmin();
     }
 
+    // ---------- try-on counts ----------
+    // tryons/{shopId} ('demo' for the demo frames): how many times frames were
+    // tried on, in total, per day (India time) and per frame. Customers don't
+    // sign in, so anyone may add ONE try-on at a time: the total, that day and
+    // that frame each go up by exactly 1, for a day within a day of now.
+    // Nothing about the customer is stored. 'before' (try-ons counted before
+    // this existed) is set by the admin only. Read by the shop and the admin.
+    function tryOnDayOk(day) {
+      let p = day.split('-');
+      let t = timestamp.date(int(p[0]), int(p[1]), int(p[2]));
+      return day.matches('[0-9]{4}-[0-9]{2}-[0-9]{2}')
+        && t > request.time - duration.value(2, 'd') && t < request.time + duration.value(1, 'd');
+    }
+    function tryOnCountOk(n, o) {
+      return n.keys().hasOnly(['total', 'days', 'frames', 'lastDay', 'lastFrame', 'updatedAt', 'before'])
+        && n.lastDay is string && n.lastFrame is string && n.lastFrame.size() >= 1 && n.lastFrame.size() <= 64
+        && n.updatedAt == request.time && n.days is map && n.frames is map
+        && n.days.size() <= 1000 && n.frames.size() <= 5000
+        && tryOnDayOk(n.lastDay)
+        && n.total == o.get('total', 0) + 1
+        && n.days.diff(o.get('days', {})).affectedKeys().hasOnly([n.lastDay])
+        && n.days[n.lastDay] == o.get('days', {}).get(n.lastDay, 0) + 1
+        && n.frames.diff(o.get('frames', {})).affectedKeys().hasOnly([n.lastFrame])
+        && n.frames[n.lastFrame] == o.get('frames', {}).get(n.lastFrame, 0) + 1
+        && n.get('before', 0) == o.get('before', 0);
+    }
+    match /tryons/{shopId} {
+      allow get: if isOwner(shopId) || isAdmin();
+      allow list: if isAdmin();
+      allow create: if (shopId == 'demo' || exists(/databases/$(database)/documents/shops/$(shopId)))
+        && tryOnCountOk(request.resource.data, {});
+      allow update: if tryOnCountOk(request.resource.data, resource.data);
+      // the admin records try-ons counted before (only that number changes)
+      allow create, update: if isAdmin()
+        && request.resource.data.diff(resource == null ? {} : resource.data).affectedKeys().hasOnly(['before', 'updatedAt'])
+        && request.resource.data.before is int && request.resource.data.before >= 0 && request.resource.data.before <= 1000000
+        && request.resource.data.updatedAt == request.time;
+      allow delete: if isAdmin();
+    }
+
     // ---------- reports of wrong or inappropriate listings ----------
     // Anyone can report a public listing; a report needs a (possibly anonymous)
     // sign-in only so that one device can send at most one report a minute.
