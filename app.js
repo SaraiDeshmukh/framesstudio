@@ -200,7 +200,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   // Each view has its own address, so a refresh keeps people where they were
   // and Back works as expected:
   //   #/                 home, with the demo
-  //   #/demo             the demo frames      #/shops         participating shops
+  //   #/frames           every shop's frames  #/demo          the demo frames
+  //   #/shops            participating shops
   //   #/shop/<id>        a shop's frames      #/frame/<id>    a frame's page
   //   #/try-on/<id>      try-on               #/shortlist
   //   #/partner/...      the shop dashboard   #/admin/...     the admin dashboard
@@ -244,6 +245,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     else if (parts[0] === 'try-on') r = { name: 'tryon', id: parts[1] || null };
     else if (parts[0] === 'add') r = { name: 'add', id: parts[1] || null, sub: parts[2] || null };
     else if (parts[0] === 'shortlist') r = { name: 'shortlist', id: null };
+    else if (parts[0] === 'frames') r = { name: 'browse', id: null, source: 'all' };
     else if (parts[0] === 'demo') r = { name: 'browse', id: null, source: 'demo' };
     else if (parts[0] === 'shop' && parts[1]) r = { name: 'browse', id: null, source: 'shop:' + parts[1] };
     else if (parts[0] === 'shops') r = { name: 'shops', id: null };
@@ -269,7 +271,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (r.name === 'tryon') return '#/try-on' + (r.id ? '/' + encodeURIComponent(r.id) : '');
     if (r.name === 'add') return '#/add' + (r.id ? '/' + encodeURIComponent(r.id) + (r.sub ? '/' + r.sub : '') : '');
     if (r.name === 'shortlist') return '#/shortlist';
-    if (r.name === 'browse') return r.source && r.source.indexOf('shop:') === 0 ? '#/shop/' + encodeURIComponent(r.source.slice(5)) : '#/demo';
+    if (r.name === 'browse') return r.source && r.source.indexOf('shop:') === 0 ? '#/shop/' + encodeURIComponent(r.source.slice(5)) : r.source === 'demo' ? '#/demo' : '#/frames';
     if (r.name === 'shops') return '#/shops';
     if (r.name === 'partner') return '#/partner' + (r.id ? '/' + encodeURIComponent(r.id) + (r.sub ? '/' + encodeURIComponent(r.sub) : '') : '');
     if (r.name === 'admin') return '#/admin' + (r.id ? '/' + encodeURIComponent(r.id) : '');
@@ -309,8 +311,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     document.body.classList.toggle('kiosk', !!kioskSource);
     var brand = document.getElementById('brandLink');
     if (brand) brand.href = kioskSource ? hashFor({ name: 'browse', source: kioskSource }) : '#/';
-    tabBrowseBtn.href = kioskSource ? hashFor({ name: 'browse', source: kioskSource }) : '#/demo';
-    tabBrowseBtn.textContent = t(kioskSource ? 'nav.frames' : 'nav.demo');
+    tabBrowseBtn.href = kioskSource ? hashFor({ name: 'browse', source: kioskSource }) : '#/frames';
+    tabBrowseBtn.textContent = t('nav.frames');
   }
 
   // Admin only: which shop the shop dashboard is managing (this tab only). The
@@ -350,7 +352,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       renderHome();
       window.scrollTo(0, 0);
     } else if (r.name === 'browse') {
-      useSource(r.source || 'demo');
+      useSource(r.source || defaultSource());
       setTitle(sourceTitle());
       requestAnimationFrame(function () { window.scrollTo(0, prev && prev !== 'browse' ? catalogScrollY : 0); });
     } else if (r.name === 'detail') {
@@ -358,7 +360,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       renderDetail(r.id);
       window.scrollTo(0, 0);
     } else if (r.name === 'tryon') {
-      if (!sourceKey) useSource(kioskSource || 'demo');
+      if (!sourceKey) useSource(defaultSource());
       if (r.id) {
         ensureEntry(r.id).then(function () {
           if (view.name !== 'tryon' || view.id !== r.id) return;
@@ -414,7 +416,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   // Internal callers still think in tabs.
   function showTab(name) {
-    if (name === 'browse') { navigate({ name: 'browse', source: sourceKey || kioskSource || 'demo' }); return; }
+    if (name === 'browse') { navigate({ name: 'browse', source: sourceKey || defaultSource() }); return; }
     navigate({ name: name, id: null });
   }
 
@@ -424,8 +426,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       tryonBack.textContent = t('try.backTo', { name: frameName(from) });
       tryonBack.href = hashFor({ name: 'detail', id: from.id });
     } else {
-      tryonBack.textContent = t(sourceKey && sourceKey !== 'demo' ? 'try.allShopFrames' : 'try.allDemo');
-      tryonBack.href = hashFor({ name: 'browse', source: sourceKey || kioskSource || 'demo' });
+      tryonBack.textContent = t(sourceKey === 'all' ? 'try.allFrames' : sourceKey && sourceKey !== 'demo' ? 'try.allShopFrames' : 'try.allDemo');
+      tryonBack.href = hashFor({ name: 'browse', source: sourceKey || defaultSource() });
     }
   }
 
@@ -1256,7 +1258,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var noSel = !activeFrameId || !findEntry(activeFrameId);
     if (catalogLoaded && !catalogIndex.length) {
       noSelectionNote.style.display = 'flex';
-      noSelectionText.textContent = t('try.noFramesHere');
+      noSelectionText.textContent = t(sourceKey === 'all' ? 'try.noFramesAll' : 'try.noFramesHere');
       noSelectionBtn.style.display = 'inline-flex';
       noSelectionBtn.textContent = t('try.toDemo');
       noSelectionBtn.onclick = function () { useSource('demo'); renderLiveStrip(); updateTryOnHint(); };
@@ -2763,6 +2765,12 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
         m.textContent = meta;
         body.appendChild(m);
       }
+      if (sourceKey === 'all' && entry.shopId && shopOf(entry)) {
+        var sh = document.createElement('div');
+        sh.className = 'frame-card-shop';
+        sh.textContent = shopOf(entry).name;
+        body.appendChild(sh);
+      }
       if (entry.demo) {
         var badge = document.createElement('span');
         badge.className = 'demo-badge';
@@ -2860,7 +2868,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       b.textContent = t('cat.error.retry');
     } else {
       h.textContent = t('cat.empty.title');
-      emptyCatalogText.textContent = t(sourceKey && sourceKey !== 'demo' ? 'cat.empty.shop' : 'cat.empty.customer');
+      emptyCatalogText.textContent = t(sourceKey === 'all' ? 'cat.empty.all' : sourceKey && sourceKey !== 'demo' ? 'cat.empty.shop' : 'cat.empty.customer');
       var old = emptyCatalog.querySelector('button');
       if (old) old.parentNode.removeChild(old);
     }
@@ -2990,8 +2998,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (entry.shopId && !shop) {
       getShopInfo(entry.shopId).then(function (sh) { if (sh) { rememberShop(entry.shopId, sh); if (view.name === 'detail' && view.id === id) renderDetail(id); } });
     }
-    detailBack.href = entry.demo ? '#/demo' : hashFor({ name: 'browse', source: 'shop:' + entry.shopId });
-    detailBack.textContent = entry.demo ? t('detail.backDemo') : t('detail.backShop', { shop: shop ? shop.name : t('price.theShop') });
+    var fromAll = !entry.demo && sourceKey === 'all';      // opened from "Frames" (every shop)
+    detailBack.href = entry.demo ? '#/demo' : fromAll ? '#/frames' : hashFor({ name: 'browse', source: 'shop:' + entry.shopId });
+    detailBack.textContent = entry.demo ? t('detail.backDemo') : fromAll ? t('try.allFrames') : t('detail.backShop', { shop: shop ? shop.name : t('price.theShop') });
 
     var own = !entry.demo && currentUser && entry.shopId === currentUser.uid;
     if (!entry.demo && !entry.isPublic) {
@@ -3187,7 +3196,8 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (!entry || !entry.tryOnReady) return;
     // the picker shows the frames this one came from
     var src = entry.demo ? 'demo' : 'shop:' + entry.shopId;
-    if (sourceKey !== src && entry.isPublic !== false) useSource(src);
+    var inAll = sourceKey === 'all' && !entry.demo;
+    if (sourceKey !== src && !inAll && entry.isPublic !== false) useSource(src);
     var fromDetail = view.name === 'detail';
     selectFrame(id, { keepUrl: true });
     navigate({ name: 'tryon', id: id }, { from: fromDetail ? id : null });
@@ -3419,6 +3429,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   function sourceTitle() {
     if (sourceKey && sourceKey.indexOf('shop:') === 0) return sourceShop ? sourceShop.name : t('cat.shopFrames');
+    if (sourceKey === 'all') return t('cat.allTitle');
     return t('cat.demoTitle');
   }
 
@@ -3428,6 +3439,42 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   // normal) or 'paged' (no usable index: 24 products per query, newest first).
   var catalogMode = 'demo';
   var paged = { shopId: null, last: null, more: false, loadingAll: null, loadingMore: false };
+
+  // Where "Frames" and the try-on picker start: the kiosk's shop, else every
+  // shop's frames (the demo frames when no database is connected).
+  function defaultSource() { return kioskSource || (CONFIGURED ? 'all' : 'demo'); }
+
+  // Every approved shop's frames together: the shop list (cached) and one
+  // index per shop (cached); a shop without a usable index adds its newest page.
+  function loadAllShops(seq) {
+    return backend.listApprovedShops(100).then(function (shops) {
+      return Promise.all(shops.map(function (s) {
+        rememberShop(s.id, s);
+        return backend.getCatalogueIndex(s.id).then(function (idx) {
+          if (idx && !idx.overflow) {
+            return Object.keys(idx.items).filter(function (id) { return !missingIds[id]; }).map(function (id) {
+              var it = idx.items[id], old = entryMap[id];
+              if (old && !old.lite && old.shopId === s.id && old.updatedMs && old.updatedMs === it.u) return old;
+              return (entryMap[id] = entryFromItem(id, it, s.id));
+            });
+          }
+          return backend.listPublicProducts(s.id, { pageSize: PAGE_SIZE }).then(function (pg) {
+            return pg.items.map(function (p) { var e = productEntry(p); entryMap[e.id] = e; return e; });
+          });
+        }).catch(function (e) { console.warn('Could not load the frames of shop ' + s.id, e); return []; });
+      }));
+    }).then(function (lists) {
+      if (seq !== sourceSeq) return;
+      var all = [].concat.apply([], lists);
+      all.sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0) || (a.id < b.id ? -1 : 1); });
+      catalogMode = 'index';
+      catalogIndex = all;
+      browseTitle.textContent = sourceTitle();
+      if (view.name === 'browse') setTitle(sourceTitle());
+      renderBrowseIntro();
+      afterCatalogLoaded();
+    });
+  }
 
   var sourceSeq = 0;
   // Shows a source in the catalogue page (and the try-on picker).
@@ -3446,8 +3493,19 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       afterCatalogLoaded();
       return;
     }
-    var shopId = key.slice(5);
     if (!CONFIGURED) { showCatalogProblem(true); return; }
+    if (key === 'all') {
+      loadAllShops(seq).catch(function (e) {
+        if (seq !== sourceSeq) return;
+        console.error('Failed to load the frames', e);
+        catalogIndex = []; catalogLoaded = false;
+        showCatalogProblem(true);
+        updateCatalogNote(0);
+        updateTryOnHint();
+      });
+      return;
+    }
+    var shopId = key.slice(5);
     Promise.all([getShopInfo(shopId), backend.getCatalogueIndex(shopId)]).then(function (r) {
       if (seq !== sourceSeq) return null;
       var shop = r[0], idx = r[1];
@@ -3562,11 +3620,20 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   // Above the catalogue: what this is (the demo, or which shop and how to reach it).
   function renderBrowseIntro() {
     browseIntro.innerHTML = '';
-    if (!sourceKey || sourceKey === 'demo') {
+    if (!sourceKey || sourceKey === 'demo' || sourceKey === 'all') {
+      var demo = sourceKey !== 'all';
       var note = document.createElement('p');
-      note.className = 'demo-note';
-      note.textContent = t('cat.demoNote');
+      note.className = demo ? 'demo-note' : 'lede all-note';
+      note.textContent = t(demo ? 'cat.demoNote' : 'cat.allNote');
       browseIntro.appendChild(note);
+      // the other list, one click away (a shop's kiosk stays on its own frames)
+      if (!kioskSource && (CONFIGURED || !demo)) {
+        var other = document.createElement('a');
+        other.className = 'link-more source-switch';
+        other.href = demo ? '#/frames' : '#/demo';
+        other.textContent = t(demo ? 'cat.seeAll' : 'cat.seeDemo');
+        browseIntro.appendChild(other);
+      }
       return;
     }
     if (sourceShop) browseIntro.appendChild(shopCard(sourceShop, { full: true }));
@@ -3757,7 +3824,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   function forgetProduct(id) {
     var e = entryMap[id];
     // the shop's catalogue is read again (with its fresh index) next time it's shown
-    if (e && e.shopId && sourceKey === 'shop:' + e.shopId) sourceKey = null;
+    if (e && e.shopId && (sourceKey === 'shop:' + e.shopId || sourceKey === 'all')) sourceKey = null;
     delete entryMap[id]; delete fullDataCache[id]; arForget(id);
     catalogIndex = catalogIndex.filter(function (x) { return x.id !== id; });
   }
