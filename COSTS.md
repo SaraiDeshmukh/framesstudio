@@ -65,6 +65,8 @@ So about 0.4–0.9 MB per frame: **roughly 1,200–2,500 frames fit in the free 
 
 **Writes.** Saving a product is 2 writes (the product and the shop's index); adding a photographed frame is about 4–5. Far below 20,000 a day.
 
+**Try-on counts.** Each try-on a customer starts adds 1 write (one per frame per visit) and 1 read (the rules check the shop exists). Even 2,000 try-ons a day is a tenth of the free writes. The admin's "Try-ons per shop" panel reads one small document per shop.
+
 ## What still needs Blaze, and why
 
 | Feature | Works on Spark? |

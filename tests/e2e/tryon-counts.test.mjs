@@ -14,6 +14,9 @@ function today(off) {
 }
 const seed = buildSeed({ s1: { name: 'Alpha Opticals', count: 12 }, s2: { name: 'Beta Eyewear', count: 4 } });
 const T0 = { __ts: [1790000000, 0] };
+// one frame prepared as a flat overlay (its photo was too angled for 3D)
+seed['products/s2p002'].tryOn.level = '2d';
+seed['catalogues/s2'].items.s2p002.l = '2d';
 seed['tryons/s1'] = { total: 6, days: { [today()]: 2, [today(3)]: 3, [today(60)]: 1 }, frames: { s1p001: 5, s1p004: 1 }, lastDay: today(), lastFrame: 's1p001', updatedAt: T0 };
 seed['tryons/s2'] = { total: 1, days: { [today(1)]: 1 }, frames: { s2p000: 1 }, lastDay: today(1), lastFrame: 's2p000', updatedAt: T0 };
 const notGpu = (e) => !/WebGL|GPU|swiftshader/i.test(e);
@@ -49,6 +52,22 @@ test('a customer\'s live try-on is counted once per frame per visit', async () =
   c = await counts(page, 's2');
   assert.equal(c.total, 3, 'the same frame again in this visit isn\'t counted twice: ' + JSON.stringify(c));
   assert.equal(c.days[today()], 2);
+  await page.click('#liveStopBtn');
+  assert.deepEqual(errors.filter(notGpu), []);
+  await browser.close();
+});
+
+test('a frame prepared as a flat overlay is shown in the live try-on (and counted)', async () => {
+  const { browser, context } = await openBrowser({ fake: { seed }, viewport: { width: 390, height: 844 } });
+  const page = await context.newPage();
+  page.setDefaultTimeout(20000);
+  const errors = collectErrors(page);
+  await page.goto(origin + '/#/try-on/s2p002');
+  if (await page.isVisible('#liveStartBtn')) await page.click('#liveStartBtn');
+  await page.waitForFunction(() => window.__stubFaceCalls > 10);
+  await page.waitForFunction(() => (window.__fakeStore.get('tryons/s2') || {}).total === 2);
+  assert.equal((await counts(page, 's2')).frames.s2p002, 1);
+  assert.doesNotMatch(await page.textContent('#liveStatus'), /Preparing|can.t/i);
   await page.click('#liveStopBtn');
   assert.deepEqual(errors.filter(notGpu), []);
   await browser.close();

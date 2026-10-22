@@ -6,6 +6,7 @@
 //   <fid>.manifest.json   ... and its fitting data (both or neither)
 // frames.json: { "package": "<name>", "frames": [ { fid, name, brand, sku,
 //   frameType, material, colourName, tags, size, tryOn: bool, fit: {...} } ] }
+// (fit.prepared 'manual': a hand-made cut-out whose manifest has only the lens centres)
 // (scripts/prep-shop-photos.mjs prepares the cut-outs with the site's own
 // extraction, the same as the Add-a-frame page.)
 //
@@ -132,10 +133,13 @@ function importOne(B, shopId, pack, fr, opts) {
     var tryOn;
     if (fr.tryOn) {
       images.cutout = r[2]; images.manifest = r[3];
-      tryOn = { status: 'ready', level: fit.level === '2d' ? '2d' : '3d', prepared: 'auto',
-        quality: typeof fit.quality === 'number' ? fit.quality : null, rimType: fit.rimType || null,
-        translucent: fit.translucent == null ? null : !!fit.translucent,
-        warnings: (fit.warnings || []).slice(0, 30).map(String), hasSide: false, updatedAt: B.serverTime() };
+      // 'manual': a hand-made cut-out with its two lens centres, no fitting data
+      // (the same as a shop placing the lens centres itself on Add a frame)
+      var manual = fit.prepared === 'manual';
+      tryOn = { status: 'ready', level: fit.level === '2d' ? '2d' : '3d', prepared: manual ? 'manual' : 'auto',
+        quality: !manual && typeof fit.quality === 'number' ? fit.quality : null, rimType: manual ? null : fit.rimType || null,
+        translucent: manual || fit.translucent == null ? null : !!fit.translucent,
+        warnings: manual ? [] : (fit.warnings || []).slice(0, 30).map(String), hasSide: false, updatedAt: B.serverTime() };
     } else {
       // listed with its photo; the cut-out can be redone from the original in the dashboard
       tryOn = { status: 'none', error: 'cutout-needed', updatedAt: B.serverTime() };

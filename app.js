@@ -2269,7 +2269,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (!live.overlayOn) { if (r3) r3.clear(); setLiveStatus(t('live.hidden')); return; }
 
     // 3D path: full head pose (turns, nods, tilts), perspective, occlusion
-    if (r3 && ar.failedKey !== activeFrameId) {
+    // (not for a frame prepared as a flat overlay: that one goes straight to 2D)
+    var flat = (findEntry(activeFrameId) || {}).level === '2d';
+    if (r3 && !flat && ar.failedKey !== activeFrameId) {
       if (ar.frameKey !== activeFrameId) {
         r3.clear();
         arUseFrame(activeFrameId);

@@ -35,6 +35,8 @@ before(async () => {
       colourName: 'Black', tags: { shape: 'rectangle', color: 'black', gender: 'unisex', rim: 'fullrim', free: ['package'] },
       size: { eye: 50 + i, bridge: 18, temple: 140 }, tryOn, fit: tryOn ? { level: '3d', rimType: 'full', translucent: false, quality: 0.9, warnings: [], cut: { w: f.manifest.imgW, h: f.manifest.imgH } } : undefined,
       src: { w: f.manifest.imgW, h: f.manifest.imgH } });
+    // the second one: a hand-made cut-out with only its lens centres
+    if (i === 1) frames[1].fit = { level: '3d', prepared: 'manual', cut: { w: f.manifest.imgW, h: f.manifest.imgH } };
   });
   files['pkg/frames.json'] = new TextEncoder().encode(JSON.stringify({ package: 'test-pkg', frames }));
   files['__MACOSX/pkg/._frames.json'] = new Uint8Array([1, 2, 3]);
@@ -93,6 +95,8 @@ test('the admin opens a shop\'s dashboard from Admin → Shops and imports a pho
   const ready = mine.filter(([, p]) => p.tryOn.status === 'ready');
   assert.equal(ready.length, 2);
   for (const [, p] of ready) assert.ok(store['productFiles/' + p.images.cutout.fid] && p.images.manifest.data);
+  assert.deepEqual(ready.map(([, p]) => p.tryOn.prepared).sort(), ['auto', 'manual']);
+  assert.equal(ready.find(([, p]) => p.tryOn.prepared === 'manual')[1].tryOn.quality, null);
   assert.deepEqual(errors, []);
   afterImport = store;
   // a second run adds nothing

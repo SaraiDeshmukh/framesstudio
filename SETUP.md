@@ -93,6 +93,10 @@ A photo package is a `.zip` of frame photos with a `frames.json` listing each fr
 
 Frames without a try-on cut-out are listed with their photo. To give one a try-on later: open the frame → **Replace or re-process photo** → use the original photo (kept privately) or take a new one.
 
+## G. Try-on counts
+
+Every time a customer tries a frame on (camera or photo), it's counted for that shop: once per frame per visit, not the shop's own previews or yours. **Admin → Overview → Try-ons per shop** shows today, 7 days, 30 days and the total for each shop; **Admin → Shops → Details** shows a shop's most-tried frames and has a box for try-ons counted before this counter existed (for example from the old site's analytics), which is added to the total. Shops see their own numbers on their frames list and can sort by "most tried on". The counts need the rules from step B (deploy them again after updating).
+
 ## Where things are
 
 | You want to… | Go to |
