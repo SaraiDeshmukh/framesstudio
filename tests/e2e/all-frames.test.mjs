@@ -80,3 +80,18 @@ test('a shop\'s QR code still stays on that shop, without the switch', async () 
   assert.equal(await page.locator('#libraryRow .frame-card-shop').count(), 0);
   await browser.close();
 });
+
+test('with no shop frames yet, "Frames" shows the demo frames', async () => {
+  const empty = buildSeed({ s1: { name: 'Alpha Opticals', count: 0 } });
+  const { browser, context } = await openBrowser({ fake: { seed: empty } });
+  const page = await context.newPage();
+  page.setDefaultTimeout(20000);
+  const errors = collectErrors(page);
+  await page.goto(origin + '/#/frames');
+  await page.waitForSelector('#libraryRow .demo-card');
+  assert.equal(await page.textContent('#browseTitle'), 'Demo frames');
+  assert.equal(await page.locator('#libraryRow .frame-card').count(), await page.locator('#libraryRow .demo-card').count());
+  assert.equal(await page.locator('.source-switch').count(), 0, 'nothing to switch to');
+  assert.deepEqual(errors.filter(notGpu), []);
+  await browser.close();
+});

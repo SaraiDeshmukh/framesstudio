@@ -22,8 +22,8 @@ var visionModule = null, rendererModule = null, extractModule = null, partnerMod
 function loadVision() { return visionModule || (visionModule = import(MEDIAPIPE_URL).catch(function (e) { visionModule = null; throw e; })); }
 function loadRenderer() { return rendererModule || (rendererModule = import('./ar-renderer.js').catch(function (e) { rendererModule = null; throw e; })); }
 function loadExtract() { return extractModule || (extractModule = import('./frame-extract.js').catch(function (e) { extractModule = null; throw e; })); }
-function loadPartner() { return partnerModule || (partnerModule = import('./partner.js?v=1').catch(function (e) { partnerModule = null; throw e; })); }
-function loadAdmin() { return adminModule || (adminModule = import('./admin.js?v=1').catch(function (e) { adminModule = null; throw e; })); }
+function loadPartner() { return partnerModule || (partnerModule = import('./partner.js?v=2').catch(function (e) { partnerModule = null; throw e; })); }
+function loadAdmin() { return adminModule || (adminModule = import('./admin.js?v=2').catch(function (e) { adminModule = null; throw e; })); }
 function createTryOnRenderer() { return loadRenderer().then(function (m) { return m.createTryOnRenderer(); }); }
 
 // Privacy, in short (details in legal/privacy.html and README):
@@ -426,7 +426,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       tryonBack.textContent = t('try.backTo', { name: frameName(from) });
       tryonBack.href = hashFor({ name: 'detail', id: from.id });
     } else {
-      tryonBack.textContent = t(sourceKey === 'all' ? 'try.allFrames' : sourceKey && sourceKey !== 'demo' ? 'try.allShopFrames' : 'try.allDemo');
+      tryonBack.textContent = t(sourceKey === 'all' ? (allFellBack ? 'try.allDemo' : 'try.allFrames') : sourceKey && sourceKey !== 'demo' ? 'try.allShopFrames' : 'try.allDemo');
       tryonBack.href = hashFor({ name: 'browse', source: sourceKey || defaultSource() });
     }
   }
@@ -2708,7 +2708,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   // the cards on screen have their pictures loaded.
   function renderLibrary() {
     libraryRow.innerHTML = '';
-    var isShop = sourceKey && sourceKey !== 'demo';
+    var isShop = sourceKey && sourceKey !== 'demo' && !allFellBack;
     sortSelect.querySelectorAll('option[data-shop-only]').forEach(function (o) { o.hidden = !isShop; o.disabled = !isShop; });
     var filtering = activeFilterCount() > 0 || !!activeFilters.search;
     // without the shop's index, searching, filtering or another order needs every frame
@@ -3429,7 +3429,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
 
   function sourceTitle() {
     if (sourceKey && sourceKey.indexOf('shop:') === 0) return sourceShop ? sourceShop.name : t('cat.shopFrames');
-    if (sourceKey === 'all') return t('cat.allTitle');
+    if (sourceKey === 'all') return t(allFellBack ? 'cat.demoTitle' : 'cat.allTitle');
     return t('cat.demoTitle');
   }
 
@@ -3443,6 +3443,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   // Where "Frames" and the try-on picker start: the kiosk's shop, else every
   // shop's frames (the demo frames when no database is connected).
   function defaultSource() { return kioskSource || (CONFIGURED ? 'all' : 'demo'); }
+  var allFellBack = false;     // "Frames" is showing the demo frames because no shop has any yet
 
   // Every approved shop's frames together: the shop list (cached) and one
   // index per shop (cached); a shop without a usable index adds its newest page.
@@ -3467,8 +3468,10 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       if (seq !== sourceSeq) return;
       var all = [].concat.apply([], lists);
       all.sort(function (a, b) { return (b.createdAt || 0) - (a.createdAt || 0) || (a.id < b.id ? -1 : 1); });
-      catalogMode = 'index';
-      catalogIndex = all;
+      // no shop has published frames yet: show the demo frames instead
+      allFellBack = !all.length;
+      catalogMode = allFellBack ? 'demo' : 'index';
+      catalogIndex = allFellBack ? demoEntries() : all;
       browseTitle.textContent = sourceTitle();
       if (view.name === 'browse') setTitle(sourceTitle());
       renderBrowseIntro();
@@ -3483,6 +3486,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var seq = ++sourceSeq;
     sourceKey = key;
     sourceShop = null;
+    allFellBack = false;
     resetCatalogView();
     browseTitle.textContent = sourceTitle();
     renderBrowseIntro();
@@ -3621,13 +3625,13 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   function renderBrowseIntro() {
     browseIntro.innerHTML = '';
     if (!sourceKey || sourceKey === 'demo' || sourceKey === 'all') {
-      var demo = sourceKey !== 'all';
+      var demo = sourceKey !== 'all' || allFellBack;
       var note = document.createElement('p');
       note.className = demo ? 'demo-note' : 'lede all-note';
       note.textContent = t(demo ? 'cat.demoNote' : 'cat.allNote');
       browseIntro.appendChild(note);
       // the other list, one click away (a shop's kiosk stays on its own frames)
-      if (!kioskSource && (CONFIGURED || !demo)) {
+      if (!kioskSource && !allFellBack && (CONFIGURED || !demo)) {
         var other = document.createElement('a');
         other.className = 'link-more source-switch';
         other.href = demo ? '#/frames' : '#/demo';
