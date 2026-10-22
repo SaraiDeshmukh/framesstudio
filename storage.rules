@@ -42,7 +42,7 @@ service firebase.storage {
 
     match /shops/{shopId}/products/{productId}/{kind}/{file} {
       allow read: if isOwner(shopId) || isAdmin();
-      allow create, update: if isOwner(shopId)
+      allow create, update: if (isOwner(shopId) || isAdmin())
         && kind in ['source', 'assets']
         && okFile(kind, file)
         && shopActive(shopId)

@@ -14,6 +14,7 @@ import {
 import { cleanSize, sizeLabel } from './frame-size.js';
 import { LEGAL_DOCS } from './legal/versions.js';
 import { qrPanel, siteBase } from './qr.js';
+import { readPackage, parsePackage, importPackage } from './photo-import.js';
 
 var MATERIALS = ['Acetate', 'Metal', 'Stainless steel', 'Titanium', 'TR90', 'Aluminium', 'Wood', 'Mixed'];
 
@@ -65,15 +66,37 @@ export function initPartner(root, ctx) {
   // ---------- loading ----------
   function reset() {
     st.uid = null; st.shop = null; st.priv = null; st.accepted = {}; st.loaded = false; st.loading = null;
-    st.products = null; st.productsLoading = null; st.selected = {}; st.editing = null; st.csv = null;
+    st.products = null; st.productsLoading = null; st.selected = {}; st.editing = null; st.csv = null; st.acting = false;
+  }
+  // The admin can manage any shop's frames from this same dashboard (Admin →
+  // Shops → Manage frames). st.uid is then that shop's id; the server rules
+  // check that the signed-in account really is the admin.
+  function actingShopId() {
+    var id = ctx.actingShop ? ctx.actingShop() : null;
+    return id && ctx.isAdmin() ? id : null;
   }
   function loadAccount(force) {
     var u = user();
     if (!u) return Promise.resolve();
-    if (st.uid !== u.uid) reset();
+    var acting = actingShopId();
+    var target = acting || u.uid;
+    if (st.uid !== target) reset();
     if (st.loaded && !force) return Promise.resolve();
     if (st.loading && !force) return st.loading;
-    st.uid = u.uid;
+    st.uid = target;
+    if (acting) {
+      st.acting = true;
+      st.loading = Promise.all([
+        B.getConfig('legal').catch(function () { return null; }),
+        B.getConfig('platform').catch(function () { return null; }),
+        B.getShop(acting)
+      ]).then(function (r) {
+        st.legal = r[0]; st.platform = r[1]; st.shop = r[2]; st.priv = null; st.accepted = null;
+        if (!st.shop) throw Object.assign(new Error('No such shop'), { code: 'not-found' });
+        st.loaded = true; st.loading = null;
+      }).catch(function (e) { st.loading = null; throw e; });
+      return st.loading;
+    }
     st.loading = Promise.all([
       B.getConfig('legal').catch(function () { return null; }),
       B.getConfig('platform').catch(function () { return null; }),
@@ -117,6 +140,7 @@ export function initPartner(root, ctx) {
       opts && opts.sub ? h('p', { class: 'page-count', text: opts.sub }) : null
     ]);
     host.appendChild(head);
+    if (st.acting && st.shop) host.appendChild(actingBanner());
     if (opts && opts.tabs) host.appendChild(tabs());
     kids.forEach(function (k) { if (k) host.appendChild(k); });
   }
@@ -142,11 +166,14 @@ export function initPartner(root, ctx) {
     var u = user();
     if (!u) { renderSignIn(); return; }
     loadingPage();
+    if (ctx.actingShop && ctx.actingShop() && !ctx.adminChecked()) { setTimeout(function () { show(r); }, 300); return; }
     loadAccount().then(function () {
-      if (!st.shop && !u.emailVerified) { renderVerify(); return; }
-      if (!st.shop) { renderApply(); return; }
-      var missing = st.legal ? B.missingAcceptances(st.accepted, st.legal) : [];
-      if (missing.length) { renderAccept(missing); return; }
+      if (!st.acting) {
+        if (!st.shop && !u.emailVerified) { renderVerify(); return; }
+        if (!st.shop) { renderApply(); return; }
+        var missing = st.legal ? B.missingAcceptances(st.accepted, st.legal) : [];
+        if (missing.length) { renderAccept(missing); return; }
+      }
       var id = st.route.id || 'products';
       if (id === 'product') { st.tab = 'product'; renderProduct(st.route.sub); return; }
       st.tab = id === 'shop' || id === 'import' ? id : 'products';
@@ -346,6 +373,14 @@ export function initPartner(root, ctx) {
   }
 
   // ---------- status banner ----------
+  function actingBanner() {
+    return h('div', { class: 'notice acting-banner', role: 'status' }, [
+      h('strong', { text: T('p.acting.title', { shop: st.shop.name }) + ' ' }), T('p.acting.text') + ' ',
+      h('button', { type: 'button', class: 'btn secondary small', text: T('p.acting.stop'), onclick: function () {
+        ctx.setActingShop(null); reset(); ctx.navigate({ name: 'admin', id: 'shops' });
+      } })
+    ]);
+  }
   function statusBanner() {
     var s = st.shop;
     if (!s) return null;
@@ -401,7 +436,8 @@ export function initPartner(root, ctx) {
 
   function renderProducts() {
     page(st.shop.name, [statusBanner(), h('p', { class: 'page-count', role: 'status', text: T('cat.loading') })], { tabs: true, sub: T('p.dashboard') });
-    loadProducts().then(drawProducts).catch(errorPage);
+    // (only if the products page is still the one showing when they arrive)
+    loadProducts().then(function () { if (st.tab === 'products') drawProducts(); }).catch(function (e) { if (st.tab === 'products') errorPage(e); });
   }
 
   function selectEl(id, options, value, onchange, label) {
@@ -768,7 +804,8 @@ export function initPartner(root, ctx) {
       checklist.innerHTML = '';
       [['publish.needName', 'p.chk.name'], ['publish.needPrice', 'p.chk.price'], ['publish.needTaxConfirm', 'p.chk.tax'], ['publish.needAvailability', 'p.chk.avail'], ['publish.needPhoto', 'p.chk.photo'], ['publish.tryOnUnresolved', 'p.chk.tryon']].forEach(function (pair) {
         var bad = blockers.indexOf(pair[0]) !== -1 || (pair[0] === 'publish.tryOnUnresolved' && blockers.indexOf('publish.tryOnIncomplete') !== -1);
-        checklist.appendChild(h('li', { class: bad ? 'todo' : 'done' }, [h('span', { class: 'visually-hidden', text: bad ? T('p.chk.todo') : T('p.chk.done') }), T(pair[1])]));
+        var optional = pair[0] === 'publish.needPrice' && !bad && !c.pricing;
+        checklist.appendChild(h('li', { class: bad ? 'todo' : optional ? 'optional' : 'done' }, [h('span', { class: 'visually-hidden', text: bad ? T('p.chk.todo') : optional ? T('p.chk.optional') : T('p.chk.done') }), T(pair[1]) + (optional ? ' ' + T('p.chk.priceLater') : '')]));
       });
       if (blockers.indexOf('publish.suspended') !== -1) checklist.appendChild(h('li', { class: 'todo', text: T('p.chk.suspended') }));
       var want = c.status === 'published';
@@ -864,6 +901,11 @@ export function initPartner(root, ctx) {
   // ---------- shop profile ----------
   function renderShop() {
     var s = st.shop, rejected = s.status === 'rejected', suspended = s.status === 'suspended';
+    if (st.acting) {
+      page(T('p.tab.shop'), [statusBanner(), s.status === 'approved' ? qrPanel(s, T, ctx.toast) : null,
+        h('p', { class: 'hint', text: T('p.acting.profile') })], { tabs: true, sub: s.name });
+      return;
+    }
     var err = h('p', { class: 'form-error', role: 'alert' });
     var btn = h('button', { type: 'submit', class: 'btn primary', text: T(rejected ? 'p.shop.reapply' : 'p.save'), disabled: suspended ? true : null });
     var form = h('form', { novalidate: true, onsubmit: function (e) {
@@ -984,8 +1026,59 @@ export function initPartner(root, ctx) {
       h('p', { class: 'hint', text: T('p.legacy.text') }),
       legacyBtn, legacyOut
     ]);
-    page(T('p.tab.import'), [statusBanner(), csvPanel, legacyPanel], { tabs: true, sub: st.shop.name });
+    page(T('p.tab.import'), [statusBanner(), photoPackagePanel(), csvPanel, st.acting ? null : legacyPanel], { tabs: true, sub: st.shop.name });
     if (st.csv) drawCsv(out);
+  }
+  // Many frames at once from a photo package (a .zip of photos with their
+  // details, e.g. prepared from photos of the shop's display; see photo-import.js).
+  function photoPackagePanel() {
+    var out = h('div', { class: 'pkg-out', role: 'status' });
+    var publish = h('input', { type: 'checkbox', id: 'pkgPublish', checked: true });
+    var file = h('input', { type: 'file', id: 'pkgFile', multiple: true, accept: '.zip,application/zip,.json,.jpg,.jpeg,.png,.webp' });
+    file.addEventListener('change', function () {
+      if (!file.files || !file.files.length) return;
+      out.innerHTML = '';
+      out.appendChild(h('p', { class: 'hint', text: T('p.pkg.reading') }));
+      readPackage(file.files).then(parsePackage).then(function (pack) {
+        out.innerHTML = '';
+        var withTry = pack.frames.filter(function (f) { return f.tryOn; }).length;
+        var bad = pack.frames.filter(function (f) { return !f.ok; }).length;
+        out.appendChild(h('p', null, [h('strong', { text: T('p.pkg.found', { n: pack.frames.length, t: withTry }) })]));
+        if (bad) out.appendChild(h('p', { class: 'form-error show', text: T('p.pkg.bad', { n: bad }) }));
+        var grid = h('div', { class: 'pkg-grid' });
+        pack.frames.slice(0, 120).forEach(function (f) {
+          var url = pack.files[f.fid + '.thumb.webp'] ? URL.createObjectURL(pack.files[f.fid + '.thumb.webp']) : '';
+          grid.appendChild(h('figure', { class: 'pkg-item' }, [url ? h('img', { src: url, alt: '', width: '96', height: '96', loading: 'lazy' }) : null,
+            h('figcaption', { text: (f.meta.name || f.fid) + (f.tryOn ? ' ✓' : '') })]));
+        });
+        out.appendChild(grid);
+        var go = h('button', { type: 'button', class: 'btn primary', text: T('p.pkg.go', { n: pack.frames.length }), disabled: canEdit() ? null : true });
+        var prog = h('p', { class: 'hint', role: 'status' });
+        go.addEventListener('click', function () {
+          go.disabled = true; file.disabled = true;
+          importPackage(B, st.uid, pack, {
+            publish: publish.checked, availability: 'in_stock', shopStatus: shopStatus(),
+            onProgress: function (d, t) { prog.textContent = T('p.pkg.working', { done: d, total: t }); }
+          }).then(function (r) {
+            prog.textContent = T('p.pkg.done', r) + (r.errors.length ? ' ' + r.errors.slice(0, 5).join('; ') : '');
+            st.products = null;
+            ctx.toast(T('p.pkg.doneShort', r));
+          }).catch(function (e) { console.error(e); prog.textContent = T('p.saveFailed'); }).then(function () { file.disabled = false; });
+        });
+        out.appendChild(h('div', { class: 'row' }, [go]));
+        out.appendChild(prog);
+      }).catch(function (e) {
+        console.error(e); out.innerHTML = '';
+        out.appendChild(h('p', { class: 'form-error show', text: T(e && e.code === 'no-index' ? 'p.pkg.noIndex' : 'p.pkg.unreadable') }));
+      });
+    });
+    return h('section', { class: 'panel' }, [
+      h('h2', { class: 'panel-title', text: T('p.pkg.title') }),
+      h('p', { class: 'hint', text: T('p.pkg.text') }),
+      h('label', { class: 'check' }, [publish, ' ' + T('p.pkg.publish')]),
+      h('div', { class: 'row' }, [h('label', { class: 'btn primary small file-btn' }, [T('p.pkg.choose'), file])]),
+      out
+    ]);
   }
   function analyseCsv(text) {
     var rows = parseCsv(text.replace(/^﻿/, ''));

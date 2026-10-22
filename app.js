@@ -257,6 +257,9 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       // a shop's QR code (scanned on a customer's own phone): the same "stay on
       // this shop" mode as the in-store kiosk, for that browser tab
       if (/(?:^|&)qr=1(?:&|$)/.test(query)) r.kiosk = true;
+      // the admin managing a shop's frames from the shop dashboard
+      var as = /(?:^|&)as=([A-Za-z0-9_-]{1,128})(?:&|$)/.exec(query);
+      if (as) r.asShop = as[1];
       r.hadQuery = true;
     }
     return r;
@@ -284,6 +287,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
   function takeQuery(r) {
     if (!r.hadQuery) return;
     if (r.kiosk) setKiosk(r.source);
+    if (r.asShop) setActingShop(r.asShop);
     history.replaceState(null, '', hashFor(r));
     if (r.pd != null) applyPdFromLink(r.pd);
   }
@@ -307,6 +311,15 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (brand) brand.href = kioskSource ? hashFor({ name: 'browse', source: kioskSource }) : '#/';
     tabBrowseBtn.href = kioskSource ? hashFor({ name: 'browse', source: kioskSource }) : '#/demo';
     tabBrowseBtn.textContent = t(kioskSource ? 'nav.frames' : 'nav.demo');
+  }
+
+  // Admin only: which shop the shop dashboard is managing (this tab only). The
+  // server rules decide what the account may actually change.
+  var actingShop = null;
+  try { actingShop = sessionStorage.getItem('fts.asShop') || null; } catch (e) { actingShop = null; }
+  function setActingShop(id) {
+    actingShop = id || null;
+    try { if (actingShop) sessionStorage.setItem('fts.asShop', actingShop); else sessionStorage.removeItem('fts.asShop'); } catch (e) { /* tab only */ }
   }
 
   function setTitle(title) { document.title = (title ? title + ' | ' : '') + 'Frame Try-On Studio'; }
@@ -3691,6 +3704,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
       backend: backend, t: t, tn: tn, getLang: getLang, toast: toast, confirmAction: confirmAction,
       navigate: navigate, hashFor: hashFor, currentUser: function () { return currentUser; },
       isAdmin: function () { return account.isAdmin; }, adminChecked: function () { return account.checked; },
+      actingShop: function () { return actingShop; }, setActingShop: setActingShop,
       tagLabel: tagLabel, frameName: frameName, sizeShort: sizeShort, setTitle: setTitle,
       openPhotoStep: openPhotoStep, previewProduct: previewProduct, productEntry: productEntry,
       forgetProduct: forgetProduct, legacyImport: legacyImport, demoFrames: DEMO_FRAMES, demoName: function (id) { return frameName(entryMap[id]); },
@@ -4270,10 +4284,12 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (addTarget.frameId === r.id && addTarget.kind === kind && addTarget.product) { syncProductBar(); return; }
     var known = pendingProducts[r.id];
     var load = known ? Promise.resolve(known)
-      : Promise.all([backend.getProduct(r.id), backend.getShop(currentUser.uid)]).then(function (x) { return { product: x[0], shopStatus: x[1] ? x[1].status : null }; });
+      : backend.getProduct(r.id).then(function (p) {
+          return (p ? backend.getShop(p.shopId).catch(function () { return null; }) : Promise.resolve(null)).then(function (s) { return { product: p, shopStatus: s ? s.status : null }; });
+        });
     load.then(function (k) {
       if (view.name !== 'add' || view.id !== r.id) return;
-      if (!k.product || k.product.shopId !== currentUser.uid) { addLocked.hidden = false; addContent.hidden = true; return; }
+      if (!k.product || (k.product.shopId !== currentUser.uid && !account.isAdmin)) { addLocked.hidden = false; addContent.hidden = true; return; }
       if (kind === 'side' && !(k.product.tryOn && k.product.tryOn.status === 'ready')) { navigate({ name: 'add', id: r.id }, { replace: true }); return; }
       enterProductMode(k.product, k.shopStatus, kind);
     }).catch(function (e) {
@@ -4626,7 +4642,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (!(p.images && backend.hasRef(p.images.manifest))) { toast(t('add.templeNeedsFront'), 'error'); return; }
     addToLibraryBtn.disabled = true;
     frameCalibBanner.textContent = t('add.saving');
-    var uid = currentUser.uid, v = backend.assetVersion();
+    var uid = (addTarget.product && addTarget.product.shopId) || currentUser.uid, v = backend.assetVersion();
     var box = alphaBox(pendingProcessedCanvas);
     var c = document.createElement('canvas');
     c.width = box.w; c.height = box.h;
@@ -4849,7 +4865,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     if (frameCalibPoints.length < 2 || !currentUser || !p) return;
     addToLibraryBtn.disabled = true;
     frameCalibBanner.textContent = t('add.saving');
-    var uid = currentUser.uid, v = backend.assetVersion();
+    var uid = (addTarget.product && addTarget.product.shopId) || currentUser.uid, v = backend.assetVersion();
 
     // crop to the frame
     var box = alphaBox(pendingProcessedCanvas);
@@ -4917,7 +4933,7 @@ function createTryOnRenderer() { return loadRenderer().then(function (m) { retur
     var p = addTarget.product;
     if (!p || !pendingRawCanvas || !currentUser) return;
     saveNoTryonBtn.disabled = true;
-    var uid = currentUser.uid, v = backend.assetVersion();
+    var uid = (addTarget.product && addTarget.product.shopId) || currentUser.uid, v = backend.assetVersion();
     var thumbCanvas = makeThumbCanvas(pendingRawCanvas, THUMB_DIM, true);
     var uploaded = [];
     function up(kind, name, blob, extra) {

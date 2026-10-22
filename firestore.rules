@@ -264,14 +264,15 @@ service cloud.firestore {
         && (!('tryOn' in ks) || tryOnOk(p.tryOn))
         && (!('images' in ks) || imagesOk(p.images, 'shops/' + p.shopId + '/products/' + productId + '/', productId));
     }
-    // Complete enough to show a customer: a name, a confirmed price and tax
-    // treatment, availability, a photo, and either a ready try-on asset or an
-    // explicit "no try-on" listing.
+    // Complete enough to show a customer: a name, availability, a photo, and
+    // either a ready try-on asset or an explicit "no try-on" listing. A price
+    // is optional (customers are told to ask the shop), but a price that is
+    // set must have its tax treatment confirmed.
     function publishable(p) {
       return p.status == 'published'
         && p.moderation.state == 'ok'
         && p.name.size() >= 2
-        && p.get('pricing', {}).get('confirmed', false) == true
+        && (p.get('pricing', null) == null || p.pricing.get('confirmed', false) == true)
         && p.get('availability', null) != null
         && ('url' in p.get('images', {}).get('thumb', {}) || 'data' in p.get('images', {}).get('thumb', {}))
         && (p.tryOn.status == 'none'
@@ -308,12 +309,37 @@ service cloud.firestore {
         && p.public == shouldBePublic(p);
     }
 
+    // The admin adds and edits frames for any active shop (for example while
+    // setting a shop up, or loading its photos in bulk), with the same field
+    // checks; the shop and creation date stay fixed, and the moderation state
+    // only changes through the moderation rule below.
+    function adminProductCreateOk(p, productId) {
+      let ks = p.keys().toSet();
+      return ks.hasAll(['shopId', 'name', 'status', 'moderation', 'public', 'tryOn', 'createdAt', 'updatedAt'])
+        && p.moderation == { 'state': 'ok' }
+        && p.createdAt == request.time && p.updatedAt == request.time
+        && p.get('images', {}).size() == 0
+        && fieldsOk(p, ks, productId)
+        && shopStatusNow(p.shopId) in ['pending', 'approved']
+        && p.public == shouldBePublic(p);
+    }
+    function adminProductEditOk(p, old, productId) {
+      let ks = p.diff(old).affectedKeys();
+      return !ks.hasAny(['shopId', 'moderation', 'createdAt'])
+        && p.updatedAt == request.time
+        && fieldsOk(p, ks, productId)
+        && shopStatusNow(old.shopId) in ['pending', 'approved']
+        && p.public == shouldBePublic(p);
+    }
+
     match /products/{productId} {
       allow get, list: if resource.data.public == true || isOwner(resource.data.shopId) || isAdmin();
 
       allow create: if productCreateOk(request.resource.data, productId);
+      allow create: if isAdmin() && adminProductCreateOk(request.resource.data, productId);
 
       allow update: if productOwnerUpdateOk(request.resource.data, resource.data, productId);
+      allow update: if isAdmin() && adminProductEditOk(request.resource.data, resource.data, productId);
 
       // The admin suspends or restores a listing, and re-derives `public`
       // (for example when a shop is approved or suspended).
@@ -341,7 +367,7 @@ service cloud.firestore {
       allow create: if realUser()
         && newData().keys().hasOnly(['shopId', 'productId', 'kind', 'type', 'data', 'bytes', 'w', 'h', 'createdAt'])
         && newData().keys().hasAll(['shopId', 'productId', 'kind', 'type', 'data', 'createdAt'])
-        && newData().shopId == uid()
+        && (newData().shopId == uid() || isAdmin())
         && newData().productId is string
         && fileId.split('__')[0] == newData().productId
         && fileId.matches('[A-Za-z0-9]{1,40}__[A-Za-z0-9._-]{1,90}')
@@ -351,8 +377,8 @@ service cloud.firestore {
         && newData().data.matches('data:(image/(png|webp|jpeg)|application/json);base64,[A-Za-z0-9+/=]+')
         && (!('bytes' in newData()) || (newData().bytes is int && newData().bytes >= 0 && newData().bytes <= 1000000))
         && newData().createdAt == request.time
-        && get(/databases/$(database)/documents/products/$(newData().productId)).data.shopId == uid()
-        && shopStatusNow(uid()) in ['pending', 'approved'];
+        && get(/databases/$(database)/documents/products/$(newData().productId)).data.shopId == newData().shopId
+        && shopStatusNow(newData().shopId) in ['pending', 'approved'];
       allow update: if false;
       allow delete: if isOwner(resource.data.shopId) || isAdmin();
     }
