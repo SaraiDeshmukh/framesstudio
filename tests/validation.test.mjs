@@ -31,10 +31,11 @@ test('product fields are checked like the server does', function () {
   assert.ok(!isHttpsUrl('http://example.com'));
 });
 
-test('publishing needs a name, a confirmed price, availability, a photo and a settled try-on', function () {
+test('publishing needs a name, availability, a photo and a settled try-on; a price is optional but must be confirmed if set', function () {
   assert.deepEqual(publishBlockers(complete()), []);
   assert.deepEqual(publishBlockers(complete({ name: '' })), ['publish.needName']);
-  assert.deepEqual(publishBlockers(complete({ pricing: null })), ['publish.needPrice']);
+  assert.deepEqual(publishBlockers(complete({ pricing: null })), []);
+  assert.deepEqual(publishBlockers(complete({ pricing: Object.assign({}, price, { pricePaise: 5 }) })), ['publish.needPrice']);
   assert.deepEqual(publishBlockers(complete({ pricing: Object.assign({}, price, { confirmed: false }) })), ['publish.needTaxConfirm']);
   assert.deepEqual(publishBlockers(complete({ availability: null })), ['publish.needAvailability']);
   assert.deepEqual(publishBlockers(complete({ images: {} })), ['publish.needPhoto']);

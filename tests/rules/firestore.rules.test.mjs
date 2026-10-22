@@ -136,9 +136,13 @@ test('an approved retailer creates, edits and publishes their own product', asyn
   await assertSucceeds(deleteDoc(doc(db, 'products', 'n1')));
 });
 
-test('a product is only public when complete: price confirmed, availability, photo, try-on state', async function () {
+test('a product is only public when complete: price confirmed if set, availability, photo, try-on state', async function () {
   var db = as(A, VERIFIED);
   var pub = { status: 'published', public: true };
+  // no price at all: allowed (customers are asked to contact the shop)
+  var r0 = await freshDraft(db, A, 'c0');
+  await assertSucceeds(updateDoc(r0, { availability: 'in_stock', tags: { shape: 'round', color: null, gender: null, rim: null, free: [] }, updatedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(r0, media(A, 'c0', pub)));
   // unconfirmed tax treatment
   var r1 = await prepared(db, A, 'c1', { pricing: pricing({ confirmed: false }) });
   await assertFails(updateDoc(r1, media(A, 'c1', pub)));
@@ -385,13 +389,15 @@ test('approving a shop and publishing its ready products happen together', async
   await assertFails(b2.commit());
 });
 
-test('the admin suspends and restores a listing but cannot rewrite it', async function () {
+test('the admin suspends and restores a listing; edits keep the field checks', async function () {
   var db = as(ADMIN, VERIFIED);
   await assertFails(updateDoc(doc(db, 'products', 'pB1'), { moderation: { state: 'suspended', reason: 'Counterfeit' }, updatedAt: serverTimestamp() })); // still public: not allowed
   await assertSucceeds(updateDoc(doc(db, 'products', 'pB1'), { moderation: { state: 'suspended', reason: 'Counterfeit' }, public: false, updatedAt: serverTimestamp() }));
   await assertFails(getDoc(doc(guest(), 'products', 'pB1')));
   await assertSucceeds(updateDoc(doc(db, 'products', 'pB1'), { moderation: { state: 'ok' }, public: true, updatedAt: serverTimestamp() }));
-  await assertFails(updateDoc(doc(db, 'products', 'pB1'), { name: 'Admin edit', updatedAt: serverTimestamp() }));
+  await assertSucceeds(updateDoc(doc(db, 'products', 'pB1'), { name: 'Admin edit', updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, 'products', 'pB1'), { name: 'x'.repeat(81), updatedAt: serverTimestamp() }));
+  await assertFails(updateDoc(doc(db, 'products', 'pB1'), { moderation: { state: 'ok' }, shopId: A, updatedAt: serverTimestamp() }));
   await assertSucceeds(deleteDoc(doc(db, 'products', 'pB2')));
 });
 
