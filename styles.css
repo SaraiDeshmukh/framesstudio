@@ -857,3 +857,8 @@ img.thumb-wait { visibility: hidden; }
 .top-frames { margin: 4px 0 10px; padding-left: 20px; font-size: var(--text-s); }
 .num-input { width: 110px; }
 .tryon-count { color: var(--ink-2); }
+
+/* "Frames" (every shop): which shop a frame is from; the switch to the demo frames */
+.frame-card-shop { font-size: 0.85rem; color: var(--muted, #666); margin-top: 2px; }
+.source-switch { display: inline-block; margin: 4px 0 8px; }
+.all-note { margin-bottom: 4px; }
