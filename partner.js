@@ -112,7 +112,9 @@ export function initPartner(root, ctx) {
   function loadProducts(force) {
     if (st.products && !force) return Promise.resolve(st.products);
     if (st.productsLoading && !force) return st.productsLoading;
-    st.productsLoading = B.loadAllMyProducts(st.uid, 5000).then(function (list) {
+    st.productsLoading = Promise.all([B.loadAllMyProducts(st.uid, 5000), B.getTryOnStats(st.uid).catch(function () { return null; })]).then(function (r) {
+      var list = r[0];
+      st.tryons = r[1];
       st.products = list; st.productsLoading = null;
       checkIndex(list);
       return list;
@@ -399,6 +401,7 @@ export function initPartner(root, ctx) {
     if (p.status === 'published') return { key: shopStatus() === 'approved' ? 'incomplete' : 'waitingApproval', cls: 'warn' };
     return { key: 'draft', cls: 'muted' };
   }
+  function triedOn(p) { return (st.tryons && st.tryons.frames && st.tryons.frames[p.id]) || 0; }
   function tryOnLabel(p) {
     var s = (p.tryOn && p.tryOn.status) || 'none';
     var hasPhoto = p.images && p.images.thumb;
@@ -428,6 +431,7 @@ export function initPartner(root, ctx) {
     var by = f.sort;
     list.sort(function (a, b) {
       if (by === 'name') return (a.name || '').localeCompare(b.name || '');
+      if (by === 'tryons') return triedOn(b) - triedOn(a);
       if (by === 'price') { var x = a.pricing ? priceView(a.pricing) : null, y = b.pricing ? priceView(b.pricing) : null; return (x ? x.pay.finalPaise : Infinity) - (y ? y.pay.finalPaise : Infinity); }
       return (b.updatedMs || 0) - (a.updatedMs || 0);
     });
@@ -459,7 +463,8 @@ export function initPartner(root, ctx) {
     var addBtn = h('button', { type: 'button', class: 'btn primary', text: T('p.products.add'), disabled: !canEdit() || (max && total >= max) ? true : null,
       onclick: function () { ctx.navigate({ name: 'partner', id: 'product', sub: 'new' }); } });
     var summary = h('p', { class: 'dash-summary' }, [T('p.products.summary', { total: total, live: counts.live, draft: counts.draft }),
-      counts.issues ? h('span', { class: 'issue-count', text: ' ' + T('p.products.issues', { n: counts.issues }) }) : null]);
+      counts.issues ? h('span', { class: 'issue-count', text: ' ' + T('p.products.issues', { n: counts.issues }) }) : null,
+      st.tryons ? h('span', { class: 'tryon-count', text: ' · ' + T('p.tryons.summary', { today: st.tryons.today, d30: st.tryons.last30, total: st.tryons.total }) }) : null]);
     var search = inputEl('pSearch', st.filter.q, { type: 'search', placeholder: T('p.products.search'), 'aria-label': T('p.products.search') });
     search.addEventListener('input', function () { st.filter.q = search.value; st.shown = 50; redrawList(); });
     var tools = h('div', { class: 'dash-tools' }, [
@@ -467,7 +472,7 @@ export function initPartner(root, ctx) {
       selectEl('pFStatus', [['all', T('p.f.allStatus')], ['live', T('p.state.live')], ['notLive', T('p.f.notLive')], ['draft', T('p.state.draft')], ['published', T('p.f.published')], ['archived', T('p.state.archived')]], st.filter.status, function (e) { st.filter.status = e.target.value; redrawList(); }, T('p.f.status')),
       selectEl('pFTry', [['all', T('p.f.allTryon')], ['ready', T('p.tryon.ready')], ['none', T('p.tryon.none')], ['failed', T('p.tryon.failed')], ['pending', T('p.tryon.pending')]], st.filter.tryon, function (e) { st.filter.tryon = e.target.value; redrawList(); }, T('p.f.tryon')),
       selectEl('pFAvail', [['all', T('p.f.allAvail')]].concat(AVAILABILITY.map(function (a) { return [a, T('avail.' + a)]; })), st.filter.avail, function (e) { st.filter.avail = e.target.value; redrawList(); }, T('p.f.avail')),
-      selectEl('pFSort', [['updated', T('p.sort.updated')], ['name', T('p.sort.name')], ['price', T('p.sort.price')]], st.filter.sort, function (e) { st.filter.sort = e.target.value; redrawList(); }, T('cat.sort'))
+      selectEl('pFSort', [['updated', T('p.sort.updated')], ['name', T('p.sort.name')], ['price', T('p.sort.price')], ['tryons', T('p.sort.tryons')]], st.filter.sort, function (e) { st.filter.sort = e.target.value; redrawList(); }, T('cat.sort'))
     ]);
     var listWrap = h('div', { id: 'pList' });
     page(st.shop.name, [statusBanner(), h('div', { class: 'dash-bar' }, [summary, addBtn]), tools, bulkBar(), listWrap], { tabs: true, sub: T('p.dashboard') });
@@ -527,7 +532,7 @@ export function initPartner(root, ctx) {
         h('td', null, [h('a', { class: 'dash-frame', href: ctx.hashFor({ name: 'partner', id: 'product', sub: p.id }) }, [thumb, h('span', null, [h('strong', { text: p.name || T('partner.untitled') }), p.sku ? h('span', { class: 'mono muted', text: ' ' + p.sku }) : null])])]),
         h('td', { class: 'mono', text: payText(p) }),
         h('td', null, [h('span', { class: 'pill ' + stt.cls, text: T('p.state.' + stt.key) })]),
-        h('td', { text: tryOnLabel(p) }),
+        h('td', null, [tryOnLabel(p), triedOn(p) ? h('span', { class: 'hint block', text: T('p.tryons.frame', { n: triedOn(p) }) }) : null]),
         h('td', { text: p.availability ? T('avail.' + p.availability) : '—' }),
         h('td', null, [h('a', { class: 'btn secondary small', href: ctx.hashFor({ name: 'partner', id: 'product', sub: p.id }), text: T('p.edit'), 'aria-label': T('p.editAria', { name: p.name || T('partner.untitled') }) })])
       ]));

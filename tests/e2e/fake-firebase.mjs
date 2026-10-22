@@ -32,6 +32,8 @@ const SERVER_TS = { __sentinel: 'serverTimestamp' };
 const DELETE = { __sentinel: 'delete' };
 export function serverTimestamp() { return SERVER_TS; }
 export function deleteField() { return DELETE; }
+export function increment(n) { return { __sentinel: 'increment', n: n }; }
+const isInc = (v) => v && typeof v === 'object' && v.__sentinel === 'increment';
 
 // seed format: timestamps as {__ts:[s, ns]}
 function revive(v) {
@@ -53,8 +55,9 @@ function clone(v) {
   if (v && typeof v === 'object') { const o = {}; for (const k of Object.keys(v)) o[k] = clone(v[k]); return o; }
   return v;
 }
-function resolveSentinels(v, now) {
+function resolveSentinels(v, now, old) {
   if (v === SERVER_TS) return now;
+  if (isInc(v)) return (typeof old === 'number' ? old : 0) + v.n;
   if (Array.isArray(v)) return v.map((x) => resolveSentinels(x, now));
   if (v && typeof v === 'object' && !(v instanceof Timestamp)) {
     const o = {};
@@ -98,6 +101,7 @@ function canRead(path, data) {
   if (col === 'admins') return !!(u && u.uid === path.split('/')[1]);
   if (col === 'users') return !!(u && u.uid === path.split('/')[1]);
   if (col === 'acceptances') return !!(u && data.uid === u.uid) || isAdmin();
+  if (col === 'tryons') return !!(u && u.uid === path.split('/')[1]) || isAdmin();
   return true;
 }
 function denied() { return Object.assign(new Error('Missing or insufficient permissions.'), { code: 'permission-denied' }); }
@@ -209,15 +213,15 @@ function applySet(path, data, opts, now) {
       for (const f of opts.mergeFields) {
         const segs = segsOf(f);
         const v = getPath(data, segs);
-        setPath(cur, segs, v === DELETE ? DELETE : resolveSentinels(v, now));
+        setPath(cur, segs, v === DELETE ? DELETE : resolveSentinels(v, now, getPath(cur, segs)));
       }
     } else {
       (function merge(dst, src) {
         for (const k of Object.keys(src)) {
           const v = src[k];
           if (v === DELETE) delete dst[k];
-          else if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Timestamp) && v !== SERVER_TS) { if (!dst[k] || typeof dst[k] !== 'object') dst[k] = {}; merge(dst[k], v); }
-          else dst[k] = resolveSentinels(v, now);
+          else if (v && typeof v === 'object' && !Array.isArray(v) && !(v instanceof Timestamp) && v !== SERVER_TS && !isInc(v)) { if (!dst[k] || typeof dst[k] !== 'object') dst[k] = {}; merge(dst[k], v); }
+          else dst[k] = resolveSentinels(v, now, dst[k]);
         }
       })(cur, data);
     }
@@ -227,13 +231,13 @@ function applySet(path, data, opts, now) {
 function applyUpdate(path, data, now) {
   if (!store.has(path)) throw Object.assign(new Error('No document to update: ' + path), { code: 'not-found' });
   const cur = clone(store.get(path));
-  for (const k of Object.keys(data)) setPath(cur, k.split('.'), data[k] === DELETE ? DELETE : resolveSentinels(data[k], now));
+  for (const k of Object.keys(data)) setPath(cur, k.split('.'), data[k] === DELETE ? DELETE : resolveSentinels(data[k], now, getPath(cur, k.split('.'))));
   store.set(path, cur);
 }
 function checkWrite(path, data) {
   const fail = W.__fakeDenyWrites && W.__fakeDenyWrites.some((p) => path.startsWith(p));
   if (fail) throw denied();
-  if (!user()) throw denied();
+  if (!user() && !path.startsWith('tryons/')) throw denied();     // try-on counts: anyone (checked by the real rules)
 }
 export async function setDoc(ref, data, opts) { await delay(); checkWrite(ref.path, data); W.__fakeWrites++; applySet(ref.path, data, opts, Timestamp.now()); }
 export async function updateDoc(ref, data) { await delay(); checkWrite(ref.path, data); W.__fakeWrites++; applyUpdate(ref.path, data, Timestamp.now()); }

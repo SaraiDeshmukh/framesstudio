@@ -845,3 +845,15 @@ img.thumb-wait { visibility: hidden; }
 .pkg-item img { display: block; width: 100%; height: auto; aspect-ratio: 1; object-fit: contain; background: var(--display); border-radius: var(--r-s); }
 .pkg-item figcaption { margin-top: 4px; overflow-wrap: anywhere; }
 .check { display: flex; gap: 8px; align-items: flex-start; margin: 8px 0 12px; }
+
+/* try-on counts */
+.table-wrap { overflow-x: auto; }
+.data-table { border-collapse: collapse; width: 100%; font-size: var(--text-s); }
+.data-table th, .data-table td { padding: 8px 10px; border-bottom: 1px solid var(--line); text-align: left; }
+.data-table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.data-table .sum-row th, .data-table .sum-row td { font-weight: 700; border-bottom: 0; }
+.shop-tryons { margin: 12px 0; }
+.shop-tryons h3 { margin: 0 0 4px; font-size: var(--text-s); }
+.top-frames { margin: 4px 0 10px; padding-left: 20px; font-size: var(--text-s); }
+.num-input { width: 110px; }
+.tryon-count { color: var(--ink-2); }
